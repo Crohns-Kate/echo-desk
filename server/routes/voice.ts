@@ -75,21 +75,19 @@ export function registerVoice(app: Express) {
       }
 
       twiml(res, (vr) => {
-        // Start recording immediately - NO BEEP, dual channel
-        if (env.CALL_RECORDING_ENABLED) {
-          try {
-            const start = vr.start();
-            start.recording({
-              recordingStatusCallback: abs('/api/voice/recording'),
-              recordingStatusCallbackMethod: 'POST',
-              recordingStatusCallbackEvent: 'completed',
-              track: 'both',
-              trim: 'do-not-trim'
-            });
-          } catch (e: any) {
-            console.warn('[VOICE][incoming] <Start><Recording> not available, continuing without it:', e?.message || e);
-          }
-        }
+        // NOTE: <Start><Recording> TwiML is NOT valid and causes errors.
+        // To enable full-call recording (no beep), use REST API after sending TwiML:
+        /*
+        import Twilio from 'twilio';
+        const client = Twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+        await client.calls(callSid).recordings.create({
+          recordingStatusCallback: abs('/api/voice/recording'),
+          recordingStatusCallbackMethod: 'POST',
+          recordingStatusCallbackEvent: ['completed'],
+          trim: 'do-not-trim',
+          recordingChannels: 'dual'  // separate caller/callee tracks
+        });
+        */
 
         // Gather initial response
         const actionUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
