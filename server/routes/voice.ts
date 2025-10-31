@@ -77,22 +77,26 @@ export function registerVoice(app: Express) {
       twiml(res, (vr) => {
         // Start recording immediately - NO BEEP, dual channel
         if (env.CALL_RECORDING_ENABLED) {
-          const start = vr.start();
-          start.record({
-            recordingStatusCallback: abs('/api/voice/recording'),
-            recordingStatusCallbackMethod: 'POST',
-            recordingStatusCallbackEvent: 'completed',
-            track: 'both',
-            trim: 'do-not-trim'
-          });
+          try {
+            const start = vr.start();
+            start.recording({
+              recordingStatusCallback: abs('/api/voice/recording'),
+              recordingStatusCallbackMethod: 'POST',
+              recordingStatusCallbackEvent: 'completed',
+              track: 'both',
+              trim: 'do-not-trim'
+            });
+          } catch (e: any) {
+            console.warn('[VOICE][incoming] <Start><Recording> not available, continuing without it:', e?.message || e);
+          }
         }
 
         // Gather initial response
         const actionUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
         const g = gather(vr, actionUrl);
 
-        // Greeting with Australian neural voice
-        saySSML(g, `<speak>${tenant.greeting} <break time="300ms"/> How can I help you today?</speak>`);
+        // Greeting with Australian neural voice (plain text, no SSML to avoid error 13520)
+        say(g, `${tenant.greeting} How can I help you today?`);
         g.pause({ length: 1 });
 
         vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
