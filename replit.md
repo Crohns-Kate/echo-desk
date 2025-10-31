@@ -61,16 +61,22 @@ Preferred communication style: Simple, everyday language.
 
 **Voice Call Processing:**
 - TwiML generation for Twilio voice responses (NO `<Start>` tag - eliminates error 13520)
-- Amazon Polly (Nicole-Neural voice) for text-to-speech in Australian English
+- Amazon Polly for text-to-speech in Australian English
 - **Voice Constants & Safety** (`server/utils/voice-constants.ts`):
-  - `ttsSafe()` - Extremely conservative text sanitizer:
+  - `VOICE_NAME` - Configurable via env (default: "Polly.Olivia-Neural")
+  - `ttsClean()` - Extremely conservative text sanitizer:
     - Strips SSML tags, non-ASCII characters, fancy quotes
     - Removes punctuation that trips Polly (?,!,:;())
     - Collapses whitespace, ensures plain text only
-  - `saySafe()` - Multi-level voice fallback system:
-    - Primary: Polly.Nicole-Neural (AU neural)
+  - `say(node, text)` - Multi-level voice fallback system:
+    - Primary: VOICE_NAME (env-configurable)
     - Fallback: alice (Twilio default)
     - Auto-skips empty strings
+    - NO bargeIn parameter (eliminated for 12200 warning prevention)
+  - `pause(node, secs)` - Integer-only pause helper:
+    - Enforces integer values for Twilio compliance
+    - Default: 1 second
+    - Coerces non-integers to 1
 - Enhanced intent detection system:
   - Primary: GPT-4o-mini with confidence scoring (0.0-1.0)
   - Fallback: Regex-based pattern matching
@@ -89,6 +95,14 @@ Preferred communication style: Simple, everyday language.
 2. Request timing and logging
 3. Twilio signature validation (optional in development)
 4. Error handling and response formatting
+
+**TwiML Hardening (Eliminates Twilio 12200 warnings):**
+- NO `language` attributes on `<Say>` or `<Gather>` elements
+- NO `bargeIn` attributes on `<Say>` or `<Gather>` elements
+- All pauses use integer values only via `pause()` helper
+- Standard Gather pattern: `vr.gather({ input: ['speech'], timeout: 5, speechTimeout: 'auto', actionOnEmptyResult: true, ... })`
+- Every Gather followed by: `say(g, text); pause(g, 1);` pattern
+- Test endpoint: `/api/voice/ping` for TwiML validation
 
 ### Data Storage & Schema
 
