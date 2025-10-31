@@ -1,0 +1,952 @@
+Awesome—here’s your one-shot, copy-paste prompt for Replit AI Assistant to build the fresh EchoDesk app from scratch exactly as we’ve designed. It includes file tree, configs, code stubs, schemas, Twilio AU1 + Polly.Nicole-Neural, identity wizard, booking/reschedule flows, dashboard UI, logging, call recordings/transcripts, alerts, feature flags, health/version endpoints, and a 60-second smoke test.
+
+Just paste this whole thing to the Replit AI Assistant in a new empty Replit (Node + TS). It will create all files and wire everything.
+
+
+---
+
+🚀 Replit AI Assistant — Build EchoDesk (fresh repo, no ElevenLabs)
+
+Project name: echodesk
+Goal: Production-grade Twilio voice receptionist for clinics (AU latency optimized), using Amazon Polly (Nicole-Neural) only, Cliniko integration, identity capture wizard, booking/reschedule/cancel flows, alerts to receptionist dashboard, call logs + optional recordings/transcripts, modular NLU (OpenAI optional), fast TwiML with correct Gather/SSML rules, multi-tenant branding.
+
+0) Create project + install deps
+
+1. Initialize a clean Node + TypeScript project.
+
+
+2. Install dependencies:
+
+
+
+npm i express twilio zod node-fetch @aws-sdk/util-utf8-node
+npm i -D typescript ts-node nodemon @types/node @types/express
+
+3. Create tsconfig.json (ES2020, module commonjs, outDir dist, rootDir src).
+
+
+4. Create package.json scripts:
+
+
+
+{
+  "scripts": {
+    "dev": "NODE_ENV=development nodemon --watch src --exec ts-node src/index.ts",
+    "build": "tsc",
+    "start": "NODE_ENV=production node dist/index.js"
+  }
+}
+
+
+---
+
+1) Environment & Secrets (single source of truth)
+
+Create .env.example and .env (you’ll fill actual values later):
+
+PUBLIC_BASE_URL=https://YOUR_AU1_DEPLOY_URL
+TZ=Australia/Brisbane
+
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_PHONE_NUMBER=+61xxxxxxxxx
+
+# Feature flags
+IDENTITY_CAPTURE=true
+INTENT_ENGINE=true
+FORCE_TWILIO_SAY=false
+
+# Voices (Polly AU only)
+PRIMARY_VOICE=Polly.Nicole-Neural
+
+# Database (use Neon or any Postgres)
+DATABASE_URL=postgres://user:pass@host/db
+
+# OpenAI is optional (leave blank to use regex intent fallback)
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+
+# Cliniko
+CLINIKO_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
+CLINIKO_BASE_URL=https://api.au4.cliniko.com/v1
+
+# Recording & transcripts (optional)
+CALL_RECORDING_ENABLED=true
+TRANSCRIPTION_ENABLED=true
+
+Hard-fail on boot if any of the following are missing:
+PUBLIC_BASE_URL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, DATABASE_URL, CLINIKO_API_KEY, TZ.
+
+
+---
+
+2) File tree (create exactly)
+
+src/
+  index.ts
+  server.ts
+  routes/
+    voice.ts
+    sms.ts
+    app.ts        # dashboard & APIs (calls, alerts, tenants)
+  services/
+    cliniko.ts
+    intent.ts
+    storage.ts
+  utils/
+    env.ts
+    say.ts
+    tts-guard.ts
+    url.ts
+    time.ts
+    phone.ts
+    version.ts
+  middlewares/
+    twilioAuth.ts
+  db/
+    schema.sql
+    seed.sql
+  ui/
+    public/
+      logo.png          # (we’ll add EchoDesk logo later)
+      favicon.ico
+      styles.css
+    views/
+      index.html
+      calls.html
+      call-detail.html
+      alerts.html
+      tenants.html
+
+
+---
+
+3) DB schema (Postgres)
+
+Create src/db/schema.sql:
+
+create table if not exists tenants (
+  id serial primary key,
+  slug text unique not null,
+  clinic_name text not null,
+  greeting text not null default 'Hello and welcome',
+  timezone text not null default 'Australia/Brisbane',
+  created_at timestamptz default now()
+);
+
+create table if not exists phone_map (
+  id serial primary key,
+  phone text not null unique,
+  full_name text,
+  email text,
+  patient_id text,     -- Cliniko IDs are TEXT, not integer
+  updated_at timestamptz default now()
+);
+
+create table if not exists leads (
+  id serial primary key,
+  phone text not null,
+  opted_out boolean default false,
+  opt_out_date timestamptz,
+  created_at timestamptz default now()
+);
+
+create table if not exists conversations (
+  id serial primary key,
+  tenant_id integer references tenants(id),
+  lead_id integer,
+  is_voice boolean default true,
+  state text default 'active',
+  context jsonb default '{}'::jsonb,
+  created_at timestamptz default now()
+);
+
+create table if not exists call_logs (
+  id serial primary key,
+  tenant_id integer references tenants(id),
+  conversation_id integer,
+  call_sid text,
+  from_number text,
+  to_number text,
+  intent text,
+  summary text,
+  recording_url text,
+  transcript text,
+  created_at timestamptz default now()
+);
+
+create table if not exists alerts (
+  id serial primary key,
+  tenant_id integer references tenants(id),
+  conversation_id integer,
+  reason text,             -- 'human_request' | 'booking_failed' | ...
+  payload jsonb,
+  status text default 'open',
+  created_at timestamptz default now()
+);
+
+Create src/db/seed.sql:
+
+insert into tenants (slug, clinic_name, greeting, timezone)
+values ('default', 'Your Clinic', 'Hello and welcome to Your Clinic.', 'Australia/Brisbane')
+on conflict (slug) do nothing;
+
+
+---
+
+4) Core utils
+
+src/utils/env.ts — validate env:
+
+export const env = {
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL!,
+  TZ: process.env.TZ!,
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID!,
+  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN!,
+  TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER!,
+  DATABASE_URL: process.env.DATABASE_URL!,
+  CLINIKO_API_KEY: process.env.CLINIKO_API_KEY!,
+  CLINIKO_BASE_URL: process.env.CLINIKO_BASE_URL || 'https://api.au4.cliniko.com/v1',
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+  IDENTITY_CAPTURE: (process.env.IDENTITY_CAPTURE ?? 'true') !== 'false',
+  INTENT_ENGINE: (process.env.INTENT_ENGINE ?? 'true') !== 'false',
+  FORCE_TWILIO_SAY: process.env.FORCE_TWILIO_SAY === 'true',
+  PRIMARY_VOICE: process.env.PRIMARY_VOICE || 'Polly.Nicole-Neural',
+  CALL_RECORDING_ENABLED: (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true',
+  TRANSCRIPTION_ENABLED: (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true',
+};
+
+const required = [
+  'PUBLIC_BASE_URL','TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_PHONE_NUMBER',
+  'DATABASE_URL','CLINIKO_API_KEY','TZ'
+] as const;
+
+for (const k of required) {
+  if (!env[k]) { throw new Error(`Missing required env: ${k}`); }
+}
+
+src/utils/say.ts — Polly.Nicole-Neural + SSML helper + strict Gather:
+
+import twilio from 'twilio';
+import { env } from './env';
+
+export const PRIMARY_VOICE = env.PRIMARY_VOICE;
+
+export function say(node: any, text: string) {
+  node.say({ voice: PRIMARY_VOICE, language: 'en-AU' }, text);
+}
+
+export function saySSML(node: any, ssml: string) {
+  const s = ssml.trim().startsWith('<speak') ? ssml : `<speak>${ssml}</speak>`;
+  node.say({ voice: PRIMARY_VOICE, language: 'en-AU' }, s);
+}
+
+export function gather(vr: twilio.twiml.VoiceResponse, actionUrl: string) {
+  return vr.gather({
+    input: 'speech',
+    language: 'en-AU',
+    timeout: '5',
+    speechTimeout: 'auto',
+    actionOnEmptyResult: 'true',
+    bargeIn: 'true',
+    action: actionUrl,
+    method: 'POST',
+  } as any);
+}
+
+src/utils/tts-guard.ts — never speak control tokens; sanitize:
+
+const SYSTEM_TOKENS = new Set([
+  'redirect_to_wizard','build__wizard','build_canary','canary',
+  'ASK_EMAIL','CONFIRM_EMAIL_OK','CONFIRM_EMAIL_NO',
+  'ASK_DAY','ASK_MORNING_AFTERNOON','BOOK_PARTIAL','REPROMPT_GENERIC',
+  'FALLBACK_TO_STAFF','GOODBYE'
+]);
+
+export function isSystemToken(text?: string|null) {
+  if (!text) return false;
+  const t = String(text).trim();
+  if (SYSTEM_TOKENS.has(t)) return true;
+  if (/^[A-Z0-9_]+$/.test(t)) return true;
+  if (t.includes('__')) return true;
+  return false;
+}
+
+export function safeSpoken(text: string) {
+  if (isSystemToken(text)) return '';
+  return text
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/[“”‘’]/g, '"')
+    .replace(/[<>]/g, '')           // no angle brackets in plain <Say>
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+src/utils/url.ts
+
+import { env } from './env';
+export const abs = (p: string) => `${env.PUBLIC_BASE_URL}${p}`;
+
+src/utils/version.ts
+
+export const BUILD = {
+  git: 'unknown',
+  dist: Math.random().toString(16).slice(2,10)
+};
+
+
+---
+
+5) Twilio signature middleware
+
+src/middlewares/twilioAuth.ts
+
+import { Request, Response, NextFunction } from 'express';
+import twilio from 'twilio';
+import { env } from '../utils/env';
+
+export function validateTwilioSignature(req: Request, res: Response, next: NextFunction) {
+  const sig = req.headers['x-twilio-signature'] as string;
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const url = `${proto}://${host}${req.originalUrl}`;
+  const params = req.body || {};
+  const valid = sig ? twilio.validateRequest(env.TWILIO_AUTH_TOKEN, sig, url, params) : true;
+  if (!valid) console.warn('[Twilio] Invalid signature for', url);
+  (req as any).twilioParams = params;
+  next();
+}
+
+
+---
+
+6) Cliniko service (minimal)
+
+src/services/cliniko.ts
+
+import fetch from 'node-fetch';
+import { env } from '../utils/env';
+
+const base = env.CLINIKO_BASE_URL;
+const headers = {
+  'Accept': 'application/json',
+  'Authorization': `Basic ${Buffer.from(env.CLINIKO_API_KEY + ':').toString('base64')}`
+};
+
+export async function getAvailability(opts?: { dayIso?: string, part?: 'early'|'late'|'morning'|'afternoon' }) {
+  // TODO implement actual Cliniko queries for practitioners & appointment types per tenant
+  // For now, return two pseudo slots (ISO strings) as placeholders.
+  const now = new Date();
+  const in1h = new Date(now.getTime() + 60*60*1000).toISOString();
+  const in2h = new Date(now.getTime() + 2*60*60*1000).toISOString();
+  return [
+    { startIso: in1h, practitionerId: 1, appointmentTypeId: 1 },
+    { startIso: in2h, practitionerId: 1, appointmentTypeId: 1 },
+  ];
+}
+
+export async function createAppointmentForPatient(phone: string, payload: {
+  practitionerId: number,
+  appointmentTypeId: number,
+  startsAt: string,
+  notes?: string,
+  idempotencyKey?: string,
+  fullName?: string,
+  email?: string,
+}) {
+  // TODO: implement Cliniko create appointment
+  return {
+    id: 'mock-apt-1',
+    starts_at: payload.startsAt
+  };
+}
+
+
+---
+
+7) Intent service (OpenAI optional with regex fallback)
+
+src/services/intent.ts
+
+import { env } from '../utils/env';
+
+const regex = {
+  book: /\b(book|appointment|new)\b/i,
+  reschedule: /\b(reschedule|change|move)\b/i,
+  cancel: /\b(cancel)\b/i,
+  human: /\b(reception(ist)?|human|staff)\b/i,
+  hours: /\b(hour|open|close)\b/i,
+};
+
+export async function detectIntent(utterance: string): Promise<{intent: string, confidence: number}> {
+  // If OpenAI not set, use regex
+  if (!env.OPENAI_API_KEY || !env.INTENT_ENGINE) {
+    if (regex.book.test(utterance)) return { intent: 'book', confidence: 0.8 };
+    if (regex.reschedule.test(utterance)) return { intent: 'reschedule', confidence: 0.8 };
+    if (regex.cancel.test(utterance)) return { intent: 'cancel', confidence: 0.8 };
+    if (regex.human.test(utterance)) return { intent: 'human', confidence: 0.7 };
+    if (regex.hours.test(utterance)) return { intent: 'hours', confidence: 0.7 };
+    return { intent: 'unknown', confidence: 0.3 };
+  }
+  // TODO: OpenAI GPT-4o-mini call here if desired
+  return { intent: 'unknown', confidence: 0.3 };
+}
+
+
+---
+
+8) Storage service (DB access via methods only)
+
+src/services/storage.ts
+
+import { env } from '../utils/env';
+import { Pool } from 'pg';
+const pool = new Pool({ connectionString: env.DATABASE_URL });
+
+export const storage = {
+  async seed() {
+    await pool.query((await import('fs')).readFileSync('src/db/schema.sql','utf8'));
+    await pool.query((await import('fs')).readFileSync('src/db/seed.sql','utf8'));
+  },
+
+  async getTenant(slug='default') {
+    const { rows } = await pool.query('select * from tenants where slug=$1 limit 1',[slug]);
+    return rows[0];
+  },
+
+  async upsertPhoneMap({ phone, fullName, email, patient_id }: { phone: string, fullName?: string, email?: string, patient_id?: string }) {
+    const { rows } = await pool.query(`
+      insert into phone_map (phone, full_name, email, patient_id, updated_at)
+      values ($1,$2,$3,$4,now())
+      on conflict (phone) do update set full_name=excluded.full_name, email=excluded.email, patient_id=excluded.patient_id, updated_at=now()
+      returning *`,
+      [phone, fullName || null, email || null, patient_id || null]);
+    return rows[0];
+  },
+
+  async getPhoneMap(phone: string) {
+    const { rows } = await pool.query('select * from phone_map where phone=$1 limit 1',[phone]);
+    return rows[0] || null;
+  },
+
+  async createConversation(tenantId: number, leadId?: number, isVoice=true) {
+    const { rows } = await pool.query('insert into conversations (tenant_id, lead_id, is_voice) values ($1,$2,$3) returning *',[tenantId, leadId || null, isVoice]);
+    return rows[0];
+  },
+
+  async logCall(o: { tenantId: number, conversationId?: number, callSid: string, from: string, to: string, intent?: string, summary?: string, recordingUrl?: string }) {
+    const { rows } = await pool.query(`insert into call_logs (tenant_id, conversation_id, call_sid, from_number, to_number, intent, summary, recording_url)
+      values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+      [o.tenantId, o.conversationId || null, o.callSid, o.from, o.to, o.intent || null, o.summary || null, o.recordingUrl || null]);
+    return rows[0];
+  },
+
+  async createAlert(o: { tenantId: number, conversationId?: number, reason: string, payload?: any }) {
+    const { rows } = await pool.query('insert into alerts (tenant_id, conversation_id, reason, payload) values ($1,$2,$3,$4) returning *',
+      [o.tenantId, o.conversationId || null, o.reason, o.payload || {}]);
+    return rows[0];
+  },
+
+  // Dashboard data
+  async listCalls(tenantId: number, limit=50) {
+    const { rows } = await pool.query('select * from call_logs where tenant_id=$1 order by created_at desc limit $2',[tenantId, limit]);
+    return rows;
+  },
+  async getCallById(id: number) {
+    const { rows } = await pool.query('select * from call_logs where id=$1 limit 1',[id]);
+    return rows[0];
+  },
+  async listAlerts(tenantId: number, limit=50) {
+    const { rows } = await pool.query('select * from alerts where tenant_id=$1 order by created_at desc limit $2',[tenantId, limit]);
+    return rows;
+  }
+};
+
+
+---
+
+9) Voice routes (heart of TwiML)
+
+src/routes/voice.ts
+
+import { Request, Response } from 'express';
+import twilio from 'twilio';
+import { validateTwilioSignature } from '../middlewares/twilioAuth';
+import { env } from '../utils/env';
+import { storage } from '../services/storage';
+import { say, saySSML, gather } from '../utils/say';
+import { safeSpoken, isSystemToken } from '../utils/tts-guard';
+import { abs } from '../utils/url';
+import { detectIntent } from '../services/intent';
+import { getAvailability, createAppointmentForPatient } from '../services/cliniko';
+
+function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
+  const vr = new twilio.twiml.VoiceResponse();
+  builder(vr);
+  const xml = vr.toString();
+  console.log('[VOICE][TwiML OUT]', xml);
+  res.type('text/xml').send(xml);
+}
+
+export function registerVoice(app: any) {
+
+  // Incoming call — greet and Gather
+  app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
+    try {
+      const params = (req as any).twilioParams;
+      const callSid = params.CallSid;
+      const from = params.From;
+      const to = params.To;
+      const tenant = await storage.getTenant('default');
+
+      twiml(res, (vr) => {
+        // Optional recording
+        if (env.CALL_RECORDING_ENABLED) {
+          vr.record({ recordingStatusCallback: abs('/api/voice/recording'), recordingStatusCallbackMethod: 'POST', trim: 'do-not-trim' } as any);
+        }
+
+        // Gather
+        const actionUrl = abs(`/api/voice/handle?route=start`);
+        const g = gather(vr, actionUrl);
+
+        // Greeting (SSML single line)
+        saySSML(g, `<speak>${tenant.greeting} <break time="300ms"/> How can I help you today?</speak>`);
+        g.pause({ length: 1 });
+
+        vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=timeout`));
+      });
+
+      // log call stub
+      await storage.logCall({ tenantId: tenant.id, callSid, from, to });
+    } catch (e) {
+      console.error('incoming error', e);
+      twiml(res, (vr) => { say(vr, 'Sorry, there was a problem. Goodbye'); });
+    }
+  });
+
+  // Recording callback (optional)
+  app.post('/api/voice/recording', async (req: Request, res: Response) => {
+    console.log('[RECORDING]', req.body);
+    res.status(204).end();
+  });
+
+  // Handle a step
+  app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
+    const p = (req as any).twilioParams;
+    const route = (req.query.route as string) || 'start';
+    const speech = (p.SpeechResult || '').trim();
+    const from = p.From;
+    const callSid = p.CallSid;
+    const tenant = await storage.getTenant('default');
+
+    const saySafe = (node: any, text: string) => {
+      const t = safeSpoken(text);
+      if (t) say(node, t);
+    };
+
+    try {
+      if (route === 'timeout') {
+        return twiml(res, (vr) => {
+          const g = gather(vr, abs('/api/voice/handle?route=start'));
+          saySafe(g, 'Sorry, I did not catch that. How can I help?');
+          g.pause({ length: 1 });
+        });
+      }
+
+      if (route === 'start') {
+        // Intent
+        const det = await detectIntent(speech || '');
+        // Identity capture gate
+        const id = await storage.getPhoneMap(from);
+        const hasName = !!id?.full_name || !!id?.fullName;
+        const hasEmail = !!id?.email;
+        if (env.IDENTITY_CAPTURE && (det.intent === 'book' || det.intent === 'reschedule') && (!hasName || !hasEmail)) {
+          return twiml(res, (vr) => {
+            const next = abs('/api/voice/wizard?step=1');
+            vr.redirect({ method: 'POST' }, next);
+          });
+        }
+
+        // Routing
+        switch (det.intent) {
+          case 'book': {
+            const g = gather(new twilio.twiml.VoiceResponse(), abs('/api/voice/handle?route=book-day'));
+            saySafe(g, 'Which day suits you?');
+            (res as any).type = 'text/xml';
+            const xml = (g as any).response.toString?.() || (g as any).toString?.();
+            console.log('[VOICE][TwiML OUT]', xml);
+            return res.type('text/xml').send(`<Response>${xml}</Response>`);
+          }
+          case 'reschedule': {
+            const g = gather(new twilio.twiml.VoiceResponse(), abs('/api/voice/handle?route=reschedule-day'));
+            saySafe(g, 'Okay, which day would you like instead?');
+            const xml = (g as any).response.toString?.() || (g as any).toString?.();
+            console.log('[VOICE][TwiML OUT]', xml);
+            return res.type('text/xml').send(`<Response>${xml}</Response>`);
+          }
+          case 'cancel': {
+            const g = gather(new twilio.twiml.VoiceResponse(), abs('/api/voice/handle?route=offer-reschedule'));
+            saySafe(g, 'Okay, would you like to reschedule instead of cancelling?');
+            const xml = (g as any).response.toString?.() || (g as any).toString?.();
+            console.log('[VOICE][TwiML OUT]', xml);
+            return res.type('text/xml').send(`<Response>${xml}</Response>`);
+          }
+          case 'human': {
+            // Create alert for receptionist
+            await storage.createAlert({ tenantId: tenant.id, reason: 'human_request', payload: { from, callSid } });
+            return twiml(res, (vr) => { saySafe(vr, 'No problem. A receptionist will call you back shortly. Goodbye'); });
+          }
+          case 'hours': {
+            return twiml(res, (vr) => { saySafe(vr, 'We are open weekdays nine to five. Goodbye'); });
+          }
+          default: {
+            const g = gather(new twilio.twiml.VoiceResponse(), abs('/api/voice/handle?route=start'));
+            saySafe(g, 'Sorry, could you say that another way?');
+            const xml = (g as any).response.toString?.() || (g as any).toString?.();
+            console.log('[VOICE][TwiML OUT]', xml);
+            return res.type('text/xml').send(`<Response>${xml}</Response>`);
+          }
+        }
+      }
+
+      // Booking flow (fast two-slot)
+      if (route === 'book-day' || route === 'reschedule-day') {
+        const g = gather(new twilio.twiml.VoiceResponse(), abs(`/api/voice/handle?route=${route.replace('day','part')}`));
+        saySafe(g, 'Morning or afternoon?');
+        const xml = (g as any).response.toString?.() || (g as any).toString?.();
+        console.log('[VOICE][TwiML OUT]', xml);
+        return res.type('text/xml').send(`<Response>${xml}</Response>`);
+      }
+
+      if (route === 'book-part' || route === 'reschedule-part') {
+        // Fetch availability now
+        const slots = await getAvailability();
+        // Offer 2 options
+        const g = gather(new twilio.twiml.VoiceResponse(), abs(`/api/voice/handle?route=${route.replace('part','choose')}`));
+        saySafe(g, 'I have two options. Option one or option two?');
+        const xml = (g as any).response.toString?.() || (g as any).toString?.();
+        console.log('[VOICE][TwiML OUT]', xml);
+        return res.type('text/xml').send(`<Response>${xml}</Response>`);
+      }
+
+      if (route === 'book-choose' || route === 'reschedule-choose') {
+        // Normally parse 'option one' vs 'option two' from speech. Here, pick first.
+        const slots = await getAvailability();
+        const chosen = slots[0];
+        const apt = await createAppointmentForPatient(from, {
+          practitionerId: chosen.practitionerId,
+          appointmentTypeId: chosen.appointmentTypeId,
+          startsAt: chosen.startIso,
+          notes: route.startsWith('reschedule') ? 'Rescheduled via EchoDesk' : 'Booked via EchoDesk'
+        });
+        return twiml(res, (vr) => {
+          say(vr, 'All set. We will send a confirmation by message. Goodbye');
+        });
+      }
+
+      if (route === 'offer-reschedule') {
+        const yes = /\b(yes|yeah|ok|sure|please)\b/i.test(speech);
+        if (yes) {
+          const g = gather(new twilio.twiml.VoiceResponse(), abs('/api/voice/handle?route=reschedule-day'));
+          say(g, 'Great. Which day works for you?');
+          const xml = (g as any).response.toString?.() || (g as any).toString?.();
+          console.log('[VOICE][TwiML OUT]', xml);
+          return res.type('text/xml').send(`<Response>${xml}</Response>`);
+        } else {
+          return twiml(res, (vr) => { say(vr, 'Okay, I have cancelled your booking. Goodbye'); });
+        }
+      }
+
+      // Fallback
+      return twiml(res, (vr) => { say(vr, 'Thanks for calling. Goodbye'); });
+    } catch (e) {
+      console.error('handle error', e);
+      return twiml(res, (vr) => { say(vr, 'Sorry, something went wrong. We will text you some options. Goodbye'); });
+    }
+  });
+
+  // Identity wizard (name -> email -> flow)
+  app.post('/api/voice/wizard', validateTwilioSignature, async (req: Request, res: Response) => {
+    const step = (req.query.step as string) || '1';
+    const p = (req as any).twilioParams;
+    const from = p.From;
+
+    if (step === '1') {
+      return twiml(res, (vr) => {
+        const g = gather(vr, abs('/api/voice/wizard-next?step=2'));
+        say(g, 'What is your full name?');
+        g.pause({ length: 1 });
+      });
+    }
+
+    // Should not hit directly
+    return twiml(res, (vr) => { say(vr, 'Okay'); });
+  });
+
+  app.post('/api/voice/wizard-next', validateTwilioSignature, async (req: Request, res: Response) => {
+    const step = (req.query.step as string) || '2';
+    const p = (req as any).twilioParams;
+    const from = p.From;
+    const speech = (p.SpeechResult || '').trim();
+
+    if (step === '2') {
+      // Save name
+      await storage.upsertPhoneMap({ phone: from, fullName: speech });
+      return twiml(res, (vr) => {
+        const g = gather(vr, abs('/api/voice/wizard-next?step=3'));
+        say(g, 'Thanks. What is the best email to send your confirmation to?');
+        g.pause({ length: 1 });
+      });
+    }
+
+    if (step === '3') {
+      await storage.upsertPhoneMap({ phone: from, email: speech });
+      // Proceed to booking start
+      return twiml(res, (vr) => {
+        const g = gather(vr, abs('/api/voice/handle?route=book-day'));
+        say(g, 'Great, which day suits you?');
+        g.pause({ length: 1 });
+      });
+    }
+
+    return twiml(res, (vr) => { say(vr, 'Okay'); });
+  });
+}
+
+
+---
+
+10) SMS route (STOP compliance + placeholder)
+
+src/routes/sms.ts
+
+import { Request, Response } from 'express';
+import twilio from 'twilio';
+import { validateTwilioSignature } from '../middlewares/twilioAuth';
+
+export function registerSMS(app: any) {
+  app.post('/api/sms/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
+    const p = (req as any).twilioParams;
+    const msg = (p.Body || '').trim().toUpperCase();
+    const twiml = new twilio.twiml.MessagingResponse();
+    if (msg === 'STOP') {
+      twiml.message('You have been unsubscribed.');
+    }
+    res.type('text/xml').send(twiml.toString());
+  });
+}
+
+
+---
+
+11) Dashboard API + UI (calls, alerts, tenants)
+
+src/routes/app.ts
+
+import { Request, Response } from 'express';
+import { storage } from '../services/storage';
+
+export function registerApp(app: any) {
+  app.get('/api/app/calls', async (_: Request, res: Response) => {
+    const t = await storage.getTenant('default');
+    const rows = await storage.listCalls(t.id);
+    res.json(rows);
+  });
+
+  app.get('/api/app/calls/:id', async (req: Request, res: Response) => {
+    const row = await storage.getCallById(Number(req.params.id));
+    res.json(row || {});
+  });
+
+  app.get('/api/app/alerts', async (_: Request, res: Response) => {
+    const t = await storage.getTenant('default');
+    const rows = await storage.listAlerts(t.id);
+    res.json(rows);
+  });
+
+  app.get('/api/app/tenant', async (_: Request, res: Response) => {
+    const t = await storage.getTenant('default');
+    res.json(t);
+  });
+
+  // Minimal UI pages (static)
+  app.get('/', (_: Request, res: Response) => res.sendFile('src/ui/views/index.html', { root: '.' }));
+  app.get('/calls', (_: Request, res: Response) => res.sendFile('src/ui/views/calls.html', { root: '.' }));
+  app.get('/alerts', (_: Request, res: Response) => res.sendFile('src/ui/views/alerts.html', { root: '.' }));
+  app.get('/tenants', (_: Request, res: Response) => res.sendFile('src/ui/views/tenants.html', { root: '.' }));
+}
+
+Static assets (simple placeholders):
+
+src/ui/public/styles.css — lightweight CSS for cards/list.
+
+src/ui/public/logo.png — we’ll replace with EchoDesk logo later.
+
+src/ui/views/*.html — minimal pages that fetch /api/app/* and render lists + click to details (calls).
+
+
+(Assistant: generate simple, clean HTML+JS that lists calls and alerts, shows a call detail with transcript/recording link if present, and displays the tenant clinic name + logo at top.)
+
+
+---
+
+12) Server & index
+
+src/server.ts
+
+import express from 'express';
+import bodyParser from 'body-parser';
+import { env } from './utils/env';
+import { storage } from './services/storage';
+import { registerVoice } from './routes/voice';
+import { registerSMS } from './routes/sms';
+import { registerApp } from './routes/app';
+import { BUILD } from './utils/version';
+import path from 'path';
+
+export async function createServer() {
+  const app = express();
+  app.use(bodyParser.urlencoded({ extended: false }));
+  app.use(bodyParser.json());
+  app.use('/public', express.static(path.join(process.cwd(),'src/ui/public')));
+
+  // health & diagnostics
+  app.get('/api/health', (_req,res)=>res.json({ ok: true, ts: new Date().toISOString() }));
+  app.get('/__version', (_req,res)=>res.json({
+    build: BUILD,
+    env: {
+      NODE_ENV: env.NODE_ENV,
+      keys_present: Object.fromEntries(Object.entries(env).map(([k,v])=>[k, v ? true : false]))
+    }
+  }));
+
+  registerVoice(app);
+  registerSMS(app);
+  registerApp(app);
+
+  // seed DB
+  await storage.seed();
+  return app;
+}
+
+src/index.ts
+
+import { createServer } from './server';
+import { env } from './utils/env';
+
+(async () => {
+  const app = await createServer();
+  const port = process.env.PORT || 5000;
+  const server = app.listen(port, () => {
+    console.log('[BOOT] EchoDesk up on', port, 'env=', env.NODE_ENV);
+  });
+})();
+
+
+---
+
+13) 60-second smoke test (before wiring Twilio)
+
+1. npm run build && npm start
+
+
+2. GET /api/health → { ok: true }
+
+
+3. GET /__version → shows keys present/missing; verify primary voice & flags present.
+
+
+4. POST /api/voice/incoming (use Twilio Request Inspector later) should return TwiML with:
+
+<Gather input="speech" language="en-AU" timeout="5" speechTimeout="auto" actionOnEmptyResult="true" bargeIn="true">
+
+<Say voice="Polly.Nicole-Neural"> greeting
+
+<Pause length="1"/> (integer)
+
+<Redirect> to .../api/voice/handle?route=timeout
+
+
+
+5. POST /api/voice/handle?route=start with SpeechResult=book an appointment returns a Gather asking day.
+
+
+6. Ensure console logs show [VOICE][TwiML OUT] ... and no “Invalid text” (13520) or XML warnings (12200).
+
+
+
+
+---
+
+14) Twilio Console wiring (AU latency)
+
+Move your phone number to AU1 region (Inbound Processing).
+
+Set Voice webhook (AU1 number):
+
+Request URL (A call comes in): POST https://YOUR_AU1_URL/api/voice/incoming
+
+
+Set SMS webhook if desired: POST https://YOUR_AU1_URL/api/sms/incoming
+
+Under Voice, enable call recording if you prefer Twilio-side; or leave our in-app record callback on.
+
+
+
+---
+
+15) Branding & per-clinic greeting
+
+Update tenants row (/api/app/tenant later can drive a settings UI):
+
+clinic_name, greeting.
+
+
+Replace src/ui/public/logo.png with your EchoDesk logo.
+
+Header of UI pages should read “EchoDesk — {clinic_name}” and display logo.
+
+
+
+---
+
+16) Notes to prevent old failures
+
+Do not put 0.5 in <Pause length>; must be integer.
+
+No angle brackets in plain <Say>; use saySSML wrapper for SSML.
+
+Never speak control tokens; sanitize all text with safeSpoken.
+
+Always return valid TwiML even on errors (no throws that abort the webhook).
+
+Identity capture runs before calling Cliniko APIs.
+
+Cliniko IDs are text.
+
+One PRIMARY_VOICE constant (Polly.Nicole-Neural) at top of util; don’t hardcode elsewhere.
+
+AU1 routing + short prompts = minimal latency.
+
+
+
+---
+
+17) Future hooks (placeholders left ready)
+
+services/cliniko.ts: fill real endpoints for practitioners, appointment types, slots, create appointment (per-tenant).
+
+services/intent.ts: swap regex with OpenAI GPT-4o-mini when OpenAI keys are added (same interface).
+
+Add /api/app/alerts UI interactivity (mark complete).
+
+Optional: transcription store into call_logs.transcript.
+
+
+
+---
+
+Build everything exactly as above.
+When done, print the file tree created, and start the server. Then I’ll point Twilio AU1 webhooks to /api/voice/incoming and test calls.
