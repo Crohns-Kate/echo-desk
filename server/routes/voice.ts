@@ -3,10 +3,8 @@ import twilio from 'twilio';
 import { validateTwilioSignature } from '../middlewares/twilioAuth';
 import { env } from '../utils/env';
 import { storage } from '../storage';
-import { say, saySSML, gather } from '../utils/say';
-import { safeSpoken } from '../utils/tts-guard';
 import { abs } from '../utils/url';
-import { saySafe } from '../utils/voice-constants';
+import { say } from '../utils/voice-constants';
 import { detectIntent } from '../services/intent';
 import { 
   getAvailability, 
@@ -79,20 +77,18 @@ export function registerVoice(app: Express) {
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
-      // Gather for speech
+      // Gather for speech - NO language, NO bargeIn on Gather
       const g = vr.gather({
         input: ['speech'],
-        language: 'en-AU',
         timeout: 5,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
-        bargeIn: true,
         action: handleUrl,
         method: 'POST'
       });
 
-      // SHORT, PLAIN, PUNCTUATION-FREE greeting using saySafe
-      saySafe(g, "Hello and welcome to your clinic how can I help you today");
+      // bargeIn goes on Say, not Gather
+      say(g, "Hello and welcome to your clinic how can I help you today", { bargeIn: true });
       g.pause({ length: 1 });
 
       // Safety net if no input
@@ -119,7 +115,7 @@ export function registerVoice(app: Express) {
     } catch (err) {
       console.error('[VOICE][INCOMING ERROR]', err);
       const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, 'Sorry there was a problem goodbye');
+      say(vr, 'Sorry there was a problem goodbye');
       res.type('text/xml').send(vr.toString());
     }
   });
@@ -176,7 +172,7 @@ export function registerVoice(app: Express) {
       const tenant = await storage.getTenant('default');
 
       if (!tenant) {
-        saySafe(vr, 'Service unavailable goodbye');
+        say(vr, 'Service unavailable goodbye');
         const xml = vr.toString();
         console.log('[VOICE][HANDLE OUT no-tenant]', xml);
         return res.type('text/xml').send(xml);
@@ -186,15 +182,13 @@ export function registerVoice(app: Express) {
       if (route === 'timeout') {
         const g = vr.gather({
           input: ['speech'],
-          language: 'en-AU',
           timeout: 5,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          bargeIn: true,
           action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
           method: 'POST'
         });
-        saySafe(g, 'Sorry I did not catch that please say what you need like book an appointment or reschedule');
+        say(g, 'Sorry I did not catch that please say what you need like book an appointment or reschedule', { bargeIn: true });
         g.pause({ length: 1 });
         
         const xml = vr.toString();
@@ -257,12 +251,19 @@ export function registerVoice(app: Express) {
         switch (det.intent) {
           case 'book':
             {
-              const assistantMsg = 'Which day suits you?';
+              const assistantMsg = 'Which day suits you';
               await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
               return twiml(res, (vr) => {
-                const g = gather(vr, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
-                saySafe(g, assistantMsg);
+                const g = vr.gather({
+                  input: ['speech'],
+                  timeout: 5,
+                  speechTimeout: 'auto',
+                  actionOnEmptyResult: true,
+                  action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`),
+                  method: 'POST'
+                });
+                say(g, assistantMsg, { bargeIn: true });
               });
             }
           
@@ -270,11 +271,11 @@ export function registerVoice(app: Express) {
             {
               const appointments = await getPatientAppointments(from);
               if (appointments.length === 0) {
-                const assistantMsg = 'I could not find any upcoming appointments. Would you like to book a new one? Call back when ready. Goodbye';
+                const assistantMsg = 'I could not find any upcoming appointments Would you like to book a new one Call back when ready Goodbye';
                 await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
                 
                 return twiml(res, (vr) => {
-                  saySafe(vr, assistantMsg);
+                  say(vr, assistantMsg);
                 });
               }
               
@@ -290,11 +291,11 @@ export function registerVoice(app: Express) {
             {
               const appointments = await getPatientAppointments(from);
               if (appointments.length === 0) {
-                const assistantMsg = 'I could not find any upcoming appointments. Goodbye';
+                const assistantMsg = 'I could not find any upcoming appointments Goodbye';
                 await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
                 
                 return twiml(res, (vr) => {
-                  saySafe(vr, assistantMsg);
+                  say(vr, assistantMsg);
                 });
               }
               
@@ -331,13 +332,13 @@ export function registerVoice(app: Express) {
               }
               
               return twiml(res, (vr) => { 
-                saySafe(vr, assistantMsg); 
+                say(vr, assistantMsg); 
               });
             }
           
           case 'hours':
             {
-              const assistantMsg = 'We are open weekdays nine to five. Goodbye';
+              const assistantMsg = 'We are open weekdays nine to five Goodbye';
               await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
               if (callSid) {
@@ -351,18 +352,25 @@ export function registerVoice(app: Express) {
               }
               
               return twiml(res, (vr) => { 
-                saySafe(vr, assistantMsg); 
+                say(vr, assistantMsg); 
               });
             }
           
           default:
             {
-              const assistantMsg = 'Sorry, could you say that another way?';
+              const assistantMsg = 'Sorry could you say that another way';
               await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
               return twiml(res, (vr) => {
-                const g = gather(vr, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-                saySafe(g, assistantMsg);
+                const g = vr.gather({
+                  input: ['speech'],
+                  timeout: 5,
+                  speechTimeout: 'auto',
+                  actionOnEmptyResult: true,
+                  action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+                  method: 'POST'
+                });
+                say(g, assistantMsg, { bargeIn: true });
               });
             }
         }
@@ -373,8 +381,15 @@ export function registerVoice(app: Express) {
         const aptId = req.query.aptId as string | undefined;
         const aptIdParam = aptId ? `&aptId=${aptId}` : '';
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('day','part')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`));
-          saySafe(g, 'Morning or afternoon?');
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=${route.replace('day','part')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+            method: 'POST'
+          });
+          say(g, 'Morning or afternoon', { bargeIn: true });
         });
       }
 
@@ -384,8 +399,15 @@ export function registerVoice(app: Express) {
         const aptIdParam = aptId ? `&aptId=${aptId}` : '';
         const slots = await getAvailability();
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`));
-          saySafe(g, 'I have two options. Option one or option two?');
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+            method: 'POST'
+          });
+          say(g, 'I have two options Option one or option two', { bargeIn: true });
         });
       }
 
@@ -458,7 +480,7 @@ export function registerVoice(app: Express) {
         
         if (!apt) {
           return twiml(res, (vr) => {
-            saySafe(vr, 'No appointments found. Goodbye');
+            say(vr, 'No appointments found Goodbye');
           });
         }
         
@@ -469,8 +491,15 @@ export function registerVoice(app: Express) {
         });
         
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`));
-          saySafe(g, `I found your appointment on ${aptDate}. Would you like to reschedule it?`);
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`),
+            method: 'POST'
+          });
+          say(g, `I found your appointment on ${aptDate} Would you like to reschedule it`, { bargeIn: true });
         });
       }
       
@@ -481,12 +510,19 @@ export function registerVoice(app: Express) {
         
         if (yes) {
           return twiml(res, (vr) => {
-            const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
-            saySafe(g, 'Great. Which day works for you?');
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
+              method: 'POST'
+            });
+            say(g, 'Great Which day works for you', { bargeIn: true });
           });
         } else {
           return twiml(res, (vr) => {
-            saySafe(vr, 'Okay, your appointment remains unchanged. Goodbye');
+            say(vr, 'Okay your appointment remains unchanged Goodbye');
           });
         }
       }
@@ -498,7 +534,7 @@ export function registerVoice(app: Express) {
         
         if (!apt) {
           return twiml(res, (vr) => {
-            saySafe(vr, 'No appointments found. Goodbye');
+            say(vr, 'No appointments found Goodbye');
           });
         }
         
@@ -509,8 +545,15 @@ export function registerVoice(app: Express) {
         });
         
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`));
-          saySafe(g, `I found your appointment on ${aptDate}. Would you like to cancel it or reschedule instead?`);
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`),
+            method: 'POST'
+          });
+          say(g, `I found your appointment on ${aptDate} Would you like to cancel it or reschedule instead`, { bargeIn: true });
         });
       }
       
@@ -540,17 +583,31 @@ export function registerVoice(app: Express) {
           });
           
           return twiml(res, (vr) => {
-            saySafe(vr, 'Your appointment has been cancelled. Goodbye');
+            say(vr, 'Your appointment has been cancelled Goodbye');
           });
         } else if (reschedule) {
           return twiml(res, (vr) => {
-            const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
-            saySafe(g, 'Great. Which day works for you?');
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
+              method: 'POST'
+            });
+            say(g, 'Great Which day works for you', { bargeIn: true });
           });
         } else {
           return twiml(res, (vr) => {
-            const g = gather(vr, abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
-            saySafe(g, 'Please say cancel or reschedule');
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
+              method: 'POST'
+            });
+            say(g, 'Please say cancel or reschedule', { bargeIn: true });
           });
         }
       }
@@ -562,7 +619,7 @@ export function registerVoice(app: Express) {
 
     } catch (err) {
       console.error('[VOICE][HANDLE ERROR]', err);
-      saySafe(vr, 'Sorry there was a problem goodbye');
+      say(vr, 'Sorry there was a problem goodbye');
       const xml = vr.toString();
       console.log('[VOICE][HANDLE OUT error]', xml);
       return res.type('text/xml').send(xml);
@@ -580,20 +637,22 @@ export function registerVoice(app: Express) {
     const tenant = await storage.getTenant('default');
 
     if (!tenant) {
-      return twiml(res, (vr) => { say(vr, 'Service unavailable. Goodbye'); });
+      return twiml(res, (vr) => { say(vr, 'Service unavailable Goodbye'); });
     }
-
-    const saySafe = (node: any, text: string) => {
-      const t = safeSpoken(text);
-      if (t) say(node, t);
-    };
 
     try {
       // Step 1: Ask for name
       if (step === 1) {
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/wizard?step=2&callSid=${encodeURIComponent(callSid)}&intent=${intent}`));
-          saySafe(g, 'Before we continue, may I have your full name please?');
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/wizard?step=2&callSid=${encodeURIComponent(callSid)}&intent=${intent}`),
+            method: 'POST'
+          });
+          say(g, 'Before we continue may I have your full name please', { bargeIn: true });
         });
       }
 
@@ -609,8 +668,15 @@ export function registerVoice(app: Express) {
         });
 
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/wizard?step=3&callSid=${encodeURIComponent(callSid)}&intent=${intent}`));
-          saySafe(g, 'Thank you. And your email address?');
+          const g = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/wizard?step=3&callSid=${encodeURIComponent(callSid)}&intent=${intent}`),
+            method: 'POST'
+          });
+          say(g, 'Thank you And your email address', { bargeIn: true });
         });
       }
 
@@ -655,7 +721,7 @@ export function registerVoice(app: Express) {
     } catch (err) {
       console.error('[VOICE][WIZARD ERROR]', err);
       const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, 'Sorry there was a problem goodbye');
+      say(vr, 'Sorry there was a problem goodbye');
       const xml = vr.toString();
       console.log('[VOICE][WIZARD OUT error]', xml);
       return res.type('text/xml').send(xml);

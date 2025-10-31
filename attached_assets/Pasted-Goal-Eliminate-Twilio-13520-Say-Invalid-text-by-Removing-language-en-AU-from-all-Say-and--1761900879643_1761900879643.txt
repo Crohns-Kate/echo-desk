@@ -1,0 +1,108 @@
+Goal: Eliminate Twilio 13520 “Say: Invalid text” by:
+- Removing language="en-AU" from all <Say> and <Gather> when using Polly.
+- Removing bargeIn from <Gather>.
+- If we want barge-in, put bargeIn="true" on <Say>.
+- Keep greeting plain text (no SSML) and minimal punctuation.
+
+Make these exact edits:
+
+1) Create/Update utils/voice.ts
+--------------------------------
+export const PRIMARY_VOICE = "Polly.Nicole-Neural";
+export const FALLBACK_VOICE = "alice";
+
+// Clean text so Polly doesn't choke
+export function ttsClean(s: string | null | undefined) {
+  if (!s) return "";
+  return String(s)
+    .replace(/<[^>]*>/g, " ")       // strip any SSML
+    .replace(/[^\x20-\x7E]/g, " ")  // ASCII only
+    .replace(/[“”‘’]/g, '"')
+    .replace(/[?!,:;()]/g, "")      // keep it simple
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function say(node: any, text: string, opts: { bargeIn?: boolean } = {}) {
+  const cleaned = ttsClean(text);
+  if (!cleaned) return;
+  try {
+    node.say({ voice: PRIMARY_VOICE, ...(opts.bargeIn ? { bargeIn: true } : {}) }, cleaned);
+  } catch {
+    node.say({ voice: FALLBACK_VOICE, ...(opts.bargeIn ? { bargeIn: true } : {}) }, cleaned);
+  }
+}
+
+2) Update the incoming-call handler that builds the greeting TwiML
+   (e.g., routes/voice-incoming.ts or wherever /api/voice/incoming is defined)
+
+- DO NOT set language on <Say> or <Gather>.
+- DO NOT set bargeIn on <Gather>.
+- Use say(..., { bargeIn: true }) for the greeting line.
+
+--------------------------------
+import express from "express";
+import twilio from "twilio";
+import { say } from "../utils/voice";
+
+const router = express.Router();
+
+router.post("/api/voice/incoming", async (req, res) => {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const vr = new VoiceResponse();
+
+  const callSid = req.body.CallSid || "UNKNOWN";
+  const base = process.env.PUBLIC_BASE_URL!;
+  const handleUrl = `${base}/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`;
+  const timeoutUrl = `${base}/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`;
+
+  const g = vr.gather({
+    input: ["speech"],
+    timeout: 5,
+    speechTimeout: "auto",
+    actionOnEmptyResult: true,
+    action: handleUrl,
+    method: "POST",
+  });
+
+  // barge-in belongs on <Say>, not <Gather>
+  say(g, "Hello and welcome to your clinic how can I help you today", { bargeIn: true });
+  g.pause({ length: 1 });
+
+  vr.redirect({ method: "POST" }, timeoutUrl);
+
+  const xml = vr.toString();
+  console.log("[VOICE][TwiML OUT]", xml);
+  res.type("text/xml").send(xml);
+});
+
+export default router;
+
+3) Update any other handlers that render TwiML (e.g., /api/voice/handle, /api/voice/wizard)
+   - Remove language=... from every node.say(...)
+   - Remove bargeIn from every <Gather>
+   - Use say(node, "text", { bargeIn: true }) where you want interruptions
+
+Example inside /api/voice/handle:
+--------------------------------
+const g = vr.gather({
+  input: ["speech"],
+  timeout: 5,
+  speechTimeout: "auto",
+  actionOnEmptyResult: true,
+  action: `${base}/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`,
+  method: "POST",
+});
+say(g, "Please say book an appointment reschedule cancel or ask our hours", { bargeIn: true });
+g.pause({ length: 1 });
+
+4) Global safety sweep (automated find/replace):
+- Replace all occurrences of `language="en-AU"` with nothing in TwiML creation code.
+- Remove any `bargeIn: true` on objects passed to vr.gather / g.gather.
+- Ensure ALL node.say calls set ONLY { voice: "Polly.Nicole-Neural" } (plus optional bargeIn).
+
+5) Redeploy, call your number, and verify the Request Inspector TwiML body does NOT contain:
+   - language="en-AU"
+   - bargeIn="true" on <Gather>
+   It SHOULD show:
+   <Say voice="Polly.Nicole-Neural" bargeIn="true">Hello and welcome ...</Say>
