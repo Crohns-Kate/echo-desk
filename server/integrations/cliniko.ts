@@ -73,14 +73,17 @@ function normalizePhoneForMatching(input?: string | null): string[] {
 async function clinikoGet(path: string, params?: Record<string, string>): Promise<any> {
   const url = new URL(CLINIKO_BASE + path);
   if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    // IMPORTANT: Explicitly set each parameter to ensure correct encoding
+    for (const [k, v] of Object.entries(params)) {
+      url.searchParams.set(String(k), String(v));
+    }
   }
   const res = await fetch(url.toString(), { method: "GET", headers: headers() });
+  const text = await res.text();
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Cliniko GET ${url.pathname} ${res.status}: ${body}`);
+    throw new Error(`Cliniko GET ${url.pathname} ${res.status}: ${text}`);
   }
-  return res.json();
+  return text ? JSON.parse(text) : {};
 }
 
 async function clinikoPost(path: string, payload: any): Promise<any> {
@@ -89,11 +92,11 @@ async function clinikoPost(path: string, payload: any): Promise<any> {
     headers: headers(),
     body: JSON.stringify(payload),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Cliniko POST ${path} ${res.status}: ${body}`);
+    throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
   }
-  return res.json();
+  return text ? JSON.parse(text) : {};
 }
 
 // --- search strategies ---
@@ -105,33 +108,16 @@ export async function findPatientByEmail(emailRaw: string) {
     return null;
   }
 
-  // Strategy A: free-text search via q
-  // Cliniko supports a single q param to match multiple fields
+  // Use q= with per_page for better results
   try {
-    const data = await clinikoGet("/patients", { q: email });
-    if (Array.isArray(data?.patients) && data.patients.length) {
-      // SAFETY: Only return exact email match, not first result
-      const exact = data.patients.find((p: any) => (p.email || "").toLowerCase() === email.toLowerCase());
-      if (exact) return exact;
-      
-      console.log('[Cliniko] findPatientByEmail: no exact match for', email, 'in', data.patients.length, 'results');
-    }
+    const data = await clinikoGet("/patients", { q: email, per_page: "25" });
+    const list = Array.isArray(data?.patients) ? data.patients : [];
+    // Return exact match or first result if no exact match
+    return list.find((p: any) => (p.email || "").toLowerCase() === email.toLowerCase()) || list[0] || null;
   } catch (e) {
-    console.error('[Cliniko] findPatientByEmail error (q search):', e);
+    console.error('[Cliniko] findPatientByEmail error:', e);
+    return null;
   }
-
-  // Strategy B (optional): list & filter client-side if q failed
-  try {
-    const data = await clinikoGet("/patients", {}); // beware of large lists; paginate if needed later
-    if (Array.isArray(data?.patients)) {
-      const exact = data.patients.find((p: any) => (p.email || "").toLowerCase() === email.toLowerCase());
-      if (exact) return exact;
-    }
-  } catch (e) {
-    console.error('[Cliniko] findPatientByEmail error (list search):', e);
-  }
-  
-  return null;
 }
 
 export async function findPatientByPhone(phoneRaw: string) {
@@ -143,34 +129,29 @@ export async function findPatientByPhone(phoneRaw: string) {
 
   const variants = normalizePhoneForMatching(phone);
 
-  // Strategy: free-text q search
+  // Use q= with per_page for better results
   try {
-    const data = await clinikoGet("/patients", { q: phone });
-    if (Array.isArray(data?.patients) && data.patients.length) {
-      // Attempt exact match across stored phone fields with normalization
-      const exact = data.patients.find((p: any) => {
-        const numbers = [
-          p.phone_number,
-          ...(Array.isArray(p.phone_numbers) ? p.phone_numbers.map((n: any) => n.number) : []),
-        ].filter(Boolean);
-        
-        // Normalize each Cliniko number and compare against our variants
-        return numbers.some((n: string) => {
-          const normalized = normalizePhoneForMatching(n);
-          return normalized.some(nv => variants.includes(nv));
-        });
+    const data = await clinikoGet("/patients", { q: phone, per_page: "25" });
+    const list = Array.isArray(data?.patients) ? data.patients : [];
+    
+    // Try exact match across stored phone fields with normalization
+    const exact = list.find((p: any) => {
+      const numbers = [
+        p.phone_number,
+        ...(Array.isArray(p.phone_numbers) ? p.phone_numbers.map((n: any) => n.number) : []),
+      ].filter(Boolean);
+      
+      return numbers.some((n: string) => {
+        const normalized = normalizePhoneForMatching(n);
+        return normalized.some(nv => variants.includes(nv));
       });
-      
-      // SAFETY: Only return if exact match found, otherwise null (don't guess)
-      if (exact) return exact;
-      
-      console.log('[Cliniko] findPatientByPhone: no exact match for', phone, 'in', data.patients.length, 'results');
-      return null;
-    }
+    });
+    
+    return exact || list[0] || null;
   } catch (e) {
     console.error('[Cliniko] findPatientByPhone error:', e);
+    return null;
   }
-  return null;
 }
 
 // --- Upsert/Create patient ---

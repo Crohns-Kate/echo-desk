@@ -140,7 +140,7 @@ export { sanitizeEmail, sanitizePhoneE164AU };
 export async function getAvailability(opts?: {
   dayIso?: string;
   part?: 'early' | 'late' | 'morning' | 'afternoon';
-}): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string }>> {
+}): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string; businessId: string; duration: number }>> {
   try {
     const businesses = await getBusinesses();
     const business = businesses[0];
@@ -161,10 +161,22 @@ export async function getAvailability(opts?: {
     
     const appointmentType = appointmentTypes[0];
     
-    const from = opts?.dayIso || new Date().toISOString().split('T')[0];
-    const toDate = new Date(from);
-    toDate.setDate(toDate.getDate() + 7);
-    const to = toDate.toISOString().split('T')[0];
+    // CRITICAL FIX: Clamp date window to ≤7 days and ensure future dates
+    const now = new Date();
+    const startDate = opts?.dayIso ? new Date(opts.dayIso) : now;
+    
+    // Ensure start date is not in the past
+    if (startDate < now) {
+      startDate.setTime(now.getTime());
+    }
+    
+    // Clamp to max 7 days from start
+    const endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + 7);
+    
+    // Use YYYY-MM-DD format (safer than full ISO for Cliniko)
+    const from = startDate.toISOString().split('T')[0];
+    const to = endDate.toISOString().split('T')[0];
     
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
       `/businesses/${business.id}/practitioners/${practitioner.id}/appointment_types/${appointmentType.id}/available_times?from=${from}&to=${to}&per_page=20`
@@ -189,7 +201,9 @@ export async function getAvailability(opts?: {
     return filtered.slice(0, 5).map(t => ({
       startIso: t.appointment_start,
       practitionerId: practitioner.id,
-      appointmentTypeId: appointmentType.id
+      appointmentTypeId: appointmentType.id,
+      businessId: business.id,
+      duration: appointmentType.duration_in_minutes
     }));
   } catch (e) {
     console.error('[Cliniko] getAvailability error', e);
@@ -198,8 +212,8 @@ export async function getAvailability(opts?: {
     const in2h = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
     
     return [
-      { startIso: in1h, practitionerId: '1', appointmentTypeId: '1' },
-      { startIso: in2h, practitionerId: '1', appointmentTypeId: '1' },
+      { startIso: in1h, practitionerId: '1', appointmentTypeId: '1', businessId: '1', duration: 30 },
+      { startIso: in2h, practitionerId: '1', appointmentTypeId: '1', businessId: '1', duration: 30 },
     ];
   }
 }
@@ -208,6 +222,8 @@ export async function createAppointmentForPatient(phone: string, payload: {
   practitionerId: string;
   appointmentTypeId: string;
   startsAt: string;
+  businessId?: string;
+  duration?: number;
   notes?: string;
   fullName?: string;
   email?: string;
@@ -219,11 +235,35 @@ export async function createAppointmentForPatient(phone: string, payload: {
       email: payload.email
     });
     
+    // Get business ID if not provided
+    let businessId = payload.businessId;
+    if (!businessId) {
+      const businesses = await getBusinesses();
+      businessId = businesses[0]?.id;
+      if (!businessId) {
+        throw new Error('No business found in Cliniko account');
+      }
+    }
+    
+    // Get appointment type duration if not provided
+    let duration = payload.duration;
+    if (!duration) {
+      const appointmentTypes = await getAppointmentTypes(payload.practitionerId);
+      const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
+      duration = appointmentType?.duration_in_minutes || 30; // default 30 min
+    }
+    
+    // CRITICAL FIX: Compute ends_at from starts_at + duration
+    const startsAt = new Date(payload.startsAt);
+    const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
+    
     const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
+      business_id: businessId,
       patient_id: patient.id,
       practitioner_id: payload.practitionerId,
       appointment_type_id: payload.appointmentTypeId,
       starts_at: payload.startsAt,
+      ends_at: endsAt.toISOString(),
       notes: payload.notes || null
     });
     

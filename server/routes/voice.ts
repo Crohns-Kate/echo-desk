@@ -433,6 +433,8 @@ export function registerVoice(app: Express) {
             practitionerId: chosen.practitionerId,
             appointmentTypeId: chosen.appointmentTypeId,
             startsAt: chosen.startIso,
+            businessId: chosen.businessId,
+            duration: chosen.duration,
             notes: route.startsWith('reschedule') ? 'Rescheduled via EchoDesk' : 'Booked via EchoDesk',
             fullName: phoneData?.fullName || undefined,
             email: phoneData?.email || undefined
