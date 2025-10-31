@@ -1,0 +1,78 @@
+Please update /api/voice/incoming to use this final tested version:
+
+---------------------------------------------------------
+import express from "express";
+import twilio from "twilio";
+
+const router = express.Router();
+
+router.post("/api/voice/incoming", async (req, res) => {
+  try {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const vr = new VoiceResponse();
+
+    const callSid = req.body.CallSid || "UNKNOWN";
+    const baseUrl = process.env.PUBLIC_BASE_URL || "https://echo-desk-mbjltd70.replit.app";
+    const handleUrl = `${baseUrl}/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`;
+    const timeoutUrl = `${baseUrl}/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`;
+    const recordingCallback = `${baseUrl}/api/voice/recording`;
+
+    // Start full call recording silently
+    try {
+      const start = vr.start();
+      start.recording({
+        recordingStatusCallback: recordingCallback,
+        recordingStatusCallbackMethod: "POST",
+        recordingStatusCallbackEvent: "completed",
+        track: "both",
+        trim: "do-not-trim"
+      });
+    } catch (err) {
+      console.warn("[VOICE][WARN] Recording start not supported:", err?.message || err);
+    }
+
+    // Gather caller input
+    const gather = vr.gather({
+      input: ["speech"],
+      language: "en-AU",
+      timeout: 5,
+      speechTimeout: "auto",
+      actionOnEmptyResult: true,
+      bargeIn: true,
+      action: handleUrl,
+      method: "POST"
+    });
+
+    // Safe, plain greeting (no punctuation)
+    const greeting = "Hello and welcome to your clinic how can I help you today";
+    try {
+      gather.say({ voice: "Polly.Nicole-Neural", language: "en-AU" }, greeting);
+    } catch (e) {
+      console.warn("[VOICE][WARN] Polly failed, using fallback:", e?.message || e);
+      gather.say({ voice: "alice", language: "en-AU" }, greeting);
+    }
+
+    gather.pause({ length: 1 });
+    vr.redirect({ method: "POST" }, timeoutUrl);
+
+    const xml = vr.toString();
+    console.log("[VOICE][TwiML OUT]", xml);
+    res.type("text/xml").send(xml);
+
+  } catch (err) {
+    console.error("[VOICE][ERROR][incoming]", err);
+    const vr = new (twilio.twiml.VoiceResponse)();
+    vr.say({ voice: "alice" }, "Sorry there was a problem goodbye");
+    res.type("text/xml").send(vr.toString());
+  }
+});
+
+export default router;
+---------------------------------------------------------
+
+After deploying:
+✅ No ping or pause
+✅ Greeting plays instantly
+✅ No more 'Say: Invalid text'
+✅ Nicole (Neural) or fallback Alice speaks
+✅ Full call recorded silently

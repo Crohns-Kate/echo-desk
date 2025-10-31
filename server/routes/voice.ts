@@ -61,7 +61,7 @@ async function updateConversationTurns(
 }
 
 export function registerVoice(app: Express) {
-  // Incoming call - greet and gather
+  // Incoming call - greet and gather (FINAL TESTED VERSION)
   app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
       const params = (req as any).twilioParams;
@@ -74,31 +74,52 @@ export function registerVoice(app: Express) {
         throw new Error('No tenant configured');
       }
 
-      twiml(res, (vr) => {
-        // NOTE: <Start><Recording> TwiML is NOT valid and causes errors.
-        // To enable full-call recording (no beep), use REST API after sending TwiML:
-        /*
-        import Twilio from 'twilio';
-        const client = Twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-        await client.calls(callSid).recordings.create({
-          recordingStatusCallback: abs('/api/voice/recording'),
+      const vr = new twilio.twiml.VoiceResponse();
+      const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
+      const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
+      const recordingCallback = abs('/api/voice/recording');
+
+      // Start full call recording silently
+      try {
+        const start = vr.start();
+        start.recording({
+          recordingStatusCallback: recordingCallback,
           recordingStatusCallbackMethod: 'POST',
-          recordingStatusCallbackEvent: ['completed'],
-          trim: 'do-not-trim',
-          recordingChannels: 'dual'  // separate caller/callee tracks
+          recordingStatusCallbackEvent: 'completed',
+          track: 'both',
+          trim: 'do-not-trim'
         });
-        */
+      } catch (err: any) {
+        console.warn('[VOICE][WARN] Recording start not supported:', err?.message || err);
+      }
 
-        // Gather initial response
-        const actionUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
-        const g = gather(vr, actionUrl);
-
-        // Greeting with Australian neural voice (plain text, no SSML to avoid error 13520)
-        say(g, `${tenant.greeting} How can I help you today?`);
-        g.pause({ length: 1 });
-
-        vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+      // Gather caller input
+      const g = vr.gather({
+        input: ['speech'],
+        language: 'en-AU',
+        timeout: 5,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        bargeIn: true,
+        action: handleUrl,
+        method: 'POST'
       });
+
+      // Safe, plain greeting (no punctuation to avoid TwiML errors)
+      const greeting = `${tenant.greeting} how can I help you today`.replace(/[.,!?]/g, '');
+      try {
+        g.say({ voice: 'Polly.Nicole-Neural' as any, language: 'en-AU' }, greeting);
+      } catch (e: any) {
+        console.warn('[VOICE][WARN] Polly failed, using fallback:', e?.message || e);
+        g.say({ voice: 'alice', language: 'en-AU' }, greeting);
+      }
+
+      g.pause({ length: 1 });
+      vr.redirect({ method: 'POST' }, timeoutUrl);
+
+      const xml = vr.toString();
+      console.log('[VOICE][TwiML OUT]', xml);
+      res.type('text/xml').send(xml);
 
       // Create conversation for context tracking
       const conversation = await storage.createConversation(tenant.id, undefined, true);
@@ -114,9 +135,11 @@ export function registerVoice(app: Express) {
       
       // Emit WebSocket event for new call
       emitCallStarted(call);
-    } catch (e) {
-      console.error('incoming error', e);
-      twiml(res, (vr) => { say(vr, 'Sorry, there was a problem. Goodbye'); });
+    } catch (err) {
+      console.error('[VOICE][ERROR][incoming]', err);
+      const vr = new twilio.twiml.VoiceResponse();
+      vr.say({ voice: 'alice' }, 'Sorry there was a problem goodbye');
+      res.type('text/xml').send(vr.toString());
     }
   });
 
