@@ -1,0 +1,161 @@
+You are my build agent. Do all steps hands-free, no questions.
+
+GOAL
+1) Verify Cliniko connectivity (region = au4).
+2) Discover ACTIVE IDs for Business, Practitioner, and Appointment Types.
+3) Save IDs into Secrets:
+   - CLINIKO_REGION=au4
+   - CLINIKO_BUSINESS_ID=...
+   - CLINIKO_PRACTITIONER_ID=...
+   - CLINIKO_APPT_TYPE_ID=...
+4) Patch server code to use correct Cliniko filters and valid availability dates (7-day window).
+5) Do not change anything unrelated.
+
+CONTEXT
+- CLINIKO_API_KEY is already present in Secrets.
+- Base URL should be: https://api.au4.cliniko.com/v1
+- Use Node’s built-in fetch (no node-fetch).
+- Patients search must use filter params (email=..., phone_number=...), not q[...] nor raw tokens.
+- Availability endpoint must respect Cliniko’s 7-day limit and date format (YYYY-MM-DD).
+
+TASKS
+
+A) Create a one-off probe script and run it
+1. Create a new file at project root: cliniko-check.js
+2. Put this exact code in cliniko-check.js (use built-in fetch; no imports):
+
+// cliniko-check.js
+const API_KEY = process.env.CLINIKO_API_KEY;
+const REGION = process.env.CLINIKO_REGION || "au4";
+const BASE = `https://api.${REGION}.cliniko.com/v1`;
+
+if (!API_KEY) {
+  console.error("❌ Missing CLINIKO_API_KEY in Secrets.");
+  process.exit(1);
+}
+
+async function clinikoFetch(endpoint) {
+  const url = `${BASE}${endpoint}`;
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `Basic ${Buffer.from(API_KEY + ":").toString("base64")}`,
+      "Accept": "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    console.error(`❌ ${endpoint} → ${res.status} ${text}`);
+    return null;
+  }
+  return JSON.parse(text);
+}
+
+(async () => {
+  console.log("🔍 Checking Cliniko API connectivity…");
+
+  const businesses = await clinikoFetch("/businesses");
+  const practitioners = await clinikoFetch("/practitioners");
+  const apptTypes = await clinikoFetch("/appointment_types?per_page=100");
+
+  if (!businesses || !practitioners || !apptTypes) {
+    console.log("⚠️ One or more endpoints failed — check API key or region.");
+    process.exit(1);
+  }
+
+  const activeBiz = (businesses.businesses || []).find(b => b.active);
+  const activePrac = (practitioners.practitioners || []).find(p => p.active);
+  const activeType = (apptTypes.appointment_types || []).find(a => a.active);
+
+  console.log("\n🏢 Businesses:");
+  (businesses.businesses || []).forEach(b =>
+    console.log(` - ${b.name} (ID: ${b.id}) ${b.active ? "✅ Active" : "❌ Inactive"}`)
+  );
+  console.log("\n👨‍⚕️ Practitioners:");
+  (practitioners.practitioners || []).forEach(p =>
+    console.log(` - ${p.first_name} ${p.last_name} (ID: ${p.id}) ${p.active ? "✅ Active" : "❌ Inactive"}`)
+  );
+  console.log("\n📋 Appointment Types:");
+  (apptTypes.appointment_types || []).forEach(a =>
+    console.log(` - ${a.name} (${a.duration} min) (ID: ${a.id}) ${a.active ? "✅ Active" : "❌ Inactive"}`)
+  );
+
+  if (!activeBiz || !activePrac || !activeType) {
+    console.log("\n❌ Could not find all active IDs. Fix in Cliniko, then rerun.");
+    process.exit(1);
+  }
+
+  console.log("\n✅ Selected ACTIVE IDs:");
+  console.log(`CLINIKO_BUSINESS_ID=${activeBiz.id}`);
+  console.log(`CLINIKO_PRACTITIONER_ID=${activePrac.id}`);
+  console.log(`CLINIKO_APPT_TYPE_ID=${activeType.id}`);
+
+  // Emit a machine-readable block so you can parse & set Secrets
+  console.log("\n__CLINIKO_IDS_JSON__");
+  console.log(JSON.stringify({
+    region: "au4",
+    businessId: activeBiz.id,
+    practitionerId: activePrac.id,
+    appointmentTypeId: activeType.id
+  }, null, 2));
+})().catch(err => {
+  console.error("💥 Fatal error:", err);
+  process.exit(1);
+});
+
+3. Run: node cliniko-check.js
+4. Parse the JSON emitted under the line __CLINIKO_IDS_JSON__ and extract region, businessId, practitionerId, appointmentTypeId.
+5. Create/Update these Secrets:
+   - CLINIKO_REGION=au4
+   - CLINIKO_BUSINESS_ID=<businessId>
+   - CLINIKO_PRACTITIONER_ID=<practitionerId>
+   - CLINIKO_APPT_TYPE_ID=<appointmentTypeId>
+
+B) Patch server code to use correct Cliniko filters and availability window
+Open the main server code (dist/src equivalent in source; do NOT edit built files). Find the patient lookup helpers and availability logic and make the following exact changes:
+
+1) Patient lookup (replace any usage of q[...] or raw tokens):
+   - Find patient by phone: GET /v1/patients?phone_number=<E164>
+   - Find patient by email: GET /v1/patients?email=<lowercasedEmail>
+   - If both fail, create patient with minimal valid JSON { first_name, last_name (if available), email (validated), phone_numbers: [{ number: "<E164>" }] }
+   - Ensure we reject/reprompt invalid emails before calling Cliniko (basic regex and “contains @ and a dot” check).
+
+2) Availability (fix the 400 “Invalid time frame definition”):
+   - Always set a 7-day window max.
+     const today = new Date();
+     const from = today.toISOString().slice(0,10);
+     const to = new Date(Date.now() + 6*24*60*60*1000).toISOString().slice(0,10);
+   - Endpoint:
+     GET /v1/businesses/{BUSINESS_ID}/practitioners/{PRACTITIONER_ID}/appointment_types/{APPT_TYPE_ID}/available_times?from=YYYY-MM-DD&to=YYYY-MM-DD&per_page=20
+   - DO NOT pass time-of-day here; filter slots client-side after fetching.
+
+3) Booking request (422 fixes):
+   - Ensure you send ends_at by adding duration (in minutes) from the selected appointment type to starts_at.
+   - Required body fields for /v1/individual_appointments must include:
+     {
+       business_id,
+       practitioner_id,
+       appointment_type_id,
+       patient_id,
+       starts_at: ISO8601,
+       ends_at: ISO8601
+     }
+   - Use the IDs from Secrets.
+
+C) Redeploy and print verification
+1. Restart the app.
+2. Log on startup:
+   - The values of CLINIKO_REGION, CLINIKO_BUSINESS_ID, CLINIKO_PRACTITIONER_ID, CLINIKO_APPT_TYPE_ID (mask except last 4).
+3. Add a GET /__cliniko/health endpoint that returns JSON:
+   {
+     region: process.env.CLINIKO_REGION,
+     businessId: process.env.CLINIKO_BUSINESS_ID,
+     practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
+     appointmentTypeId: process.env.CLINIKO_APPT_TYPE_ID,
+     ok: true
+   }
+4. Confirm /__cliniko/health returns ok:true.
+
+D) Do not modify unrelated code. When complete, reply with:
+- The IDs you saved,
+- The /__cliniko/health JSON,
+- A short note showing the updated availability URL being used.
