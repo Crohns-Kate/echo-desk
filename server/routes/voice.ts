@@ -75,22 +75,23 @@ export function registerVoice(app: Express) {
       }
 
       twiml(res, (vr) => {
-        // Optional recording
+        // Start recording immediately - NO BEEP, dual channel
         if (env.CALL_RECORDING_ENABLED) {
-          vr.record({ 
-            recordingStatusCallback: abs('/api/voice/recording'), 
-            recordingStatusCallbackMethod: 'POST', 
-            trim: 'do-not-trim',
-            transcribe: env.TRANSCRIPTION_ENABLED,
-            transcribeCallback: abs('/api/voice/transcription')
-          } as any);
+          const start = vr.start();
+          start.record({
+            recordingStatusCallback: abs('/api/voice/recording'),
+            recordingStatusCallbackMethod: 'POST',
+            recordingStatusCallbackEvent: 'completed',
+            track: 'both',
+            trim: 'do-not-trim'
+          });
         }
 
         // Gather initial response
         const actionUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
         const g = gather(vr, actionUrl);
 
-        // Greeting
+        // Greeting with Australian neural voice
         saySSML(g, `<speak>${tenant.greeting} <break time="300ms"/> How can I help you today?</speak>`);
         g.pause({ length: 1 });
 
