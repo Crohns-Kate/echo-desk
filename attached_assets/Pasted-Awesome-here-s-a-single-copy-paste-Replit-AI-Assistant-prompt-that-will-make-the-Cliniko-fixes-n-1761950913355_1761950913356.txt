@@ -1,0 +1,252 @@
+Awesome — here’s a single, copy-paste Replit AI Assistant prompt that will make the Cliniko fixes (no Postman needed). Drop this into the Replit AI chat for your project and let it edit the code.
+
+
+---
+
+Replit AI Assistant Prompt (paste all of this):
+
+> Goal: Fix Cliniko integration so booking works end-to-end:
+
+Use email and phone_number query params (not the old q[...] filters).
+
+Always send Accept: application/json and Basic auth with the API key.
+
+Add a strict 5–6 day window for available_times to avoid “Invalid time frame” errors.
+
+Build appointments with all required fields (business, practitioner, appointment_type, start/end).
+
+Sanitize caller email and handle missing identity cleanly.
+
+
+
+
+1) Create a small Cliniko client helper (idempotent)
+
+Create (or update) server/cliniko.ts and export these functions. If file already exists, modify in place.
+
+// server/cliniko.ts
+import fetch from "node-fetch";
+
+const CLINIKO_REGION = process.env.CLINIKO_REGION || "au4";
+const BASE = `https://api.${CLINIKO_REGION}.cliniko.com/v1`;
+
+function authHeaders() {
+  const key = process.env.CLINIKO_API_KEY!;
+  // Cliniko uses API key as username with blank password (Basic auth)
+  const token = Buffer.from(`${key}:`).toString("base64");
+  return {
+    Authorization: `Basic ${token}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "EchoDesk/1.0 (+voice bot)",
+  };
+}
+
+export async function clinikoGet(path: string) {
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Cliniko GET ${path} ${res.status}: ${text}`);
+  }
+  return JSON.parse(text);
+}
+
+export async function clinikoPost(path: string, body: any) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
+  }
+  return JSON.parse(text);
+}
+
+// Utility: ISO helpers
+export function toISO(dt: Date) {
+  return dt.toISOString(); // send UTC; available_times returns ISO Z already
+}
+
+2) Replace legacy patient lookups
+
+Find any functions named like findPatientByEmail and findPatientByPhone. Replace their bodies to use ?email= and ?phone_number= with proper URL-encoding and no q[...].
+
+// Find or create these in your data/service layer:
+
+import { clinikoGet } from "./cliniko";
+
+export async function findPatientByEmail(email: string) {
+  if (!email) return null;
+  const clean = String(email).trim().replace(/[?<>]/g, "");
+  const path = `/patients?email=${encodeURIComponent(clean)}`;
+  const data = await clinikoGet(path);
+  // Cliniko returns { "patients": [...] }
+  if (Array.isArray(data?.patients) && data.patients.length > 0) {
+    return data.patients[0];
+  }
+  return null;
+}
+
+export async function findPatientByPhone(e164: string) {
+  if (!e164) return null;
+  const path = `/patients?phone_number=${encodeURIComponent(e164)}`;
+  const data = await clinikoGet(path);
+  if (Array.isArray(data?.patients) && data.patients.length > 0) {
+    return data.patients[0];
+  }
+  return null;
+}
+
+3) Availability endpoint: keep window ≤ 6 days
+
+Find your getAvailability (or equivalent). Ensure the date window is today → +5 days and use the au4 region from secrets. Also fetch appointment type duration once so we can compute ends_at.
+
+import { clinikoGet } from "./cliniko";
+
+type AvailParams = {
+  businessId: string;
+  practitionerId: string;
+  appointmentTypeId: string;
+  days?: number; // default 5
+};
+
+export async function getAvailability(p: AvailParams) {
+  const days = Math.max(1, Math.min(p.days ?? 5, 6));
+  const now = new Date();
+  const from = now.toISOString().slice(0, 10);
+  const to = new Date(now.getTime() + days * 86400000)
+    .toISOString()
+    .slice(0, 10);
+
+  const url =
+    `/businesses/${p.businessId}` +
+    `/practitioners/${p.practitionerId}` +
+    `/appointment_types/${p.appointmentTypeId}` +
+    `/available_times?from=${from}&to=${to}&per_page=20`;
+
+  const data = await clinikoGet(url);
+  // Cliniko returns { "available_times": [ { "starts_at": "...", ... } ] }
+  const slots = (data?.available_times || []).map((t: any) => t.starts_at);
+  return { from, to, slots };
+}
+
+// Optional: get duration for the type (minutes)
+export async function getAppointmentTypeMinutes(
+  practitionerId: string,
+  appointmentTypeId: string
+) {
+  const list = await clinikoGet(
+    `/practitioners/${practitionerId}/appointment_types?per_page=100`
+  );
+  const hit = (list?.appointment_types || []).find(
+    (t: any) => String(t.id) === String(appointmentTypeId)
+  );
+  // Fallback 15 if unknown
+  return hit?.length_in_minutes ?? 15;
+}
+
+4) Create appointment with all mandatory fields
+
+Replace your create routine to send all required fields.
+
+import { clinikoPost, toISO } from "./cliniko";
+import { getAppointmentTypeMinutes } from "./availability"; // adjust path
+
+export async function createAppointmentForPatient(opts: {
+  businessId: string;
+  practitionerId: string;
+  appointmentTypeId: string;
+  patientId: string;
+  startsAtISO: string; // from available_times
+}) {
+  const minutes = await getAppointmentTypeMinutes(
+    opts.practitionerId,
+    opts.appointmentTypeId
+  );
+  const start = new Date(opts.startsAtISO);
+  const end = new Date(start.getTime() + minutes * 60000);
+
+  const payload = {
+    business_id: Number(opts.businessId),
+    practitioner_id: Number(opts.practitionerId),
+    appointment_type_id: Number(opts.appointmentTypeId),
+    patient_id: Number(opts.patientId) || opts.patientId, // some accounts store as string
+    starts_at: toISO(start),
+    ends_at: toISO(end),
+    // Optional but nice:
+    send_confirmation_email: true,
+    send_confirmation_sms: true,
+  };
+
+  return await clinikoPost(`/individual_appointments`, payload);
+}
+
+5) Identity: sanitize and gate before booking
+
+Where you gather name and email, add a light validator so we don’t send kara bali@gmail.com? to Cliniko.
+
+export function cleanEmail(raw: string) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[<>\s]+/g, (m) => (m.trim() === "" ? "" : ""))
+    .replace(/[?;,]+/g, "");
+}
+
+export function looksLikeEmail(e: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+// Before booking:
+const email = cleanEmail(collected.email);
+if (!looksLikeEmail(email)) {
+  // ask again in the wizard: “What’s the best email for confirmation?”
+  // do not call Cliniko yet
+}
+
+6) Wire it into your call flow
+
+When the caller says a day/part (“Monday morning”), call getAvailability(...).
+
+Offer two slots from that list.
+
+On “option one/two”, call findPatientByEmail/Phone → if not found, create the patient first via POST /patients (use name, email, phone).
+
+Then call createAppointmentForPatient(...) using the chosen slot.
+
+If Cliniko rejects (422), say a friendly fallback and log the payload.
+
+
+7) Environment variables (already present)
+
+Ensure these are set in Secrets:
+
+CLINIKO_API_KEY=...
+CLINIKO_REGION=au4
+CLINIKO_BUSINESS_ID=1797514430146160197
+CLINIKO_PRACTITIONER_ID=1797514426656498878
+CLINIKO_APPOINTMENT_TYPE_ID=1797514429433128673
+
+Also keep:
+
+PUBLIC_BASE_URL=https://echo-desk-mbjltd70.replit.app
+
+8) Quick self-checks the app should pass
+
+GET /__cliniko/health → { ok:true, region:"au4", ... }
+
+GET /__cliniko/avail → JSON with slots (not empty during clinic hours).
+
+Make a call → “Book tomorrow morning” → hear two options → pick one → see appointment created in Cliniko.
+
+
+> Please implement all edits above, keep existing logging, and don’t change unrelated code. When finished, show me a diff summary of changed files.
+
+
+
+
+---
+
+If you want, I can also give you a tiny test route to create a dry-run booking against the first slot, but the prompt above should be enough to get live bookings flowing.

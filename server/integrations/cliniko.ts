@@ -100,7 +100,7 @@ async function clinikoPost(path: string, payload: any): Promise<any> {
 }
 
 // --- search strategies ---
-// Prefer native filters when possible, otherwise fall back to q= (free-text)
+// Use native email and phone_number query params (NOT q= free-text search)
 export async function findPatientByEmail(emailRaw: string) {
   const email = sanitizeEmail(emailRaw);
   if (!email) {
@@ -108,12 +108,11 @@ export async function findPatientByEmail(emailRaw: string) {
     return null;
   }
 
-  // Use q= with per_page for better results
+  // Use email query param for exact matching
   try {
-    const data = await clinikoGet("/patients", { q: email, per_page: "25" });
+    const data = await clinikoGet("/patients", { email: email });
     const list = Array.isArray(data?.patients) ? data.patients : [];
-    // Return exact match or first result if no exact match
-    return list.find((p: any) => (p.email || "").toLowerCase() === email.toLowerCase()) || list[0] || null;
+    return list[0] || null;
   } catch (e) {
     console.error('[Cliniko] findPatientByEmail error:', e);
     return null;
@@ -129,25 +128,23 @@ export async function findPatientByPhone(phoneRaw: string) {
 
   const variants = normalizePhoneForMatching(phone);
 
-  // Use q= with per_page for better results
+  // Use phone_number query param for exact matching (NOT q= free-text search)
   try {
-    const data = await clinikoGet("/patients", { q: phone, per_page: "25" });
-    const list = Array.isArray(data?.patients) ? data.patients : [];
+    // Try E.164 format first (+61...)
+    let data = await clinikoGet("/patients", { phone_number: phone });
+    let list = Array.isArray(data?.patients) ? data.patients : [];
     
-    // Try exact match across stored phone fields with normalization
-    const exact = list.find((p: any) => {
-      const numbers = [
-        p.phone_number,
-        ...(Array.isArray(p.phone_numbers) ? p.phone_numbers.map((n: any) => n.number) : []),
-      ].filter(Boolean);
-      
-      return numbers.some((n: string) => {
-        const normalized = normalizePhoneForMatching(n);
-        return normalized.some(nv => variants.includes(nv));
-      });
-    });
+    if (list.length > 0) return list[0];
     
-    return exact || list[0] || null;
+    // Try local format (0...) as fallback
+    if (phone.startsWith('+61')) {
+      const localFormat = '0' + phone.slice(3);
+      data = await clinikoGet("/patients", { phone_number: localFormat });
+      list = Array.isArray(data?.patients) ? data.patients : [];
+      if (list.length > 0) return list[0];
+    }
+    
+    return null;
   } catch (e) {
     console.error('[Cliniko] findPatientByPhone error:', e);
     return null;
