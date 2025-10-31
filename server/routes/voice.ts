@@ -19,6 +19,7 @@ import {
   sendAppointmentRescheduled,
   sendAppointmentCancelled
 } from '../services/sms';
+import { emitCallStarted, emitCallUpdated, emitAlertCreated } from '../services/websocket';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
   const vr = new twilio.twiml.VoiceResponse();
@@ -66,12 +67,15 @@ export function registerVoice(app: Express) {
       });
 
       // Log call with initial data
-      await storage.logCall({ 
+      const call = await storage.logCall({ 
         tenantId: tenant.id, 
         callSid, 
         fromNumber: from, 
         toNumber: to 
       });
+      
+      // Emit WebSocket event for new call
+      emitCallStarted(call);
     } catch (e) {
       console.error('incoming error', e);
       twiml(res, (vr) => { say(vr, 'Sorry, there was a problem. Goodbye'); });
@@ -84,10 +88,14 @@ export function registerVoice(app: Express) {
     console.log('[RECORDING]', { CallSid, RecordingUrl, RecordingDuration });
     
     if (CallSid && RecordingUrl) {
-      await storage.updateCall(CallSid, { 
+      const updatedCall = await storage.updateCall(CallSid, { 
         recordingUrl: RecordingUrl,
         duration: parseInt(RecordingDuration || '0')
       });
+      
+      if (updatedCall) {
+        emitCallUpdated(updatedCall);
+      }
     }
     
     res.status(204).end();
@@ -99,7 +107,11 @@ export function registerVoice(app: Express) {
     console.log('[TRANSCRIPTION]', { CallSid, TranscriptionText });
     
     if (CallSid && TranscriptionText) {
-      await storage.updateCall(CallSid, { transcript: TranscriptionText });
+      const updatedCall = await storage.updateCall(CallSid, { transcript: TranscriptionText });
+      
+      if (updatedCall) {
+        emitCallUpdated(updatedCall);
+      }
     }
     
     res.status(204).end();
@@ -139,10 +151,14 @@ export function registerVoice(app: Express) {
         
         // Update call log with detected intent
         if (callSid && det.intent !== 'unknown') {
-          await storage.updateCall(callSid, { 
+          const updatedCall = await storage.updateCall(callSid, { 
             intent: det.intent,
             summary: `Caller requested: ${det.intent}`
           });
+          
+          if (updatedCall) {
+            emitCallUpdated(updatedCall);
+          }
         }
         
         // Identity capture gate
@@ -193,16 +209,25 @@ export function registerVoice(app: Express) {
             }
           
           case 'human':
-            await storage.createAlert({ 
-              tenantId: tenant.id, 
-              reason: 'human_request', 
-              payload: { from, callSid } 
-            });
+            {
+              const alert = await storage.createAlert({ 
+                tenantId: tenant.id, 
+                reason: 'human_request', 
+                payload: { from, callSid } 
+              });
+              
+              // Emit WebSocket event for new alert
+              emitAlertCreated(alert);
+            }
             
             if (callSid) {
-              await storage.updateCall(callSid, { 
+              const updatedCall = await storage.updateCall(callSid, { 
                 summary: 'Caller requested to speak with receptionist'
               });
+              
+              if (updatedCall) {
+                emitCallUpdated(updatedCall);
+              }
             }
             
             return twiml(res, (vr) => { 
@@ -211,9 +236,13 @@ export function registerVoice(app: Express) {
           
           case 'hours':
             if (callSid) {
-              await storage.updateCall(callSid, { 
+              const updatedCall = await storage.updateCall(callSid, { 
                 summary: 'Caller inquired about clinic hours'
               });
+              
+              if (updatedCall) {
+                emitCallUpdated(updatedCall);
+              }
             }
             return twiml(res, (vr) => { 
               saySafe(vr, 'We are open weekdays nine to five. Goodbye'); 
@@ -273,9 +302,13 @@ export function registerVoice(app: Express) {
         
         // Update call log with appointment details
         if (callSid) {
-          await storage.updateCall(callSid, {
+          const updatedCall = await storage.updateCall(callSid, {
             summary: `${route.startsWith('reschedule') ? 'Rescheduled' : 'Booked'} appointment for ${new Date(chosen.startIso).toLocaleDateString('en-AU')}`
           });
+          
+          if (updatedCall) {
+            emitCallUpdated(updatedCall);
+          }
         }
         
         // Send SMS confirmation
@@ -379,9 +412,13 @@ export function registerVoice(app: Express) {
           await cancelAppointment(aptId);
           
           if (callSid) {
-            await storage.updateCall(callSid, { 
+            const updatedCall = await storage.updateCall(callSid, { 
               summary: 'Appointment cancelled successfully'
             });
+            
+            if (updatedCall) {
+              emitCallUpdated(updatedCall);
+            }
           }
           
           // Send SMS cancellation notice
@@ -481,9 +518,13 @@ export function registerVoice(app: Express) {
 
         // Update call summary
         if (callSid) {
-          await storage.updateCall(callSid, {
+          const updatedCall = await storage.updateCall(callSid, {
             summary: `Identity captured for ${email}`
           });
+          
+          if (updatedCall) {
+            emitCallUpdated(updatedCall);
+          }
         }
 
         return twiml(res, (vr) => {

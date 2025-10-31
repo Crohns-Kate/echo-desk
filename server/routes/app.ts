@@ -1,6 +1,7 @@
 import { Request, Response, Express } from 'express';
 import { storage } from '../storage';
 import { BUILD } from '../utils/version';
+import { emitAlertDismissed } from '../services/websocket';
 
 export function registerApp(app: Express) {
   // Health check
@@ -87,6 +88,10 @@ export function registerApp(app: Express) {
       if (!alert) {
         return res.status(404).json({ error: 'Alert not found' });
       }
+      
+      // Emit WebSocket event for dismissed alert
+      emitAlertDismissed(alert);
+      
       res.json(alert);
     } catch (error) {
       console.error('Dismiss alert error:', error);
