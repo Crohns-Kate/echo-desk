@@ -60,32 +60,13 @@ async function updateConversationTurns(
   });
 }
 
-// Helper to sanitize text for Polly TTS (eliminates Twilio 13520 errors)
-function sanitizeForPolly(text: string | undefined) {
+// Helper to sanitize text for Twilio Say verb (eliminates error 13520)
+function sanitizeForSay(text: string | undefined) {
   return String(text || '')
     .replace(/[^\x20-\x7E]/g, ' ')  // ASCII only
     .replace(/[.,!?;:]/g, '')       // remove punctuation
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-// Multi-level fallback for voice synthesis
-function sayWithFallback(node: any, rawText: string) {
-  const text = sanitizeForPolly(rawText);
-  try {
-    // Primary: Polly.Olivia-Neural (works reliably in AU region)
-    node.say({ voice: 'Polly.Olivia-Neural' as any }, text);
-  } catch (e1: any) {
-    console.warn('[VOICE] Polly.Olivia-Neural failed:', e1?.message || e1);
-    try {
-      // Fallback 1: Polly.Nicole (standard quality)
-      node.say({ voice: 'Polly.Nicole' as any }, text);
-    } catch (e2: any) {
-      console.warn('[VOICE] Polly.Nicole failed:', e2?.message || e2);
-      // Fallback 2: Alice (Twilio default)
-      node.say({ voice: 'alice' as any }, text);
-    }
-  }
 }
 
 export function registerVoice(app: Express) {
@@ -107,20 +88,21 @@ export function registerVoice(app: Express) {
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
       const greeting = `${tenant.greeting} how can I help you today`;
+      const safeText = sanitizeForSay(greeting);
 
       // Gather for speech
       const g = vr.gather({
         input: ['speech'],
         timeout: 5,
-        speechTimeout: 'auto',   // must be string
+        speechTimeout: 'auto',
         actionOnEmptyResult: true,
         bargeIn: true,
         action: handleUrl,
         method: 'POST'
       });
 
-      // Use Polly.Olivia-Neural with multi-level fallback
-      sayWithFallback(g, greeting);
+      // Use Polly.Nicole (non-Neural, stable for en-AU)
+      g.say({ voice: 'Polly.Nicole' as any, language: 'en-AU' }, safeText);
       g.pause({ length: 1 });
 
       // Safety net if no input
