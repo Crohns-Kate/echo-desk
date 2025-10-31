@@ -16,7 +16,7 @@ import {
   type InsertAlert
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, sql } from "drizzle-orm";
 
 export interface IStorage {
   // Tenants
@@ -30,11 +30,14 @@ export interface IStorage {
 
   // Conversations
   createConversation(tenantId: number, leadId?: number, isVoice?: boolean): Promise<Conversation>;
+  updateConversation(id: number, updates: Partial<Conversation>): Promise<Conversation | undefined>;
 
   // Call logs
   logCall(data: InsertCallLog): Promise<CallLog>;
+  updateCall(callSid: string, updates: Partial<CallLog>): Promise<CallLog | undefined>;
   listCalls(tenantId?: number, limit?: number): Promise<CallLog[]>;
   getCallById(id: number): Promise<CallLog | undefined>;
+  getCallByCallSid(callSid: string): Promise<CallLog | undefined>;
 
   // Alerts
   createAlert(data: InsertAlert): Promise<Alert>;
@@ -97,9 +100,27 @@ export class DatabaseStorage implements IStorage {
     return conversation;
   }
 
+  async updateConversation(id: number, updates: Partial<Conversation>): Promise<Conversation | undefined> {
+    const [conversation] = await db
+      .update(conversations)
+      .set(updates)
+      .where(eq(conversations.id, id))
+      .returning();
+    return conversation || undefined;
+  }
+
   async logCall(data: InsertCallLog): Promise<CallLog> {
     const [call] = await db.insert(callLogs).values(data).returning();
     return call;
+  }
+
+  async updateCall(callSid: string, updates: Partial<CallLog>): Promise<CallLog | undefined> {
+    const [call] = await db
+      .update(callLogs)
+      .set(updates)
+      .where(eq(callLogs.callSid, callSid))
+      .returning();
+    return call || undefined;
   }
 
   async listCalls(tenantId?: number, limit: number = 50): Promise<CallLog[]> {
@@ -116,6 +137,11 @@ export class DatabaseStorage implements IStorage {
 
   async getCallById(id: number): Promise<CallLog | undefined> {
     const [call] = await db.select().from(callLogs).where(eq(callLogs.id, id)).limit(1);
+    return call || undefined;
+  }
+
+  async getCallByCallSid(callSid: string): Promise<CallLog | undefined> {
+    const [call] = await db.select().from(callLogs).where(eq(callLogs.callSid, callSid)).limit(1);
     return call || undefined;
   }
 
@@ -150,7 +176,6 @@ export class DatabaseStorage implements IStorage {
     pendingAlerts: number;
     todayCalls: number;
   }> {
-    // For now, return mock stats - will be enhanced with real queries
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -163,7 +188,7 @@ export class DatabaseStorage implements IStorage {
     ).length;
 
     return {
-      activeCalls: 0, // Would need real-time tracking
+      activeCalls: 0, // Would need real-time tracking via Twilio Status Callbacks
       pendingAlerts,
       todayCalls,
     };
@@ -179,6 +204,7 @@ export class DatabaseStorage implements IStorage {
         greeting: 'Hello and welcome to Your Clinic.',
         timezone: 'Australia/Brisbane',
       });
+      console.log('[DB] Seeded default tenant');
     }
   }
 }
