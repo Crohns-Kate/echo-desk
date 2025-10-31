@@ -1,7 +1,6 @@
-export const PRIMARY_VOICE = "Polly.Nicole-Neural";
+export const VOICE_NAME = process.env.VOICE_NAME || "Polly.Olivia-Neural";
 export const FALLBACK_VOICE = "alice";
 
-// Clean text so Polly doesn't choke
 export function ttsClean(s: string | null | undefined) {
   if (!s) return "";
   return String(s)
@@ -13,12 +12,17 @@ export function ttsClean(s: string | null | undefined) {
     .trim();
 }
 
-export function say(node: any, text: string, opts: { bargeIn?: boolean } = {}) {
+export function say(node: any, text: string) {
   const cleaned = ttsClean(text);
   if (!cleaned) return;
   try {
-    node.say({ voice: PRIMARY_VOICE, ...(opts.bargeIn ? { bargeIn: true } : {}) }, cleaned);
+    node.say({ voice: VOICE_NAME }, cleaned);
   } catch {
-    node.say({ voice: FALLBACK_VOICE, ...(opts.bargeIn ? { bargeIn: true } : {}) }, cleaned);
+    node.say({ voice: FALLBACK_VOICE }, cleaned);
   }
+}
+
+export function pause(node: any, secs = 1) {
+  const n = Number.isInteger(secs) ? secs : 1;
+  node.pause({ length: n });
 }

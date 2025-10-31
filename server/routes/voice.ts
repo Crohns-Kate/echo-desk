@@ -4,7 +4,7 @@ import { validateTwilioSignature } from '../middlewares/twilioAuth';
 import { env } from '../utils/env';
 import { storage } from '../storage';
 import { abs } from '../utils/url';
-import { say } from '../utils/voice-constants';
+import { say, pause } from '../utils/voice-constants';
 import { detectIntent } from '../services/intent';
 import { 
   getAvailability, 
@@ -88,8 +88,8 @@ export function registerVoice(app: Express) {
       });
 
       // bargeIn goes on Say, not Gather
-      say(g, "Hello and welcome to your clinic how can I help you today", { bargeIn: true });
-      g.pause({ length: 1 });
+      say(g, "Hello and welcome to your clinic how can I help you today");
+      pause(g, 1);
 
       // Safety net if no input
       vr.redirect({ method: 'POST' }, timeoutUrl);
@@ -188,8 +188,8 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
           method: 'POST'
         });
-        say(g, 'Sorry I did not catch that please say what you need like book an appointment or reschedule', { bargeIn: true });
-        g.pause({ length: 1 });
+        say(g, 'Sorry I did not catch that please say what you need like book an appointment or reschedule');
+        pause(g, 1);
         
         const xml = vr.toString();
         console.log('[VOICE][HANDLE OUT timeout]', xml);
@@ -263,7 +263,8 @@ export function registerVoice(app: Express) {
                   action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`),
                   method: 'POST'
                 });
-                say(g, assistantMsg, { bargeIn: true });
+                say(g, assistantMsg);
+                pause(g, 1);
               });
             }
           
@@ -370,7 +371,8 @@ export function registerVoice(app: Express) {
                   action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
                   method: 'POST'
                 });
-                say(g, assistantMsg, { bargeIn: true });
+                say(g, assistantMsg);
+                pause(g, 1);
               });
             }
         }
@@ -389,7 +391,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=${route.replace('day','part')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
             method: 'POST'
           });
-          say(g, 'Morning or afternoon', { bargeIn: true });
+          say(g, 'Morning or afternoon');
+          pause(g, 1);
         });
       }
 
@@ -407,7 +410,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
             method: 'POST'
           });
-          say(g, 'I have two options Option one or option two', { bargeIn: true });
+          say(g, 'I have two options Option one or option two');
+          pause(g, 1);
         });
       }
 
@@ -499,7 +503,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`),
             method: 'POST'
           });
-          say(g, `I found your appointment on ${aptDate} Would you like to reschedule it`, { bargeIn: true });
+          say(g, `I found your appointment on ${aptDate} Would you like to reschedule it`);
+          pause(g, 1);
         });
       }
       
@@ -518,7 +523,8 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
               method: 'POST'
             });
-            say(g, 'Great Which day works for you', { bargeIn: true });
+            say(g, 'Great Which day works for you');
+            pause(g, 1);
           });
         } else {
           return twiml(res, (vr) => {
@@ -553,7 +559,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`),
             method: 'POST'
           });
-          say(g, `I found your appointment on ${aptDate} Would you like to cancel it or reschedule instead`, { bargeIn: true });
+          say(g, `I found your appointment on ${aptDate} Would you like to cancel it or reschedule instead`);
+          pause(g, 1);
         });
       }
       
@@ -595,7 +602,8 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
               method: 'POST'
             });
-            say(g, 'Great Which day works for you', { bargeIn: true });
+            say(g, 'Great Which day works for you');
+            pause(g, 1);
           });
         } else {
           return twiml(res, (vr) => {
@@ -607,7 +615,8 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`),
               method: 'POST'
             });
-            say(g, 'Please say cancel or reschedule', { bargeIn: true });
+            say(g, 'Please say cancel or reschedule');
+            pause(g, 1);
           });
         }
       }
@@ -652,7 +661,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/wizard?step=2&callSid=${encodeURIComponent(callSid)}&intent=${intent}`),
             method: 'POST'
           });
-          say(g, 'Before we continue may I have your full name please', { bargeIn: true });
+          say(g, 'Before we continue may I have your full name please');
+          pause(g, 1);
         });
       }
 
@@ -676,7 +686,8 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/wizard?step=3&callSid=${encodeURIComponent(callSid)}&intent=${intent}`),
             method: 'POST'
           });
-          say(g, 'Thank you And your email address', { bargeIn: true });
+          say(g, 'Thank you And your email address');
+          pause(g, 1);
         });
       }
 
@@ -726,5 +737,12 @@ export function registerVoice(app: Express) {
       console.log('[VOICE][WIZARD OUT error]', xml);
       return res.type('text/xml').send(xml);
     }
+  });
+
+  // Test route for TwiML validation
+  app.post('/api/voice/ping', (req: Request, res: Response) => {
+    return twiml(res, (vr) => {
+      say(vr, 'Voice system test successful');
+    });
   });
 }
