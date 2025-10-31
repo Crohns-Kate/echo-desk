@@ -1,0 +1,83 @@
+Please open the server route that handles POST /api/voice/incoming and replace the handler with the version below. Key goals:
+- Do NOT emit <Start/> (we're not starting a Stream or the new Recording verb here)
+- Use Polly.Nicole-Neural without a language attribute
+- Keep the greeting plain ASCII, no punctuation
+- Keep Gather minimal and safe
+- Log TwiML out
+
+--- BEGIN PATCH ---
+
+import express from "express";
+import twilio from "twilio";
+
+const router = express.Router();
+
+function sanitizeGreeting(s: string) {
+  return s
+    .replace(/[^\x20-\x7E]/g, " ")   // ASCII only
+    .replace(/[.,!?;:]/g, "")        // strip punctuation
+    .replace(/\s+/g, " ")            // collapse whitespace
+    .trim();
+}
+
+router.post("/api/voice/incoming", async (req, res) => {
+  try {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const vr = new VoiceResponse();
+
+    const callSid = req.body.CallSid || "UNKNOWN";
+    const baseUrl =
+      process.env.PUBLIC_BASE_URL || "https://echo-desk-mbjltd70.replit.app";
+    const handleUrl = `${baseUrl}/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`;
+    const timeoutUrl = `${baseUrl}/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`;
+
+    // Minimal, Polly-safe greeting (no punctuation)
+    const greeting = sanitizeGreeting(
+      process.env.CALL_GREETING ||
+        "Hello and welcome to your clinic how can I help you today"
+    );
+
+    // Gather for speech
+    const g = vr.gather({
+      input: ["speech"],
+      timeout: 5,
+      speechTimeout: "auto",   // must be a STRING
+      actionOnEmptyResult: true,
+      bargeIn: true,
+      action: handleUrl,
+      method: "POST",
+    });
+
+    // IMPORTANT: For Polly voices, omit language attribute
+    // If Polly trips, fallback to 'alice'
+    try {
+      g.say({ voice: "Polly.Nicole-Neural" }, greeting);
+    } catch (e) {
+      console.warn("[VOICE][WARN] Polly failed, fallback to alice:", e?.message || e);
+      g.say({ voice: "alice" }, greeting);
+    }
+
+    g.pause({ length: 1 });
+
+    // Safety net if no input
+    vr.redirect({ method: "POST" }, timeoutUrl);
+
+    const xml = vr.toString();
+    console.log("[VOICE][TwiML OUT]", xml);
+    res.type("text/xml").send(xml);
+  } catch (err) {
+    console.error("[VOICE][ERROR][incoming]", err);
+    const vr = new (twilio.twiml.VoiceResponse)();
+    vr.say({ voice: "alice" }, "Sorry there was a problem goodbye");
+    res.type("text/xml").send(vr.toString());
+  }
+});
+
+export default router;
+
+--- END PATCH ---
+
+After saving, redeploy. Then call the number and check Twilio Request Inspector. You should see:
+- No <Start/> in the XML
+- <Say voice="Polly.Nicole-Neural"> with plain text (no punctuation)
+- <Gather ... speechTimeout="auto">

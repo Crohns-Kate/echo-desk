@@ -60,8 +60,17 @@ async function updateConversationTurns(
   });
 }
 
+// Helper to sanitize greeting text for Twilio TTS
+function sanitizeGreeting(s: string) {
+  return s
+    .replace(/[^\x20-\x7E]/g, ' ')   // ASCII only
+    .replace(/[.,!?;:]/g, '')        // strip punctuation
+    .replace(/\s+/g, ' ')            // collapse whitespace
+    .trim();
+}
+
 export function registerVoice(app: Express) {
-  // Incoming call - greet and gather (FINAL TESTED VERSION)
+  // Incoming call - greet and gather (NO <Start/> - causes errors)
   app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
       const params = (req as any).twilioParams;
@@ -77,44 +86,35 @@ export function registerVoice(app: Express) {
       const vr = new twilio.twiml.VoiceResponse();
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
-      const recordingCallback = abs('/api/voice/recording');
 
-      // Start full call recording silently
-      try {
-        const start = vr.start();
-        start.recording({
-          recordingStatusCallback: recordingCallback,
-          recordingStatusCallbackMethod: 'POST',
-          recordingStatusCallbackEvent: 'completed',
-          track: 'both',
-          trim: 'do-not-trim'
-        });
-      } catch (err: any) {
-        console.warn('[VOICE][WARN] Recording start not supported:', err?.message || err);
-      }
+      // Minimal, Polly-safe greeting (no punctuation)
+      const greeting = sanitizeGreeting(
+        `${tenant.greeting} how can I help you today`
+      );
 
-      // Gather caller input
+      // Gather for speech
       const g = vr.gather({
         input: ['speech'],
-        language: 'en-AU',
         timeout: 5,
-        speechTimeout: 'auto',
+        speechTimeout: 'auto',   // must be a STRING
         actionOnEmptyResult: true,
         bargeIn: true,
         action: handleUrl,
         method: 'POST'
       });
 
-      // Safe, plain greeting (no punctuation to avoid TwiML errors)
-      const greeting = `${tenant.greeting} how can I help you today`.replace(/[.,!?]/g, '');
+      // IMPORTANT: For Polly voices, omit language attribute
+      // If Polly trips, fallback to 'alice'
       try {
-        g.say({ voice: 'Polly.Nicole-Neural' as any, language: 'en-AU' }, greeting);
+        g.say({ voice: 'Polly.Nicole-Neural' as any }, greeting);
       } catch (e: any) {
-        console.warn('[VOICE][WARN] Polly failed, using fallback:', e?.message || e);
-        g.say({ voice: 'alice', language: 'en-AU' }, greeting);
+        console.warn('[VOICE][WARN] Polly failed, fallback to alice:', e?.message || e);
+        g.say({ voice: 'alice' as any }, greeting);
       }
 
       g.pause({ length: 1 });
+
+      // Safety net if no input
       vr.redirect({ method: 'POST' }, timeoutUrl);
 
       const xml = vr.toString();
@@ -138,7 +138,7 @@ export function registerVoice(app: Express) {
     } catch (err) {
       console.error('[VOICE][ERROR][incoming]', err);
       const vr = new twilio.twiml.VoiceResponse();
-      vr.say({ voice: 'alice' }, 'Sorry there was a problem goodbye');
+      vr.say({ voice: 'alice' as any }, 'Sorry there was a problem goodbye');
       res.type('text/xml').send(vr.toString());
     }
   });
