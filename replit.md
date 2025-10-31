@@ -60,8 +60,17 @@ Preferred communication style: Simple, everyday language.
 - Raw body preservation for Twilio signature validation
 
 **Voice Call Processing:**
-- TwiML generation for Twilio voice responses
+- TwiML generation for Twilio voice responses (NO `<Start>` tag - eliminates error 13520)
 - Amazon Polly (Nicole-Neural voice) for text-to-speech in Australian English
+- **Voice Constants & Safety** (`server/utils/voice-constants.ts`):
+  - `ttsSafe()` - Extremely conservative text sanitizer:
+    - Strips SSML tags, non-ASCII characters, fancy quotes
+    - Removes punctuation that trips Polly (?,!,:;())
+    - Collapses whitespace, ensures plain text only
+  - `saySafe()` - Multi-level voice fallback system:
+    - Primary: Polly.Nicole-Neural (AU neural)
+    - Fallback: alice (Twilio default)
+    - Auto-skips empty strings
 - Enhanced intent detection system:
   - Primary: GPT-4o-mini with confidence scoring (0.0-1.0)
   - Fallback: Regex-based pattern matching

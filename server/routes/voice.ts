@@ -6,6 +6,7 @@ import { storage } from '../storage';
 import { say, saySSML, gather } from '../utils/say';
 import { safeSpoken } from '../utils/tts-guard';
 import { abs } from '../utils/url';
+import { saySafe } from '../utils/voice-constants';
 import { detectIntent } from '../services/intent';
 import { 
   getAvailability, 
@@ -60,17 +61,8 @@ async function updateConversationTurns(
   });
 }
 
-// Helper to sanitize text for Twilio Say verb (eliminates error 13520)
-function sanitizeForSay(text: string | undefined) {
-  return String(text || '')
-    .replace(/[^\x20-\x7E]/g, ' ')  // ASCII only
-    .replace(/[.,!?;:]/g, '')       // remove punctuation
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 export function registerVoice(app: Express) {
-  // Incoming call - greet and gather (NO <Start/> - causes errors)
+  // Incoming call - greet and gather (NO <Start/> - eliminates Twilio 13520)
   app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
       const params = (req as any).twilioParams;
@@ -87,12 +79,10 @@ export function registerVoice(app: Express) {
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
-      const greeting = `${tenant.greeting} how can I help you today`;
-      const safeText = sanitizeForSay(greeting);
-
       // Gather for speech
       const g = vr.gather({
         input: ['speech'],
+        language: 'en-AU',
         timeout: 5,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
@@ -101,15 +91,15 @@ export function registerVoice(app: Express) {
         method: 'POST'
       });
 
-      // Use Polly.Nicole (non-Neural, stable for en-AU)
-      g.say({ voice: 'Polly.Nicole' as any, language: 'en-AU' }, safeText);
+      // SHORT, PLAIN, PUNCTUATION-FREE greeting using saySafe
+      saySafe(g, "Hello and welcome to your clinic how can I help you today");
       g.pause({ length: 1 });
 
       // Safety net if no input
       vr.redirect({ method: 'POST' }, timeoutUrl);
 
       const xml = vr.toString();
-      console.log('[VOICE][TwiML OUT]', xml);
+      console.log('[VOICE][INCOMING TwiML]', xml);
       res.type('text/xml').send(xml);
 
       // Create conversation for context tracking
@@ -127,9 +117,9 @@ export function registerVoice(app: Express) {
       // Emit WebSocket event for new call
       emitCallStarted(call);
     } catch (err) {
-      console.error('[VOICE][ERROR][incoming]', err);
+      console.error('[VOICE][INCOMING ERROR]', err);
       const vr = new twilio.twiml.VoiceResponse();
-      vr.say({ voice: 'alice' as any }, 'sorry there was a problem goodbye');
+      saySafe(vr, 'Sorry there was a problem goodbye');
       res.type('text/xml').send(vr.toString());
     }
   });
@@ -171,30 +161,53 @@ export function registerVoice(app: Express) {
 
   // Handle conversation flow
   app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
-    const p = (req as any).twilioParams;
-    const route = (req.query.route as string) || 'start';
-    const speech = (p.SpeechResult || '').trim();
-    const from = p.From;
-    const callSid = p.CallSid || (req.query.callSid as string);
-    const tenant = await storage.getTenant('default');
-
-    if (!tenant) {
-      return twiml(res, (vr) => { say(vr, 'Service unavailable. Goodbye'); });
-    }
-
-    const saySafe = (node: any, text: string) => {
-      const t = safeSpoken(text);
-      if (t) say(node, t);
-    };
-
+    const vr = new twilio.twiml.VoiceResponse();
+    
     try {
-      // Timeout - reprompt
+      const p = (req as any).twilioParams;
+      const route = (req.query.route as string) || 'start';
+      const speech = (p.SpeechResult || '').trim();
+      const from = p.From;
+      const callSid = p.CallSid || (req.query.callSid as string);
+      const confidence = p.Confidence;
+      
+      console.log('[VOICE][HANDLE IN]', { route, callSid, speech, confidence });
+      
+      const tenant = await storage.getTenant('default');
+
+      if (!tenant) {
+        saySafe(vr, 'Service unavailable goodbye');
+        const xml = vr.toString();
+        console.log('[VOICE][HANDLE OUT no-tenant]', xml);
+        return res.type('text/xml').send(xml);
+      }
+
+      // Route: timeout -> polite reprompt
       if (route === 'timeout') {
-        return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-          saySafe(g, 'Sorry, I did not catch that. How can I help?');
-          g.pause({ length: 1 });
+        const g = vr.gather({
+          input: ['speech'],
+          language: 'en-AU',
+          timeout: 5,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          bargeIn: true,
+          action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST'
         });
+        saySafe(g, 'Sorry I did not catch that please say what you need like book an appointment or reschedule');
+        g.pause({ length: 1 });
+        
+        const xml = vr.toString();
+        console.log('[VOICE][HANDLE OUT timeout]', xml);
+        return res.type('text/xml').send(xml);
+      }
+
+      // Empty speech -> redirect to timeout
+      if (!speech) {
+        vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        const xml = vr.toString();
+        console.log('[VOICE][HANDLE OUT no-speech]', xml);
+        return res.type('text/xml').send(xml);
       }
 
       // Start - detect intent
@@ -547,9 +560,12 @@ export function registerVoice(app: Express) {
         say(vr, 'Sorry, something went wrong. Goodbye');
       });
 
-    } catch (e) {
-      console.error('handle error', e);
-      return twiml(res, (vr) => { say(vr, 'Sorry, there was a problem. Goodbye'); });
+    } catch (err) {
+      console.error('[VOICE][HANDLE ERROR]', err);
+      saySafe(vr, 'Sorry there was a problem goodbye');
+      const xml = vr.toString();
+      console.log('[VOICE][HANDLE OUT error]', xml);
+      return res.type('text/xml').send(xml);
     }
   });
 
@@ -636,9 +652,13 @@ export function registerVoice(app: Express) {
       return twiml(res, (vr) => {
         say(vr, 'Sorry, something went wrong. Goodbye');
       });
-    } catch (e) {
-      console.error('wizard error', e);
-      return twiml(res, (vr) => { say(vr, 'Sorry, there was a problem. Goodbye'); });
+    } catch (err) {
+      console.error('[VOICE][WIZARD ERROR]', err);
+      const vr = new twilio.twiml.VoiceResponse();
+      saySafe(vr, 'Sorry there was a problem goodbye');
+      const xml = vr.toString();
+      console.log('[VOICE][WIZARD OUT error]', xml);
+      return res.type('text/xml').send(xml);
     }
   });
 }
