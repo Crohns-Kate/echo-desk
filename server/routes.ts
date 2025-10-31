@@ -159,6 +159,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(results);
   });
 
+  // Timezone test endpoint - verify AU timezone formatting works
+  app.get('/__tz-test', async (_req, res) => {
+    const { speakTimeAU, speakDayAU, formatAppointmentTimeAU, isMorningAU, dateOnlyAU } = await import('./utils/tz');
+    
+    const testSlots = [
+      "2025-10-31T23:00:00Z",  // 10am Nov 1 AEDT
+      "2025-11-01T02:00:00Z",  // 1pm Nov 1 AEDT
+      "2025-11-01T05:00:00Z"   // 4pm Nov 1 AEDT
+    ];
+    
+    const results = testSlots.map(slot => ({
+      utc: slot,
+      speakTimeAU: speakTimeAU(slot),
+      speakDayAU: speakDayAU(slot),
+      formatAppointmentTimeAU: formatAppointmentTimeAU(slot),
+      isMorningAU: isMorningAU(slot),
+      dateOnlyAU: dateOnlyAU(slot)
+    }));
+    
+    res.json({
+      ok: true,
+      timezone: 'Australia/Sydney',
+      samples: results
+    });
+  });
+
   // Register Twilio voice webhook routes
   registerVoice(app);
 
