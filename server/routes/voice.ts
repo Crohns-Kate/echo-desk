@@ -60,13 +60,32 @@ async function updateConversationTurns(
   });
 }
 
-// Helper to sanitize greeting text for Twilio TTS
-function sanitizeGreeting(s: string) {
-  return s
-    .replace(/[^\x20-\x7E]/g, ' ')   // ASCII only
-    .replace(/[.,!?;:]/g, '')        // strip punctuation
-    .replace(/\s+/g, ' ')            // collapse whitespace
+// Helper to sanitize text for Polly TTS (eliminates Twilio 13520 errors)
+function sanitizeForPolly(text: string | undefined) {
+  return String(text || '')
+    .replace(/[^\x20-\x7E]/g, ' ')  // ASCII only
+    .replace(/[.,!?;:]/g, '')       // remove punctuation
+    .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Multi-level fallback for voice synthesis
+function sayWithFallback(node: any, rawText: string) {
+  const text = sanitizeForPolly(rawText);
+  try {
+    // Primary: Polly.Olivia-Neural (works reliably in AU region)
+    node.say({ voice: 'Polly.Olivia-Neural' as any }, text);
+  } catch (e1: any) {
+    console.warn('[VOICE] Polly.Olivia-Neural failed:', e1?.message || e1);
+    try {
+      // Fallback 1: Polly.Nicole (standard quality)
+      node.say({ voice: 'Polly.Nicole' as any }, text);
+    } catch (e2: any) {
+      console.warn('[VOICE] Polly.Nicole failed:', e2?.message || e2);
+      // Fallback 2: Alice (Twilio default)
+      node.say({ voice: 'alice' as any }, text);
+    }
+  }
 }
 
 export function registerVoice(app: Express) {
@@ -87,31 +106,21 @@ export function registerVoice(app: Express) {
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
-      // Minimal, Polly-safe greeting (no punctuation)
-      const greeting = sanitizeGreeting(
-        `${tenant.greeting} how can I help you today`
-      );
+      const greeting = `${tenant.greeting} how can I help you today`;
 
       // Gather for speech
       const g = vr.gather({
         input: ['speech'],
         timeout: 5,
-        speechTimeout: 'auto',   // must be a STRING
+        speechTimeout: 'auto',   // must be string
         actionOnEmptyResult: true,
         bargeIn: true,
         action: handleUrl,
         method: 'POST'
       });
 
-      // IMPORTANT: For Polly voices, omit language attribute
-      // If Polly trips, fallback to 'alice'
-      try {
-        g.say({ voice: 'Polly.Nicole-Neural' as any }, greeting);
-      } catch (e: any) {
-        console.warn('[VOICE][WARN] Polly failed, fallback to alice:', e?.message || e);
-        g.say({ voice: 'alice' as any }, greeting);
-      }
-
+      // Use Polly.Olivia-Neural with multi-level fallback
+      sayWithFallback(g, greeting);
       g.pause({ length: 1 });
 
       // Safety net if no input
@@ -138,7 +147,7 @@ export function registerVoice(app: Express) {
     } catch (err) {
       console.error('[VOICE][ERROR][incoming]', err);
       const vr = new twilio.twiml.VoiceResponse();
-      vr.say({ voice: 'alice' as any }, 'Sorry there was a problem goodbye');
+      vr.say({ voice: 'alice' as any }, 'sorry there was a problem goodbye');
       res.type('text/xml').send(vr.toString());
     }
   });
