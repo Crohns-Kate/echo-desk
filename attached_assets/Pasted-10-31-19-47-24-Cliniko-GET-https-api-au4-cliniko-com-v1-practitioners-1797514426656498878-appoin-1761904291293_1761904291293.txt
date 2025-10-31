@@ -1,0 +1,69 @@
+10-31 19:47:24
+[Cliniko] GET https://api.au4.cliniko.com/v1/practitioners/1797514426656498878/appointment_types?per_page=50
+10-31 19:47:24
+[Cliniko] GET https://api.au4.cliniko.com/v1/businesses/1797514430146160197/practitioners/1797514426656498878/appointment_types/1797514429433128673/available_times?from=2025-10-31&to=2025-11-07&per_page=20
+10-31 19:47:25
+[Cliniko] getAvailability error Error: Cliniko API error 400: {"message":"Invalid time frame definition. Please check from/to param limitations."}
+10-31 19:47:25
+at clinikoGet2 (file:///home/runner/workspace/dist/index.js:606:11)
+10-31 19:47:25
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+10-31 19:47:25
+at async getAvailability (file:///home/runner/workspace/dist/index.js:681:18)
+10-31 19:47:25
+at async file:///home/runner/workspace/dist/index.js:1164:23
+10-31 19:47:25
+[Cliniko] findPatientByEmail error (q search): Error: Cliniko GET /v1/patients 400: {"message":"karabali@gmail.com is not filterable"}
+10-31 19:47:25
+at clinikoGet (file:///home/runner/workspace/dist/index.js:484:11)
+10-31 19:47:25
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+10-31 19:47:25
+at async findPatientByEmail (file:///home/runner/workspace/dist/index.js:507:18)
+10-31 19:47:25
+at async getOrCreatePatient (file:///home/runner/workspace/dist/index.js:564:15)
+10-31 19:47:25
+at async createAppointmentForPatient (file:///home/runner/workspace/dist/index.js:716:21)
+10-31 19:47:25
+at async file:///home/runner/workspace/dist/index.js:1172:17
+10-31 19:47:26
+[Cliniko] findPatientByPhone error: Error: Cliniko GET /v1/patients 400: {"message":"+61401687714 is not filterable"}
+10-31 19:47:26
+at clinikoGet (file:///home/runner/workspace/dist/index.js:484:11)
+10-31 19:47:26
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+10-31 19:47:26
+at async findPatientByPhone (file:///home/runner/workspace/dist/index.js:535:18)
+10-31 19:47:26
+at async getOrCreatePatient (file:///home/runner/workspace/dist/index.js:568:15)
+10-31 19:47:26
+at async createAppointmentForPatient (file:///home/runner/workspace/dist/index.js:716:21)
+10-31 19:47:26
+at async file:///home/runner/workspace/dist/index.js:1172:17
+10-31 19:47:26
+[Cliniko] POST https://api.au4.cliniko.com/v1/individual_appointments
+10-31 19:47:27
+[Cliniko] createAppointmentForPatient error Error: Cliniko API error 422: {"errors":{"appointment_end":"can’t be blank","business":"can’t be blank","practitioner_id":"doesn’t exist or is inactive.","max_attendees":"is not a number","ends_at":"can’t be blank"},"message":"Validation Failed"}
+10-31 19:47:27
+at clinikoPost2 (file:///home/runner/workspace/dist/index.js:620:11)
+10-31 19:47:27
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+10-31 19:47:27
+at async createAppointmentForPatient (file:///home/runner/workspace/dist/index.js:721:25)
+
+10-31 19:47:27
+at async file:///home/runner/workspace/dist/index.js:1172:17
+10-31 19:47:28
+[SMS] Sent confirmation to +61401687714
+10-31 19:47:28
+[VOICE][TwiML OUT] <?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Olivia-Neural">All set. We will send a confirmation by message. Goodbye</Say></Response>
+10-31 19:47:28
+9:47:28 AM [express] POST /api/voice/handle 200 in 4845ms
+
+Expand
+
+Wrap
+
+Colors
+
+Live
