@@ -1,0 +1,124 @@
+That TwiML looks fine 👍 — plain text in <Say> (no SSML), integer pause, speechTimeout="auto", and actionOnEmptyResult="true". If you’re still getting the “Say: Invalid text” 13520 after this, it’s almost certainly coming from what your /api/voice/handle returns next, not from this first response.
+
+Here’s a single copy-paste prompt for Replit AI Assistant to harden the handlers so “invalid text” can’t happen again and to add robust logging:
+
+
+---
+
+Replit AI Assistant Prompt — “Harden voice handlers + safe say”
+
+Please make these changes:
+
+1. Create a safeSay helper that strips anything Polly/Amazon might reject and prevents empty strings from reaching <Say>.
+
+
+
+File: server/utils/voice.ts (or similar utils file)
+
+
+export const PRIMARY_VOICE = "Polly.Olivia-Neural"; // AU
+export const SECONDARY_VOICE = "Polly.Nicole-Neural";
+
+export function sanitizeForSay(text?: string): string {
+  if (!text) return "";
+  // Remove non ASCII + risky punctuation that can trigger 13520 in edge cases
+  const cleaned = String(text)
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/[“”‘’]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned;
+}
+
+export function saySafe(node: any, text?: string) {
+  const t = sanitizeForSay(text);
+  if (!t) return;
+  try {
+    node.say({ voice: PRIMARY_VOICE /* , language: "en-AU" */ }, t);
+  } catch {
+    node.say({ voice: SECONDARY_VOICE /* , language: "en-AU" */ }, t);
+  }
+}
+
+2. Use saySafe everywhere you currently do node.say(...).
+
+
+
+In /api/voice/incoming, /api/voice/handle, /api/voice/wizard, replace lines like:
+
+
+gather.say({ voice: "Polly.Olivia-Neural" }, text);
+
+with:
+
+saySafe(gather, text);
+
+3. Always return valid TwiML on errors (never JSON/empty). Wrap your handlers:
+
+
+
+In each route (/incoming, /handle, /wizard), add:
+
+
+app.post("/api/voice/handle", async (req, res) => {
+  const twilio = require("twilio");
+  const vr = new twilio.twiml.VoiceResponse();
+  try {
+    // ... existing logic that builds vr
+    const xml = vr.toString();
+    console.log("[VOICE][TwiML OUT]", xml);
+    res.type("text/xml").send(xml);
+  } catch (err:any) {
+    console.error("[VOICE][ERROR]", err?.stack || err);
+    const fail = new twilio.twiml.VoiceResponse();
+    saySafe(fail, "Sorry, there was a problem. Please try again.");
+    const xml = fail.toString();
+    console.log("[VOICE][TwiML OUT][FAIL]", xml);
+    res.type("text/xml").send(xml);
+  }
+});
+
+(Do the same pattern for /api/voice/incoming and /api/voice/wizard.)
+
+4. Add a quick “echo” test route to be sure the next step won’t break:
+
+
+
+app.post("/api/voice/test-echo", (req, res) => {
+  const twilio = require("twilio");
+  const vr = new twilio.twiml.VoiceResponse();
+  const g = vr.gather({
+    input: "speech",
+    timeout: 5,
+    speechTimeout: "auto",
+    actionOnEmptyResult: true,
+    action: `${process.env.PUBLIC_BASE_URL}/api/voice/test-echo`,
+    method: "POST",
+  });
+  saySafe(g, "I’m listening. Say anything.");
+  g.pause({ length: 1 });
+  const xml = vr.toString();
+  console.log("[VOICE][TwiML OUT][ECHO]", xml);
+  res.type("text/xml").send(xml);
+});
+
+5. Optional but recommended: Add language="en-AU" to <Gather> (not to <Say>) in /incoming:
+
+
+
+const g = vr.gather({
+  input: "speech",
+  language: "en-AU",
+  timeout: 5,
+  speechTimeout: "auto",
+  actionOnEmptyResult: true,
+  action: actionUrl,
+  method: "POST",
+});
+
+After these changes, restart and call again. In Twilio’s Request Inspector, you should see [VOICE][TwiML OUT] logs for every leg. If any “Invalid text” ever reappears, the log will show the exact TwiML we returned, and saySafe will have stripped out anything suspicious.
+
+
+---
+
+If you want, paste the full [VOICE][TwiML OUT] for the next step of the call (the response from /api/voice/handle) and I’ll pinpoint the exact string that was tripping 13520, but the guard above usually eliminates it.

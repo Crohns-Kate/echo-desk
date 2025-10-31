@@ -78,9 +78,10 @@ export function registerVoice(app: Express) {
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
-      // Gather for speech - NO language, NO bargeIn on Gather
+      // Gather for speech with Australian English
       const g = vr.gather({
         input: ['speech'],
+        language: 'en-AU',
         timeout: 5,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
@@ -113,11 +114,13 @@ export function registerVoice(app: Express) {
       
       // Emit WebSocket event for new call
       emitCallStarted(call);
-    } catch (err) {
-      console.error('[VOICE][INCOMING ERROR]', err);
-      const vr = new twilio.twiml.VoiceResponse();
-      say(vr, 'Sorry there was a problem goodbye');
-      res.type('text/xml').send(vr.toString());
+    } catch (err: any) {
+      console.error('[VOICE][INCOMING ERROR]', err?.stack || err);
+      const fail = new twilio.twiml.VoiceResponse();
+      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      const xml = fail.toString();
+      console.log('[VOICE][INCOMING OUT][FAIL]', xml);
+      res.type('text/xml').send(xml);
     }
   });
 
@@ -158,9 +161,8 @@ export function registerVoice(app: Express) {
 
   // Handle conversation flow
   app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
-    const vr = new twilio.twiml.VoiceResponse();
-    
     try {
+      const vr = new twilio.twiml.VoiceResponse();
       const p = (req as any).twilioParams;
       const route = (req.query.route as string) || 'start';
       const speech = (p.SpeechResult || '').trim();
@@ -183,6 +185,7 @@ export function registerVoice(app: Express) {
       if (route === 'timeout') {
         const g = vr.gather({
           input: ['speech'],
+          language: 'en-AU',
           timeout: 5,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
@@ -258,6 +261,7 @@ export function registerVoice(app: Express) {
               return twiml(res, (vr) => {
                 const g = vr.gather({
                   input: ['speech'],
+                  language: 'en-AU',
                   timeout: 5,
                   speechTimeout: 'auto',
                   actionOnEmptyResult: true,
@@ -366,6 +370,7 @@ export function registerVoice(app: Express) {
               return twiml(res, (vr) => {
                 const g = vr.gather({
                   input: ['speech'],
+                  language: 'en-AU',
                   timeout: 5,
                   speechTimeout: 'auto',
                   actionOnEmptyResult: true,
@@ -386,6 +391,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -405,6 +411,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -500,6 +507,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -520,6 +528,7 @@ export function registerVoice(app: Express) {
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
+              language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
               actionOnEmptyResult: true,
@@ -556,6 +565,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -599,6 +609,7 @@ export function registerVoice(app: Express) {
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
+              language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
               actionOnEmptyResult: true,
@@ -612,6 +623,7 @@ export function registerVoice(app: Express) {
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
+              language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
               actionOnEmptyResult: true,
@@ -629,11 +641,12 @@ export function registerVoice(app: Express) {
         say(vr, 'Sorry, something went wrong. Goodbye');
       });
 
-    } catch (err) {
-      console.error('[VOICE][HANDLE ERROR]', err);
-      say(vr, 'Sorry there was a problem goodbye');
-      const xml = vr.toString();
-      console.log('[VOICE][HANDLE OUT error]', xml);
+    } catch (err: any) {
+      console.error('[VOICE][HANDLE ERROR]', err?.stack || err);
+      const fail = new twilio.twiml.VoiceResponse();
+      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      const xml = fail.toString();
+      console.log('[VOICE][HANDLE OUT][FAIL]', xml);
       return res.type('text/xml').send(xml);
     }
   });
@@ -658,6 +671,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -683,6 +697,7 @@ export function registerVoice(app: Express) {
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
+            language: 'en-AU',
             timeout: 5,
             speechTimeout: 'auto',
             actionOnEmptyResult: true,
@@ -704,6 +719,7 @@ export function registerVoice(app: Express) {
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
+              language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
               actionOnEmptyResult: true,
@@ -750,12 +766,12 @@ export function registerVoice(app: Express) {
       return twiml(res, (vr) => {
         say(vr, 'Sorry, something went wrong. Goodbye');
       });
-    } catch (err) {
-      console.error('[VOICE][WIZARD ERROR]', err);
-      const vr = new twilio.twiml.VoiceResponse();
-      say(vr, 'Sorry there was a problem goodbye');
-      const xml = vr.toString();
-      console.log('[VOICE][WIZARD OUT error]', xml);
+    } catch (err: any) {
+      console.error('[VOICE][WIZARD ERROR]', err?.stack || err);
+      const fail = new twilio.twiml.VoiceResponse();
+      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      const xml = fail.toString();
+      console.log('[VOICE][WIZARD OUT][FAIL]', xml);
       return res.type('text/xml').send(xml);
     }
   });
@@ -765,5 +781,31 @@ export function registerVoice(app: Express) {
     return twiml(res, (vr) => {
       say(vr, 'Voice system test successful');
     });
+  });
+
+  // Test echo route for interactive TwiML validation
+  app.post('/api/voice/test-echo', (req: Request, res: Response) => {
+    try {
+      return twiml(res, (vr) => {
+        const g = vr.gather({
+          input: ['speech'],
+          language: 'en-AU',
+          timeout: 5,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          action: abs('/api/voice/test-echo'),
+          method: 'POST'
+        });
+        say(g, 'I am listening Say anything to test');
+        pause(g, 1);
+      });
+    } catch (err: any) {
+      console.error('[VOICE][TEST-ECHO ERROR]', err?.stack || err);
+      const fail = new twilio.twiml.VoiceResponse();
+      say(fail, 'Test echo error');
+      const xml = fail.toString();
+      console.log('[VOICE][TEST-ECHO OUT][FAIL]', xml);
+      return res.type('text/xml').send(xml);
+    }
   });
 }
