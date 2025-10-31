@@ -96,13 +96,18 @@ Preferred communication style: Simple, everyday language.
 3. Twilio signature validation (optional in development)
 4. Error handling and response formatting
 
-**TwiML Hardening (Eliminates Twilio 12200 warnings):**
-- NO `language` attributes on `<Say>` or `<Gather>` elements
+**TwiML Hardening (Eliminates Twilio 13520/12200 errors):**
+- ALL `<Gather>` elements include `language='en-AU'` for Australian speech recognition (14 gather calls across incoming, handle, wizard routes)
+- NO `language` attributes on `<Say>` elements (language is set on Gather only)
 - NO `bargeIn` attributes on `<Say>` or `<Gather>` elements
 - All pauses use integer values only via `pause()` helper
-- Standard Gather pattern: `vr.gather({ input: ['speech'], timeout: 5, speechTimeout: 'auto', actionOnEmptyResult: true, ... })`
+- Standard Gather pattern: `vr.gather({ input: ['speech'], language: 'en-AU', timeout: 5, speechTimeout: 'auto', actionOnEmptyResult: true, ... })`
 - Every Gather followed by: `say(g, text); pause(g, 1);` pattern
-- Test endpoint: `/api/voice/ping` for TwiML validation
+- Comprehensive error handling: All voice handlers (/incoming, /handle, /wizard) create fresh VoiceResponse objects in catch blocks
+- Enhanced logging: All TwiML output logged with `[VOICE][TwiML OUT]` prefix; errors logged with stack traces
+- Test endpoints: 
+  - `/api/voice/ping` - Simple TwiML validation (returns success message)
+  - `/api/voice/test-echo` - Interactive TwiML validation (gather-based echo loop)
 
 ### Data Storage & Schema
 
