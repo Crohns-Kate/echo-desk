@@ -14,6 +14,11 @@ import {
   cancelAppointment,
   rescheduleAppointment
 } from '../services/cliniko';
+import { 
+  sendAppointmentConfirmation,
+  sendAppointmentRescheduled,
+  sendAppointmentCancelled
+} from '../services/sms';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
   const vr = new twilio.twiml.VoiceResponse();
@@ -273,6 +278,29 @@ export function registerVoice(app: Express) {
           });
         }
         
+        // Send SMS confirmation
+        const aptDate = new Date(chosen.startIso).toLocaleDateString('en-AU', { 
+          weekday: 'long', 
+          month: 'long', 
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit'
+        });
+        
+        if (route === 'reschedule-choose') {
+          await sendAppointmentRescheduled({
+            to: from,
+            appointmentDate: aptDate,
+            clinicName: tenant.clinicName
+          });
+        } else {
+          await sendAppointmentConfirmation({
+            to: from,
+            appointmentDate: aptDate,
+            clinicName: tenant.clinicName
+          });
+        }
+        
         return twiml(res, (vr) => {
           say(vr, 'All set. We will send a confirmation by message. Goodbye');
         });
@@ -355,6 +383,12 @@ export function registerVoice(app: Express) {
               summary: 'Appointment cancelled successfully'
             });
           }
+          
+          // Send SMS cancellation notice
+          await sendAppointmentCancelled({
+            to: from,
+            clinicName: tenant.clinicName
+          });
           
           return twiml(res, (vr) => {
             saySafe(vr, 'Your appointment has been cancelled. Goodbye');
