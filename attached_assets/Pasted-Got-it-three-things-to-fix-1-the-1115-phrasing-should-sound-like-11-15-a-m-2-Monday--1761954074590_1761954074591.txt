@@ -1,0 +1,283 @@
+Got it—three things to fix:
+
+1. the “1115” phrasing (should sound like “11:15 a.m.”),
+
+
+2. Monday → booking on Tuesday (weekday mapping/time-zone),
+
+
+3. reschedule can’t find the existing booking.
+
+
+
+Here’s a single Replit AI Assistant prompt that implements all three. Paste it into your project’s Replit AI chat.
+
+
+---
+
+Replit AI Assistant Prompt (paste all of this)
+
+Goal: Fix scheduling UX:
+
+Speak times naturally (“10:30 a.m.” / “11:15 a.m.”), not “1115”.
+
+Respect the caller’s requested weekday (“Monday”) using Australia/Brisbane time.
+
+Offer two real slots for that day/part (morning/afternoon) and map “option one/two” reliably.
+
+On booking, persist the Cliniko appointment id so reschedule can find and move it.
+
+
+0) Environment (one-time)
+
+Add/confirm these in Secrets:
+
+TZ=Australia/Brisbane
+PUBLIC_LOCALE=en-AU
+
+We will use this for consistent local time.
+
+
+---
+
+1) Time utilities (new file)
+
+Create server/time.ts:
+
+// server/time.ts
+export const AUST_TZ = process.env.TZ || "Australia/Brisbane";
+
+export function toLocal(dateISO: string | Date, tz = AUST_TZ): Date {
+  const d = typeof dateISO === "string" ? new Date(dateISO) : dateISO;
+  // JS Date is UTC internally; we retain UTC but format in tz
+  return d;
+}
+
+export function formatSlotForTTS(dateISO: string, tz = AUST_TZ) {
+  // Format as “10:30 am” to help ASR; Polly will read it naturally.
+  const dt = new Date(dateISO);
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: tz,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(dt).toLowerCase(); // e.g., "10:30 am"
+}
+
+export function isSameLocalDay(aISO: string, bISO: string, tz = AUST_TZ) {
+  const a = new Date(aISO);
+  const b = new Date(bISO);
+  const fmt = new Intl.DateTimeFormat("en-AU", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"
+  });
+  return fmt.format(a) === fmt.format(b);
+}
+
+export function nextWeekdayFromUtterance(utterance: string, now = new Date(), tz = AUST_TZ) {
+  const map: Record<string, number> = {
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+    today: -1, tomorrow: -2,
+  };
+  const u = (utterance || "").toLowerCase();
+  const key = Object.keys(map).find(k => u.includes(k));
+  const base = new Date(now);
+  if (!key) return null;
+
+  if (key === "today") return base;
+  if (key === "tomorrow") { base.setDate(base.getDate() + 1); return base; }
+
+  const want = map[key];
+  const current = base.getDay();
+  let delta = (want - current + 7) % 7;
+  if (delta === 0) delta = 7; // next week if they say “Monday” and it’s already Monday
+  base.setDate(base.getDate() + delta);
+  return base;
+}
+
+export function partOfDayFilter(utterance: string) {
+  const u = (utterance || "").toLowerCase();
+  if (u.includes("morning") || u.includes("early")) return "morning";
+  if (u.includes("afternoon") || u.includes("late")) return "afternoon";
+  return "any";
+}
+
+
+---
+
+2) Offer two human-readable options (change your book-part → book-choose handler)
+
+In your voice handler module, import utilities and rewrite the logic that builds the two options:
+
+// at top
+import { getAvailability } from "./cliniko_availability"; // whatever file name you used
+import { formatSlotForTTS, nextWeekdayFromUtterance, isSameLocalDay, partOfDayFilter, AUST_TZ } from "./time";
+
+// inside the route that handles 'book-part' → we already know desired day utterance from previous step
+async function offerTwoOptions(ctx) {
+  const { businessId, practitionerId, appointmentTypeId } = ctx.clinikoConfig;
+  const desiredDayISO = ctx.state.requestedDayISO; // store this when user said “Monday”
+  const part = partOfDayFilter(ctx.inputSpeech); // morning/afternoon/any
+
+  const avail = await getAvailability({ businessId, practitionerId, appointmentTypeId, days: 6 });
+  const slots: string[] = avail.slots || [];
+
+  // Filter to the selected weekday (local)
+  const daySlots = slots.filter(s => isSameLocalDay(s, desiredDayISO, AUST_TZ));
+
+  // Part-of-day filter: morning => <12:00, afternoon => >=12:00
+  const filtered = daySlots.filter(s => {
+    if (part === "any") return true;
+    const h = new Date(s).toLocaleTimeString("en-AU", { timeZone: AUST_TZ, hour: "2-digit", hour12: false });
+    const hour = parseInt(h, 10);
+    return part === "morning" ? hour < 12 : hour >= 12;
+  });
+
+  // Pick two consecutive options (or first two)
+  const opts = filtered.slice(0, 2);
+  // Fallback: if fewer than 2, top up from all daySlots
+  while (opts.length < 2 && daySlots[opts.length]) opts.push(daySlots[opts.length]);
+
+  // Save options in session so we can map “option one/two”
+  ctx.state.offered = opts;
+
+  // Speak with friendly times (avoid raw 1115)
+  const say1 = opts[0] ? formatSlotForTTS(opts[0]) : null;
+  const say2 = opts[1] ? formatSlotForTTS(opts[1]) : null;
+
+  if (say1 && say2) {
+    return ctx.sayGather(
+      `I have two options. Option one, ${say1}. Or option two, ${say2}.`,
+      { route: "book-choose" }
+    );
+  } else if (say1) {
+    return ctx.sayGather(
+      `I have one option available, ${say1}. Would you like that?`,
+      { route: "book-choose" }
+    );
+  } else {
+    return ctx.say(`Sorry, I can’t see availability that ${part === "any" ? "day" : part + " that day"}.`);
+  }
+}
+
+Make sure when the user first says “Monday” you compute and store the exact local date you’re aiming for:
+
+// in 'book-day' handler
+import { nextWeekdayFromUtterance } from "./time";
+
+const when = nextWeekdayFromUtterance(ctx.inputSpeech);
+if (!when) {
+  return ctx.sayGather("Which day suits you? For example, Monday or Tuesday.", { route: "book-day" });
+}
+ctx.state.requestedDayISO = when.toISOString();
+return ctx.sayGather("Morning or afternoon?", { route: "book-part" });
+
+
+---
+
+3) Robust selection parsing (“option one/two” or explicit time)
+
+Update your book-choose handler:
+
+function parseOptionIndex(utterance: string): number | null {
+  const u = (utterance || "").toLowerCase();
+  if (u.includes("one") || u.includes("1")) return 0;
+  if (u.includes("two") || u.includes("2")) return 1;
+  return null;
+}
+
+async function handleChoose(ctx) {
+  const offered: string[] = ctx.state.offered || [];
+  if (!offered.length) {
+    return ctx.sayGather("Sorry, I lost those options. Should I search again?", { route: "book-part" });
+  }
+
+  // Prefer explicit “option one/two”
+  let idx = parseOptionIndex(ctx.inputSpeech);
+
+  // If speech ASR mis-parsed a time (e.g., “115 m”), fall back to nearest slot
+  if (idx === null) {
+    // Try fuzzy: if utterance includes a number like "10 30" or "11 15", pick closest
+    const digits = (ctx.inputSpeech || "").replace(/\D/g, ""); // "1030", "1115"
+    if (digits.length >= 3) {
+      const wantH = parseInt(digits.slice(0, -2), 10);  // rough hour
+      const wantM = parseInt(digits.slice(-2), 10);
+      const targetMins = wantH * 60 + wantM;
+      const deltas = offered.map(s => {
+        const d = new Date(s);
+        const h = parseInt(d.toLocaleTimeString("en-AU", { timeZone: AUST_TZ, hour: "2-digit", hour12: false }), 10);
+        const m = parseInt(d.toLocaleTimeString("en-AU", { timeZone: AUST_TZ, minute: "2-digit", hour12: false }), 10);
+        return Math.abs((h * 60 + m) - targetMins);
+      });
+      idx = deltas.indexOf(Math.min(...deltas));
+    } else {
+      idx = 0; // safe default to first option
+    }
+  }
+
+  const chosen = offered[idx] || offered[0];
+  ctx.state.chosenSlotISO = chosen;
+
+  // proceed to identity / confirmation flow...
+  return ctx.redirect({ route: "book-confirm" });
+}
+
+
+---
+
+4) Persist appointment id for reschedule
+
+Create a tiny table/model appointments (or use your existing store) with:
+
+id (pk), phone, patient_id, cliniko_appointment_id, starts_at, created_at.
+
+
+When booking succeeds (Cliniko returns the appointment), store cliniko_appointment_id. Also, echo a short confirmation SMS with the local time.
+
+// after createAppointmentForPatient(...)
+const appt = await createAppointmentForPatient(...);
+await storage.saveAppointment({
+  phone: ctx.callerE164,
+  patient_id: patient.id,
+  cliniko_appointment_id: appt.id,
+  starts_at: appt.starts_at,
+});
+
+Reschedule flow:
+
+When caller says “reschedule”, look up their most recent upcoming appointment from our table by phone (fallback: by patient_id via Cliniko if you already have it).
+
+Re-run the offerTwoOptions for the new day/part.
+
+When they choose, update the appointment:
+
+simplest: DELETE old appointment then POST a new one (only if you’ve enabled this; otherwise use Cliniko’s update endpoint if available in your codebase).
+
+
+Confirm by voice + SMS.
+
+
+Add a safety line if nothing is found:
+
+const last = await storage.findUpcomingByPhone(ctx.callerE164);
+if (!last) {
+  return ctx.sayGather("I couldn’t find an upcoming booking under this number. Would you like to make a new appointment?", { route: "book-day" });
+}
+
+
+---
+
+5) Why the Tuesday booking happened
+
+We now anchor the requested weekday to the next occurrence in Australia/Brisbane and filter the slots to that exact local date, so the slot chosen will always be on the user’s chosen day. (Previously, you were pulling a generic 5-day window and picking the first two—often not the intended weekday, especially with UTC ‘Z’ times.)
+
+
+---
+
+6) Why “1115” happened
+
+We now format times as “11:15 am” (with a colon and space), which Polly reads naturally and Twilio ASR understands better. We also accept “option one/two” so users don’t need to repeat the time; and we added a fuzzy fallback if they do say a time and ASR mangles it.
+
+
+---
+
+**Please implement exactly as above, keep existing logs, and post a diff summary when done.**
