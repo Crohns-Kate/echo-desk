@@ -1,0 +1,108 @@
+Paste this verbatim to Replit’s AI Assistant:
+
+> Task: Add two Express GET routes to our EchoDesk server: /__cliniko/health and /__cliniko/avail.
+Repo assumptions: We have an Express app already (e.g., app = express()), CLINIKO_API_KEY is set, and we’re running on Node 18+.
+
+1) Create/ensure a tiny Cliniko client (if not present)
+
+File: server/cliniko/client.ts (or adapt to existing path)
+
+
+const REGION = process.env.CLINIKO_REGION || 'au4';
+const BASE = `https://api.${REGION}.cliniko.com/v1`;
+
+export async function clinikoGet(path: string, params: Record<string,string|number|undefined> = {}) {
+  const url = new URL(`${BASE}${path}`);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  });
+  const r = await fetch(url.toString(), {
+    headers: {
+      'Authorization': `Basic ${Buffer.from((process.env.CLINIKO_API_KEY || '') + ':').toString('base64')}`,
+      'Accept': 'application/json',
+      'User-Agent': 'EchoDesk/1.0'
+    }
+  });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`Cliniko GET ${path} ${r.status}: ${body}`);
+  }
+  return r.json();
+}
+
+2) Add routes to the main server (where app is defined)
+
+In your main routes file (e.g., server/routes.ts or dist/index source), import the client:
+
+
+import express from 'express';
+import { clinikoGet } from './cliniko/client';
+
+const app = /* existing app instance */;
+
+Health route:
+
+
+app.get('/__cliniko/health', (_req, res) => {
+  res.json({
+    ok: true,
+    region: process.env.CLINIKO_REGION || 'au4',
+    businessId: process.env.CLINIKO_BUSINESS_ID || null,
+    practitionerId: process.env.CLINIKO_PRACTITIONER_ID || null,
+    appointmentTypeId: process.env.CLINIKO_APPOINTMENT_TYPE_ID || null,
+  });
+});
+
+Availability route (today → +7 days, date-only format):
+
+
+function toYMD(d: Date) {
+  // Returns YYYY-MM-DD in UTC
+  return d.toISOString().slice(0, 10);
+}
+
+app.get('/__cliniko/avail', async (_req, res) => {
+  try {
+    const businessId = process.env.CLINIKO_BUSINESS_ID!;
+    const practitionerId = process.env.CLINIKO_PRACTITIONER_ID!;
+    const appointmentTypeId = process.env.CLINIKO_APPOINTMENT_TYPE_ID!;
+    if (!businessId || !practitionerId || !appointmentTypeId) {
+      return res.status(400).json({ ok: false, error: 'Missing Cliniko IDs in env' });
+    }
+
+    const today = new Date();
+    const to = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const fromStr = toYMD(today);
+    const toStr = toYMD(to);
+
+    const path = `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times`;
+    const data = await clinikoGet(path, { from: fromStr, to: toStr, per_page: 50 });
+
+    res.json({
+      ok: true,
+      range: { from: fromStr, to: toStr },
+      count: Array.isArray(data?.available_times) ? data.available_times.length : 0,
+      available_times: data?.available_times || [],
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+3) Rebuild and run
+
+Make sure PUBLIC_BASE_URL is https://echo-desk-<your>.replit.app.
+
+Ensure these env vars exist: CLINIKO_REGION=au4, CLINIKO_BUSINESS_ID, CLINIKO_PRACTITIONER_ID, CLINIKO_APPOINTMENT_TYPE_ID.
+
+Redeploy; confirm logs show server started.
+
+
+4) Verify
+
+Open <PUBLIC_BASE_URL>/__cliniko/health → { ok: true, ... }
+
+Open <PUBLIC_BASE_URL>/__cliniko/avail → JSON array of available_times (or [] if no slots in the next 7 days).
+
+
+Do not modify unrelated Twilio routes. Only add these endpoints and import lines as needed. Keep TypeScript/JS consistent with the repo.
