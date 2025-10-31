@@ -466,8 +466,54 @@ export function registerVoice(app: Express) {
         const context = conversation?.context as any || {};
         const bookingDate = context.bookingDate || tomorrowAU();
         
+        // If user says "no" to fallback offer, go back to day selection
+        if (/\b(no|nope|nah)\b/i.test(speech) && context.offeredFallback) {
+          // Clear fallback flag
+          if (conversation) {
+            await storage.updateConversation(conversation.id, {
+              context: {
+                ...context,
+                offeredFallback: false
+              }
+            });
+          }
+          
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route.replace('part','day')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+              method: 'POST'
+            });
+            say(g, 'No problem. Which other day would work for you');
+            pause(g, 1);
+          });
+        }
+        
         // Determine if morning or afternoon
-        const wantMorning = speech.includes('morning');
+        let wantMorning = speech.includes('morning');
+        
+        // If user says "yes" to fallback offer, flip to the opposite time
+        if (/\b(yes|yeah|sure|ok|okay)\b/i.test(speech) && context.offeredFallback) {
+          // Flip to opposite of what they originally wanted
+          wantMorning = !context.wantMorning;
+        }
+        
+        // Store the original preference before fetching slots (needed for fallback logic)
+        if (conversation && !context.offeredFallback) {
+          const updatedContext = {
+            ...context,
+            wantMorning
+          };
+          await storage.updateConversation(conversation.id, {
+            context: updatedContext
+          });
+          // Update local context to reflect DB state
+          Object.assign(context, updatedContext);
+        }
         
         // Fetch all slots for the chosen date
         const allSlots = await getAvailability({ dayIso: bookingDate });
@@ -486,26 +532,63 @@ export function registerVoice(app: Express) {
             context: {
               ...context,
               availableSlots: twoSlots,
-              wantMorning
+              wantMorning,
+              offeredFallback: false // Clear flag when successfully showing slots
             }
           });
         }
         
         // Build response based on available slots
         if (twoSlots.length === 0) {
-          return twiml(res, (vr) => {
-            const g = vr.gather({
-              input: ['speech'],
-              language: 'en-AU',
-              timeout: 5,
-              speechTimeout: 'auto',
-              actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
-              method: 'POST'
+          // Check if the opposite time of day has slots
+          const oppositeSlots = allSlots.filter(slot => 
+            wantMorning ? !isMorningAU(slot.startIso) : isMorningAU(slot.startIso)
+          );
+          
+          if (oppositeSlots.length > 0) {
+            // Set flag to track that we offered a fallback
+            if (conversation) {
+              const updatedContext = {
+                ...context,
+                offeredFallback: true
+              };
+              await storage.updateConversation(conversation.id, {
+                context: updatedContext
+              });
+              // Update local context to reflect DB state
+              Object.assign(context, updatedContext);
+            }
+            
+            // Offer the opposite time of day
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech'],
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+                method: 'POST'
+              });
+              say(g, `I could not find times in the ${wantMorning ? 'morning' : 'afternoon'}. Would you like the ${wantMorning ? 'afternoon' : 'morning'} instead`);
+              pause(g, 1);
             });
-            say(g, `I could not find times in the ${wantMorning ? 'morning' : 'afternoon'}. Would you like the ${wantMorning ? 'afternoon' : 'morning'} instead`);
-            pause(g, 1);
-          });
+          } else {
+            // No slots available for this day at all - ask to try another day
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech'],
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=${route.replace('part','day')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+                method: 'POST'
+              });
+              say(g, 'Sorry no times available on that day. Which other day would work for you');
+              pause(g, 1);
+            });
+          }
         } else if (twoSlots.length === 1) {
           const time1 = speakTimeAU(twoSlots[0].startIso);
           return twiml(res, (vr) => {
