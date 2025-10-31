@@ -7,7 +7,13 @@ import { say, saySSML, gather } from '../utils/say';
 import { safeSpoken } from '../utils/tts-guard';
 import { abs } from '../utils/url';
 import { detectIntent } from '../services/intent';
-import { getAvailability, createAppointmentForPatient } from '../services/cliniko';
+import { 
+  getAvailability, 
+  createAppointmentForPatient,
+  getPatientAppointments,
+  cancelAppointment,
+  rescheduleAppointment
+} from '../services/cliniko';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
   const vr = new twilio.twiml.VoiceResponse();
@@ -154,16 +160,32 @@ export function registerVoice(app: Express) {
             });
           
           case 'reschedule':
-            return twiml(res, (vr) => {
-              const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}`));
-              saySafe(g, 'Okay, which day would you like instead?');
-            });
+            {
+              const appointments = await getPatientAppointments(from);
+              if (appointments.length === 0) {
+                return twiml(res, (vr) => {
+                  saySafe(vr, 'I could not find any upcoming appointments. Would you like to book a new one? Call back when ready. Goodbye');
+                });
+              }
+              
+              return twiml(res, (vr) => {
+                vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=reschedule-lookup&callSid=${encodeURIComponent(callSid)}`));
+              });
+            }
           
           case 'cancel':
-            return twiml(res, (vr) => {
-              const g = gather(vr, abs(`/api/voice/handle?route=offer-reschedule&callSid=${encodeURIComponent(callSid)}`));
-              saySafe(g, 'Okay, would you like to reschedule instead of cancelling?');
-            });
+            {
+              const appointments = await getPatientAppointments(from);
+              if (appointments.length === 0) {
+                return twiml(res, (vr) => {
+                  saySafe(vr, 'I could not find any upcoming appointments. Goodbye');
+                });
+              }
+              
+              return twiml(res, (vr) => {
+                vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=cancel-lookup&callSid=${encodeURIComponent(callSid)}`));
+              });
+            }
           
           case 'human':
             await storage.createAlert({ 
@@ -202,17 +224,21 @@ export function registerVoice(app: Express) {
 
       // Booking flow - day
       if (route === 'book-day' || route === 'reschedule-day') {
+        const aptId = req.query.aptId as string | undefined;
+        const aptIdParam = aptId ? `&aptId=${aptId}` : '';
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('day','part')}&callSid=${encodeURIComponent(callSid)}`));
+          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('day','part')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`));
           saySafe(g, 'Morning or afternoon?');
         });
       }
 
       // Booking flow - part
       if (route === 'book-part' || route === 'reschedule-part') {
+        const aptId = req.query.aptId as string | undefined;
+        const aptIdParam = aptId ? `&aptId=${aptId}` : '';
         const slots = await getAvailability();
         return twiml(res, (vr) => {
-          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}`));
+          const g = gather(vr, abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`));
           saySafe(g, 'I have two options. Option one or option two?');
         });
       }
@@ -221,18 +247,24 @@ export function registerVoice(app: Express) {
       if (route === 'book-choose' || route === 'reschedule-choose') {
         const slots = await getAvailability();
         const chosen = slots[0];
+        const aptId = req.query.aptId as string | undefined;
         
         // Get caller identity
         const phoneData = await storage.getPhoneMap(from);
         
-        const apt = await createAppointmentForPatient(from, {
-          practitionerId: chosen.practitionerId,
-          appointmentTypeId: chosen.appointmentTypeId,
-          startsAt: chosen.startIso,
-          notes: route.startsWith('reschedule') ? 'Rescheduled via EchoDesk' : 'Booked via EchoDesk',
-          fullName: phoneData?.fullName,
-          email: phoneData?.email
-        });
+        let apt;
+        if (route === 'reschedule-choose' && aptId) {
+          apt = await rescheduleAppointment(aptId, chosen.startIso);
+        } else {
+          apt = await createAppointmentForPatient(from, {
+            practitionerId: chosen.practitionerId,
+            appointmentTypeId: chosen.appointmentTypeId,
+            startsAt: chosen.startIso,
+            notes: route.startsWith('reschedule') ? 'Rescheduled via EchoDesk' : 'Booked via EchoDesk',
+            fullName: phoneData?.fullName || undefined,
+            email: phoneData?.email || undefined
+          });
+        }
         
         // Update call log with appointment details
         if (callSid) {
@@ -246,22 +278,96 @@ export function registerVoice(app: Express) {
         });
       }
 
-      // Cancel - offer reschedule
-      if (route === 'offer-reschedule') {
+      // Lookup appointment for rescheduling
+      if (route === 'reschedule-lookup') {
+        const appointments = await getPatientAppointments(from);
+        const apt = appointments[0];
+        
+        if (!apt) {
+          return twiml(res, (vr) => {
+            saySafe(vr, 'No appointments found. Goodbye');
+          });
+        }
+        
+        const aptDate = new Date(apt.starts_at).toLocaleDateString('en-AU', { 
+          weekday: 'long', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        return twiml(res, (vr) => {
+          const g = gather(vr, abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`));
+          saySafe(g, `I found your appointment on ${aptDate}. Would you like to reschedule it?`);
+        });
+      }
+      
+      // Confirm reschedule
+      if (route === 'reschedule-confirm') {
         const yes = /\b(yes|yeah|ok|sure|please)\b/i.test(speech);
+        const aptId = req.query.aptId as string;
+        
         if (yes) {
           return twiml(res, (vr) => {
-            const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}`));
-            say(vr, 'Great. Which day works for you?');
+            const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
+            saySafe(g, 'Great. Which day works for you?');
           });
         } else {
+          return twiml(res, (vr) => {
+            saySafe(vr, 'Okay, your appointment remains unchanged. Goodbye');
+          });
+        }
+      }
+      
+      // Lookup appointment for cancellation
+      if (route === 'cancel-lookup') {
+        const appointments = await getPatientAppointments(from);
+        const apt = appointments[0];
+        
+        if (!apt) {
+          return twiml(res, (vr) => {
+            saySafe(vr, 'No appointments found. Goodbye');
+          });
+        }
+        
+        const aptDate = new Date(apt.starts_at).toLocaleDateString('en-AU', { 
+          weekday: 'long', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        return twiml(res, (vr) => {
+          const g = gather(vr, abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`));
+          saySafe(g, `I found your appointment on ${aptDate}. Would you like to cancel it or reschedule instead?`);
+        });
+      }
+      
+      // Confirm cancellation
+      if (route === 'cancel-confirm') {
+        const aptId = req.query.aptId as string;
+        const cancel = /\b(cancel|yes)\b/i.test(speech);
+        const reschedule = /\b(reschedule|change)\b/i.test(speech);
+        
+        if (cancel) {
+          await cancelAppointment(aptId);
+          
           if (callSid) {
             await storage.updateCall(callSid, { 
-              summary: 'Caller cancelled appointment'
+              summary: 'Appointment cancelled successfully'
             });
           }
+          
           return twiml(res, (vr) => {
-            say(vr, 'Understood. Your appointment is cancelled. Goodbye');
+            saySafe(vr, 'Your appointment has been cancelled. Goodbye');
+          });
+        } else if (reschedule) {
+          return twiml(res, (vr) => {
+            const g = gather(vr, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
+            saySafe(g, 'Great. Which day works for you?');
+          });
+        } else {
+          return twiml(res, (vr) => {
+            const g = gather(vr, abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${aptId}`));
+            saySafe(g, 'Please say cancel or reschedule');
           });
         }
       }
