@@ -155,18 +155,21 @@ export async function getAvailability(opts?: {
       throw new Error('No appointment types found for practitioner');
     }
     
-    // CRITICAL FIX: Clamp date window to ≤7 days and ensure future dates
-    const today = new Date();
-    const startDate = opts?.dayIso ? new Date(opts.dayIso) : today;
+    // CRITICAL FIX: Clamp date window to ≤6 days and ensure future dates
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
     
-    // Ensure start date is not in the past
-    if (startDate < today) {
-      startDate.setTime(today.getTime());
+    const startDate = opts?.dayIso ? new Date(opts.dayIso) : tomorrow;
+    
+    // Ensure start date is in the future
+    if (startDate <= now) {
+      startDate.setTime(tomorrow.getTime());
     }
     
-    // Clamp to max 6 days from start (7-day window)
+    // Clamp to max 5 days from start (6-day window total)
     const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 7);
+    endDate.setDate(endDate.getDate() + 5);
     
     // Use YYYY-MM-DD format (safer than full ISO for Cliniko)
     const from = startDate.toISOString().split('T')[0];
