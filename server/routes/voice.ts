@@ -20,6 +20,15 @@ import {
   sendAppointmentCancelled
 } from '../services/sms';
 import { emitCallStarted, emitCallUpdated, emitAlertCreated } from '../services/websocket';
+import { 
+  speakTimeAU, 
+  speakDayAU, 
+  dateOnlyAU, 
+  isMorningAU,
+  tomorrowAU,
+  todayAU,
+  formatAppointmentTimeAU
+} from '../utils/tz';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
   const vr = new twilio.twiml.VoiceResponse();
@@ -384,10 +393,52 @@ export function registerVoice(app: Express) {
         }
       }
 
-      // Booking flow - day
+      // Booking flow - day (parse user's day choice)
       if (route === 'book-day' || route === 'reschedule-day') {
+        const speech = (req.body.SpeechResult || '').toLowerCase();
         const aptId = req.query.aptId as string | undefined;
         const aptIdParam = aptId ? `&aptId=${aptId}` : '';
+        
+        // Get conversation from call log
+        const call = await storage.getCallByCallSid(callSid);
+        const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
+        
+        // Parse day from speech (simple handling - can be enhanced with NLP)
+        let localDate = tomorrowAU(); // default to tomorrow
+        
+        if (speech.includes('today')) {
+          localDate = todayAU();
+        } else if (speech.includes('tomorrow')) {
+          localDate = tomorrowAU();
+        } else if (speech.includes('monday') || speech.includes('tuesday') || 
+                   speech.includes('wednesday') || speech.includes('thursday') || 
+                   speech.includes('friday')) {
+          // For weekday names, find the next occurrence
+          const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+          const targetDay = days.findIndex(d => speech.includes(d));
+          if (targetDay !== -1) {
+            const now = new Date();
+            const currentDay = now.getDay();
+            let daysToAdd = targetDay - currentDay;
+            if (daysToAdd <= 0) daysToAdd += 7; // next week if already passed
+            const targetDate = new Date(now);
+            targetDate.setDate(targetDate.getDate() + daysToAdd);
+            localDate = dateOnlyAU(targetDate.toISOString());
+          }
+        }
+        
+        // Store the chosen date in conversation context
+        if (conversation) {
+          const existingContext = conversation.context as any || {};
+          await storage.updateConversation(conversation.id, {
+            context: {
+              ...existingContext,
+              bookingDate: localDate,
+              isReschedule: route.startsWith('reschedule')
+            }
+          });
+        }
+        
         return twiml(res, (vr) => {
           const g = vr.gather({
             input: ['speech'],
@@ -403,31 +454,130 @@ export function registerVoice(app: Express) {
         });
       }
 
-      // Booking flow - part
+      // Booking flow - part (fetch real slots and speak them)
       if (route === 'book-part' || route === 'reschedule-part') {
+        const speech = (req.body.SpeechResult || '').toLowerCase();
         const aptId = req.query.aptId as string | undefined;
         const aptIdParam = aptId ? `&aptId=${aptId}` : '';
-        const slots = await getAvailability();
-        return twiml(res, (vr) => {
-          const g = vr.gather({
-            input: ['speech'],
-            language: 'en-AU',
-            timeout: 5,
-            speechTimeout: 'auto',
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
-            method: 'POST'
+        
+        // Get conversation to retrieve stored booking date
+        const call = await storage.getCallByCallSid(callSid);
+        const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
+        const context = conversation?.context as any || {};
+        const bookingDate = context.bookingDate || tomorrowAU();
+        
+        // Determine if morning or afternoon
+        const wantMorning = speech.includes('morning');
+        
+        // Fetch all slots for the chosen date
+        const allSlots = await getAvailability({ dayIso: bookingDate });
+        
+        // Filter by morning/afternoon in AU timezone
+        const filteredSlots = allSlots.filter(slot => 
+          wantMorning ? isMorningAU(slot.startIso) : !isMorningAU(slot.startIso)
+        );
+        
+        // Take first two slots
+        const twoSlots = filteredSlots.slice(0, 2);
+        
+        // Store slots in conversation context
+        if (conversation) {
+          await storage.updateConversation(conversation.id, {
+            context: {
+              ...context,
+              availableSlots: twoSlots,
+              wantMorning
+            }
           });
-          say(g, 'I have two options Option one or option two');
-          pause(g, 1);
-        });
+        }
+        
+        // Build response based on available slots
+        if (twoSlots.length === 0) {
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+              method: 'POST'
+            });
+            say(g, `I could not find times in the ${wantMorning ? 'morning' : 'afternoon'}. Would you like the ${wantMorning ? 'afternoon' : 'morning'} instead`);
+            pause(g, 1);
+          });
+        } else if (twoSlots.length === 1) {
+          const time1 = speakTimeAU(twoSlots[0].startIso);
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+              method: 'POST'
+            });
+            say(g, `I have ${time1}. Would you like to take that time`);
+            pause(g, 1);
+          });
+        } else {
+          const time1 = speakTimeAU(twoSlots[0].startIso);
+          const time2 = speakTimeAU(twoSlots[1].startIso);
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
+              method: 'POST'
+            });
+            say(g, `I have two options. Option one ${time1} or option two ${time2}`);
+            pause(g, 1);
+          });
+        }
       }
 
-      // Booking flow - choose
+      // Booking flow - choose (parse choice and book)
       if (route === 'book-choose' || route === 'reschedule-choose') {
-        const slots = await getAvailability();
-        const chosen = slots[0];
+        const speech = (req.body.SpeechResult || '').toLowerCase();
         const aptId = req.query.aptId as string | undefined;
+        
+        // Get conversation to retrieve stored slots
+        const call = await storage.getCallByCallSid(callSid);
+        const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
+        const context = conversation?.context as any || {};
+        const availableSlots = context.availableSlots || [];
+        
+        // Parse user's choice
+        let chosen = null;
+        if (/one|1|first/i.test(speech) && availableSlots.length >= 1) {
+          chosen = availableSlots[0];
+        } else if (/two|2|second/i.test(speech) && availableSlots.length >= 2) {
+          chosen = availableSlots[1];
+        } else if (/yes|yeah|sure|ok/i.test(speech) && availableSlots.length === 1) {
+          // If only one option was offered and user says "yes"
+          chosen = availableSlots[0];
+        }
+        
+        // If no valid choice, ask again
+        if (!chosen) {
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+              method: 'POST'
+            });
+            say(g, 'Sorry I did not catch that. Say option one or option two');
+            pause(g, 1);
+          });
+        }
         
         // Get caller identity
         const phoneData = await storage.getPhoneMap(from);
@@ -451,7 +601,7 @@ export function registerVoice(app: Express) {
         // Update call log with appointment details
         if (callSid) {
           const updatedCall = await storage.updateCall(callSid, {
-            summary: `${route.startsWith('reschedule') ? 'Rescheduled' : 'Booked'} appointment for ${new Date(chosen.startIso).toLocaleDateString('en-AU')}`
+            summary: `${route.startsWith('reschedule') ? 'Rescheduled' : 'Booked'} appointment for ${formatAppointmentTimeAU(chosen.startIso)}`
           });
           
           if (updatedCall) {
@@ -459,14 +609,8 @@ export function registerVoice(app: Express) {
           }
         }
         
-        // Send SMS confirmation
-        const aptDate = new Date(chosen.startIso).toLocaleDateString('en-AU', { 
-          weekday: 'long', 
-          month: 'long', 
-          day: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit'
-        });
+        // Send SMS confirmation with AU timezone formatting
+        const aptDate = formatAppointmentTimeAU(chosen.startIso);
         
         if (route === 'reschedule-choose') {
           await sendAppointmentRescheduled({

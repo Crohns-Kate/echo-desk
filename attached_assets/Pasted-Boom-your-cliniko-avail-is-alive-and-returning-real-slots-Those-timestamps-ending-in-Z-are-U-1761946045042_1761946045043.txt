@@ -1,0 +1,257 @@
+Boom — your /__cliniko/avail is alive and returning real slots 🎉
+Those timestamps ending in Z are UTC. We’ll convert them to Australia/Sydney before speaking them and wire the live slots into the call flow so the bot offers two real options and books the one the caller chooses.
+
+Here’s a single copy-paste Replit AI Assistant prompt to finish the job:
+
+
+---
+
+Replit AI Assistant Prompt — “Use real Cliniko slots in the call flow (AU time), then book”
+
+Goal:
+
+Convert /__cliniko/avail UTC slots to Australia/Sydney for speech.
+
+In the voice flow:
+
+1. After caller picks day and morning/afternoon, fetch real slots for that day.
+
+
+2. Offer two real options (“option one” / “option two”) using local times.
+
+
+3. When user picks, create Cliniko appointment with starts_at and computed ends_at (using appointment type duration).
+
+
+4. Send SMS confirmation.
+
+
+
+
+Make these changes:
+
+1. Add server/utils/tz.ts (UTC→Australia/Sydney + speech helpers)
+
+
+
+// server/utils/tz.ts
+const TZ = 'Australia/Sydney';
+
+export function toSydney(isoUtc: string): Date {
+  // Treat incoming as UTC and display in AU/Sydney
+  const dt = new Date(isoUtc);
+  // For speech/display we just format with timeZone=Australia/Sydney
+  return dt; // keep Date; use format helpers below
+}
+
+export function speakTimeAU(isoUtc: string): string {
+  const d = new Date(isoUtc);
+  const time = new Intl.DateTimeFormat('en-AU', {
+    timeZone: TZ, hour: 'numeric', minute: '2-digit', hour12: true
+  }).format(d).toLowerCase(); // e.g., "9:15 am"
+  return time.replace(' ', ''); // "9:15am"
+}
+
+export function speakDayAU(isoUtc: string): string {
+  const d = new Date(isoUtc);
+  return new Intl.DateTimeFormat('en-AU', {
+    timeZone: TZ, weekday: 'long', month: 'long', day: 'numeric'
+  }).format(d); // e.g., "Monday, November 3"
+}
+
+export function dateOnlyAU(isoUtc: string): string {
+  const d = new Date(isoUtc);
+  const y = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric' }).format(d);
+  const m = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, month: '2-digit' }).format(d);
+  const da = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, day: '2-digit' }).format(d);
+  return `${y}-${m}-${da}`;
+}
+
+export function isMorningAU(isoUtc: string): boolean {
+  const d = new Date(isoUtc);
+  const hour = Number(new Intl.DateTimeFormat('en-AU', { timeZone: TZ, hour: 'numeric', hour12: false }).format(d));
+  return hour < 12;
+}
+
+2. Add server/cliniko/types.ts to fetch appointment type duration (so we can compute ends_at)
+
+
+
+// server/cliniko/types.ts
+import { clinikoGet } from './http';
+
+export async function getAppointmentType(appointmentTypeId: string) {
+  return clinikoGet(`/appointment_types/${appointmentTypeId}`);
+}
+
+3. Update your main voice handler (where routes like book-day, book-part, book-choose live).
+Add helpers to fetch same-day availability and present 2 options:
+
+
+
+// at top
+import { getAvailability } from './cliniko/availability';
+import { getAppointmentType } from './cliniko/types';
+import { speakTimeAU, speakDayAU, dateOnlyAU, isMorningAU } from './utils/tz';
+import { createIndividualAppointment } from './cliniko/appointments';
+
+// Keep these IDs in env (you already set them):
+const BUSINESS_ID = process.env.CLINIKO_BUSINESS_ID!;
+const PRACTITIONER_ID = process.env.CLINIKO_PRACTITIONER_ID!;
+const APPT_TYPE_ID = process.env.CLINIKO_APPOINTMENT_TYPE_ID!;
+
+// Return two options for a specific local date + morning/afternoon filter
+async function pickTwoSlotsForDay(localDateYYYYMMDD: string, wantMorning: boolean) {
+  const data = await getAvailability({
+    businessId: BUSINESS_ID,
+    practitionerId: PRACTITIONER_ID,
+    appointmentTypeId: APPT_TYPE_ID,
+    from: localDateYYYYMMDD,
+    to: localDateYYYYMMDD,
+    perPage: 50
+  });
+
+  const all: string[] = Array.isArray((data as any).available_times)
+    ? (data as any).available_times.map((t: any) => t.starts_at || t) // supports your current /avail shape
+    : [];
+
+  // Filter morning/afternoon in AU time
+  const filtered = all.filter(s => wantMorning ? isMorningAU(s) : !isMorningAU(s));
+
+  const opts = filtered.slice(0, 2);
+  return opts; // array of ISO UTC strings
+}
+
+async function computeEndsAtFromType(startsAtIso: string) {
+  const type = await getAppointmentType(APPT_TYPE_ID);
+  const mins = Number((type as any)?.duration || (type as any)?.default_duration || 0);
+  if (!mins) return null;
+  const start = new Date(startsAtIso);
+  const end = new Date(start.getTime() + mins * 60 * 1000);
+  return end.toISOString();
+}
+
+4. In the route handlers, wire the flow:
+
+
+
+After book-day: store a normalized local date string (YYYY-MM-DD) in session.
+
+After book-part: fetch slots for that local date, filter morning/afternoon, store two options in session, and speak them in AU time.
+
+After book-choose: parse “one”/“two” (or “first”/“second”), compute ends_at, and call Cliniko. If no options, reprompt gracefully.
+
+
+Example patches (adjust to your file’s structure):
+
+// Pseudocode inside your POST /api/voice/handle switch
+
+case 'book-day': {
+  const said = (req.body.SpeechResult || '').toLowerCase();
+  // resolve said (e.g., "monday", "tomorrow") into a local YYYY-MM-DD.
+  // For now, simple handling:
+  const dayMap: Record<string, number> = { today: 0, tomorrow: 1, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5 };
+  // TODO: replace with a proper weekday resolver if you like.
+  let localDate = dateOnlyAU(new Date().toISOString());
+  if (said.includes('tomorrow')) {
+    const now = new Date(); now.setDate(now.getDate() + 1);
+    localDate = dateOnlyAU(now.toISOString());
+  }
+  // Store
+  session.booking = session.booking || {};
+  session.booking.localDate = localDate;
+
+  sayGather(res, "Morning or afternoon", 'book-part');
+  break;
+}
+
+case 'book-part': {
+  const said = (req.body.SpeechResult || '').toLowerCase();
+  const wantMorning = said.includes('morning');
+  const localDate = session.booking?.localDate;
+  if (!localDate) { sayGather(res, "Which day suits you", 'book-day'); break; }
+
+  const slots = await pickTwoSlotsForDay(localDate, wantMorning);
+  session.booking.wantMorning = wantMorning;
+  session.booking.options = slots;
+
+  if (slots.length === 0) {
+    sayGather(res, "I couldn’t find times in that part of the day. Would you like me to check the other part of the day", 'book-part');
+    break;
+  }
+
+  const s1 = slots[0] ? speakTimeAU(slots[0]) : null;
+  const s2 = slots[1] ? speakTimeAU(slots[1]) : null;
+
+  if (s1 && s2) {
+    sayGather(res, `I have two options. Option one, ${s1}. Or option two, ${s2}.`, 'book-choose');
+  } else if (s1) {
+    sayGather(res, `I have ${s1}. Would you like to take that time`, 'book-choose');
+  } else {
+    sayGather(res, "I couldn’t find times. Would you like to try another day", 'book-day');
+  }
+  break;
+}
+
+case 'book-choose': {
+  const said = (req.body.SpeechResult || '').toLowerCase();
+  const opts: string[] = session.booking?.options || [];
+  const chosen = /one|1|first/.test(said) ? opts[0]
+               : /two|2|second/.test(said) ? opts[1]
+               : null;
+
+  if (!chosen) {
+    sayGather(res, "Sorry, I didn’t catch that. Say option one or option two", 'book-choose');
+    break;
+  }
+
+  // Make sure we have a patient ID already captured in your identity wizard:
+  const patientId = session.identity?.patientId;
+  if (!patientId) {
+    // redirect to wizard to capture details, then return here
+    redirect(res, `/api/voice/wizard?next=confirm-book`);
+    break;
+  }
+
+  const endsAt = await computeEndsAtFromType(chosen);
+  const payload = {
+    businessId: BUSINESS_ID,
+    practitionerId: PRACTITIONER_ID,
+    appointmentTypeId: APPT_TYPE_ID,
+    patientId,
+    startsAt: chosen
+  };
+
+  // If endsAt is available, pass it in your appointments module (adjust function signature if needed)
+  try {
+    await createIndividualAppointment(payload as any); // update fn if you add ends_at
+    say(res, "All set. We will send a confirmation by message. Goodbye");
+    // Optionally SMS the human-readable time:
+    // sendSms(to, `Booked ${speakDayAU(chosen)} at ${speakTimeAU(chosen)}.`);
+  } catch (e) {
+    console.error('[BOOKING ERROR]', e);
+    sayGather(res, "That time just slipped away. Would you like me to try another time", 'book-part');
+  }
+  break;
+}
+
+5. (Optional) Voice: If you want Nicole as the default everywhere:
+
+
+
+const PRIMARY_VOICE = 'Polly.Nicole-Neural';
+
+(You can keep Olivia-Neural if you prefer. Both are AU; Nicole sounds a bit more relaxed.)
+
+
+---
+
+What you should see now
+
+GET /__cliniko/avail → JSON with totalSlots and a slots array (UTC).
+
+On a call:
+“Book Monday morning” → bot asks day → asks morning/afternoon → fetches live slots → offers two real options in AU time → you say “option one” → bot books and confirms.
+
+
+If anything reads out weird times, paste one of the slots values and I’ll tweak the formatter to your taste (e.g., “quarter past nine” vs “nine fifteen”).
