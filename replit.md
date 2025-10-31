@@ -84,11 +84,21 @@ Preferred communication style: Simple, everyday language.
   - Full dialogue history for intent refinement
   - Supports: book, reschedule, cancel, human, hours intents
 - Identity capture wizard for first-time callers
+- **Real Slot Integration** - Complete appointment booking with actual Cliniko availability:
+  - Fetches real available slots for specific days from Cliniko API
+  - Filters by morning (< 12pm) / afternoon (≥ 12pm) in Australia/Sydney timezone
+  - Speaks actual appointment times in Australian format (e.g., "10:00am Saturday 1 November")
+  - Intelligent fallback logic:
+    - 0 slots requested time → offers opposite time if available, else asks for another day
+    - 1 slot available → yes/no confirmation ("I have 10:00am. Would you like to take that time?")
+    - 2+ slots → first/second choice ("Option one 10:00am or option two 2:30pm")
+  - Context-aware preference flipping when user accepts fallback offer
+  - Stores selected slots in conversation context for booking
 - Complete appointment lifecycle management:
-  - New booking with Cliniko availability lookup
-  - Rescheduling with appointment retrieval
+  - New booking with real Cliniko slot selection
+  - Rescheduling with appointment retrieval and real slots
   - Cancellation with confirmation
-  - SMS confirmations for all operations
+  - SMS confirmations with Australian timezone formatting for all operations
 
 **Middleware Layers:**
 1. Body parsing (JSON with raw body buffer for webhooks)
@@ -194,8 +204,19 @@ Preferred communication style: Simple, everyday language.
 - Australian region endpoint (api.au4.cliniko.com)
 - Security: Redacted request body logging to prevent PII leakage
 
+**Timezone Utilities** (`server/utils/tz.ts`):
+- All timezone conversions use Australia/Sydney timezone
+- `toSydney(utcIso)` - Converts UTC ISO string to ZonedDateTime in Australia/Sydney
+- `speakTimeAU(utcIso)` - Formats time for voice output (e.g., "10:00am")
+- `speakDayAU(utcIso)` - Formats day for voice output (e.g., "Saturday 1 November")
+- `formatAppointmentTimeAU(utcIso)` - Formats full appointment for SMS (e.g., "Saturday 1 November at 10:00am")
+- `isMorningAU(utcIso)` - Returns true if hour < 12 in Australian timezone
+- `dateOnlyAU(utcIso)` - Extracts date-only string (YYYY-MM-DD) in Australian timezone
+- `tomorrowAU()` - Returns tomorrow's date in Australian timezone
+- All functions handle DST transitions automatically (AEDT/AEST)
+
 **AWS Polly (via Twilio):**
-- Nicole-Neural voice for Australian English TTS
+- Olivia-Neural voice for Australian English TTS (configurable via VOICE_NAME env var)
 - SSML support for pronunciation control
 - Integrated through Twilio's `<Say>` verb with voice parameter
 
