@@ -11,7 +11,8 @@ import {
   createAppointmentForPatient,
   getPatientAppointments,
   cancelAppointment,
-  rescheduleAppointment
+  rescheduleAppointment,
+  sanitizeEmail
 } from '../services/cliniko';
 import { 
   sendAppointmentConfirmation,
@@ -693,7 +694,25 @@ export function registerVoice(app: Express) {
 
       // Step 3: Save email, redirect to original intent
       if (step === 3) {
-        const email = speech.toLowerCase().replace(/\s+at\s+/, '@').replace(/\s+dot\s+/, '.');
+        const emailRaw = speech.toLowerCase().replace(/\s+at\s+/, '@').replace(/\s+dot\s+/, '.');
+        const email = sanitizeEmail(emailRaw);
+        
+        // Validate email
+        if (!email) {
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/wizard?step=3&callSid=${encodeURIComponent(callSid)}&intent=${intent}`),
+              method: 'POST'
+            });
+            say(g, 'I might have misheard the email Could you say it again letter by letter');
+            pause(g, 1);
+          });
+        }
+        
         const phoneData = await storage.getPhoneMap(from);
         
         if (phoneData) {
@@ -720,7 +739,7 @@ export function registerVoice(app: Express) {
         }
 
         return twiml(res, (vr) => {
-          say(vr, 'Perfect. Now, how can I help you?');
+          say(vr, 'Perfect Now how can I help you');
           vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
         });
       }

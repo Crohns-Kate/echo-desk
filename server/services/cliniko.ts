@@ -1,4 +1,11 @@
 import { env } from '../utils/env';
+import {
+  getOrCreatePatient as intGetOrCreatePatient,
+  findPatientByPhone as intFindPatientByPhone,
+  findPatientByEmail as intFindPatientByEmail,
+  sanitizeEmail,
+  sanitizePhoneE164AU
+} from '../integrations/cliniko';
 
 const base = env.CLINIKO_BASE_URL;
 const headers = {
@@ -110,44 +117,13 @@ export async function getAppointmentTypes(practitionerId: string): Promise<Clini
   return all.filter(at => at.show_in_online_bookings);
 }
 
+// Use improved integration functions with sanitization
 export async function findPatientByPhone(phone: string): Promise<ClinikoPatient | null> {
-  try {
-    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(
-      `/patients?q[phone_number]=${encodeURIComponent(phone)}`
-    );
-    return data.patients?.[0] || null;
-  } catch (e) {
-    console.error('[Cliniko] findPatientByPhone error', e);
-    return null;
-  }
+  return intFindPatientByPhone(phone) as Promise<ClinikoPatient | null>;
 }
 
 export async function findPatientByEmail(email: string): Promise<ClinikoPatient | null> {
-  try {
-    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(
-      `/patients?q[email]=${encodeURIComponent(email)}`
-    );
-    return data.patients?.[0] || null;
-  } catch (e) {
-    console.error('[Cliniko] findPatientByEmail error', e);
-    return null;
-  }
-}
-
-export async function createPatient(params: {
-  firstName: string;
-  lastName: string;
-  email?: string;
-  phone?: string;
-}): Promise<ClinikoPatient> {
-  const phoneNumbers = params.phone ? [{ number: params.phone, phone_type: 'Mobile' }] : [];
-  const patient = await clinikoPost<ClinikoPatient>('/patients', {
-    first_name: params.firstName,
-    last_name: params.lastName,
-    email: params.email || null,
-    phone_numbers: phoneNumbers
-  });
-  return patient;
+  return intFindPatientByEmail(email) as Promise<ClinikoPatient | null>;
 }
 
 export async function getOrCreatePatient(params: {
@@ -155,27 +131,11 @@ export async function getOrCreatePatient(params: {
   fullName?: string;
   email?: string;
 }): Promise<ClinikoPatient> {
-  let patient = await findPatientByPhone(params.phone);
-  
-  if (!patient && params.email) {
-    patient = await findPatientByEmail(params.email);
-  }
-  
-  if (patient) {
-    return patient;
-  }
-  
-  const names = (params.fullName || 'Unknown Caller').split(' ');
-  const firstName = names[0];
-  const lastName = names.slice(1).join(' ') || 'Patient';
-  
-  return createPatient({
-    firstName,
-    lastName,
-    email: params.email,
-    phone: params.phone
-  });
+  return intGetOrCreatePatient(params) as Promise<ClinikoPatient>;
 }
+
+// Export sanitization helpers for use in voice routes
+export { sanitizeEmail, sanitizePhoneE164AU };
 
 export async function getAvailability(opts?: {
   dayIso?: string;
