@@ -2,7 +2,16 @@
 
 ## Overview
 
-EchoDesk is a production-grade voice receptionist dashboard for Australian healthcare clinics. It provides real-time monitoring of Twilio voice calls, manages caller alerts, and integrates with Cliniko for appointment scheduling. The application enables clinic receptionists to track active calls, review call history, manage patient identity capture, and handle appointment booking/rescheduling/cancellation workflows through an intuitive Material Design 3-inspired interface.
+EchoDesk is a production-grade voice receptionist dashboard for Australian healthcare clinics. It provides real-time monitoring of Twilio voice calls, manages caller alerts, and integrates with Cliniko for complete appointment lifecycle management. The application features:
+
+- **Full Cliniko Integration**: Live appointment booking, rescheduling, and cancellation with real patient lookup
+- **SMS Confirmations**: Automated appointment confirmations sent via Twilio SMS with Australian date formatting
+- **Real-time Updates**: WebSocket-powered dashboard with automatic call/alert updates and connection resilience
+- **AI Intent Detection**: GPT-4o-mini powered conversation understanding with multi-turn context and confidence scoring
+- **Identity Capture**: Wizard-based patient information collection for first-time callers
+- **Call Recording**: Twilio recording with automated transcription for quality assurance
+
+The application enables clinic receptionists to monitor active calls, review comprehensive call history, manage patient identity, and oversee the complete appointment workflow through an intuitive Material Design 3-inspired interface.
 
 ## User Preferences
 
@@ -19,6 +28,8 @@ Preferred communication style: Simple, everyday language.
 
 **State Management:**
 - TanStack Query (React Query) for server state management, caching, and API synchronization
+- WebSocket integration for real-time updates with automatic cache invalidation
+- Exponential backoff reconnection (1s → 30s) for connection resilience
 - No global client state - relies on React Query's intelligent caching and refetching strategies
 
 **UI Design System:**
@@ -51,10 +62,18 @@ Preferred communication style: Simple, everyday language.
 **Voice Call Processing:**
 - TwiML generation for Twilio voice responses
 - Amazon Polly (Nicole-Neural voice) for text-to-speech in Australian English
-- Intent detection system (regex-based fallback, OpenAI optional)
-- Multi-turn conversation state tracking with context preservation
-- Identity capture wizard for unknown callers
-- Appointment booking workflow integration with Cliniko
+- Enhanced intent detection system:
+  - Primary: GPT-4o-mini with confidence scoring (0.0-1.0)
+  - Fallback: Regex-based pattern matching
+  - Multi-turn conversation context tracking
+  - Full dialogue history for intent refinement
+  - Supports: book, reschedule, cancel, human, hours intents
+- Identity capture wizard for first-time callers
+- Complete appointment lifecycle management:
+  - New booking with Cliniko availability lookup
+  - Rescheduling with appointment retrieval
+  - Cancellation with confirmation
+  - SMS confirmations for all operations
 
 **Middleware Layers:**
 1. Body parsing (JSON with raw body buffer for webhooks)
@@ -85,17 +104,23 @@ Preferred communication style: Simple, everyday language.
    - Tracks opt-out dates
 
 4. **conversations** - Multi-turn interaction state
-   - Links to tenant and lead
-   - Voice/SMS flag
-   - JSON context for conversation flow state
+   - Links to tenant and lead via foreign keys
+   - Voice/SMS flag for channel tracking
+   - JSONB context storing full dialogue history:
+     - Array of user/assistant turns with content
+     - Previous intent and confidence for refinement
+     - Supports GPT-4o-mini multi-turn understanding
    - State machine tracking (active/completed/abandoned)
+   - Linked to calls via conversationId
 
 5. **callLogs** - Comprehensive call history
    - Twilio call metadata (CallSid, From, To, duration)
-   - Intent classification and summary
-   - Appointment booking outcomes
+   - Intent classification with confidence percentage
+   - Detailed call summary with outcomes
+   - Appointment booking/rescheduling/cancellation results
    - Recording and transcription URLs
    - Status tracking (queued/ringing/in-progress/completed)
+   - Linked to conversation for context retrieval
 
 6. **alerts** - Real-time notifications
    - System alerts for reception staff
@@ -113,20 +138,33 @@ Preferred communication style: Simple, everyday language.
 ### External Dependencies
 
 **Twilio Integration:**
-- Voice API for inbound call handling
-- TwiML generation for call flow control
-- Webhook endpoints for call events (incoming, recording, transcription)
-- Signature validation for webhook security
-- Call recording with transcription support
+- Voice API for inbound call handling with TwiML generation
+- SMS API for appointment confirmations and notifications
+- Webhook endpoints for call lifecycle:
+  - Incoming call handler with greeting
+  - Recording callback with URL storage
+  - Transcription callback with text extraction
+- Signature validation for webhook security (development bypass available)
+- Call recording with automated transcription
+- SMS confirmation system:
+  - Appointment booking confirmations
+  - Rescheduling notifications
+  - Cancellation notices
+  - Australian date/time formatting
 
 **Cliniko API:**
-- RESTful API integration for appointment management
+- Full RESTful API integration for complete appointment lifecycle
 - Basic authentication with API key
-- Endpoints for:
-  - Availability queries
-  - Appointment creation
-  - Patient lookup
+- Comprehensive endpoints:
+  - Real-time practitioner availability queries
+  - Appointment type enumeration
+  - Patient lookup by phone number
+  - Patient creation for new callers
+  - Appointment creation with auto-conflict detection
+  - Appointment rescheduling
+  - Appointment cancellation
 - Australian region endpoint (api.au4.cliniko.com)
+- Security: Redacted request body logging to prevent PII leakage
 
 **AWS Polly (via Twilio):**
 - Nicole-Neural voice for Australian English TTS
@@ -134,9 +172,15 @@ Preferred communication style: Simple, everyday language.
 - Integrated through Twilio's `<Say>` verb with voice parameter
 
 **OpenAI (Optional):**
-- GPT-4o-mini for advanced intent detection
-- Fallback to regex-based intent matching if not configured
-- Environment flag to enable/disable
+- GPT-4o-mini for enhanced intent detection with:
+  - JSON structured output format
+  - Confidence scoring (0.0 to 1.0)
+  - Reasoning explanation for transparency
+  - Multi-turn context awareness
+  - Full conversation history analysis
+- Graceful fallback to regex-based intent matching on errors or when disabled
+- Temperature 0.3 for consistent classifications
+- Environment flag (USE_OPENAI_INTENT) to enable/disable
 
 **Google Fonts:**
 - Inter font family (300-700 weights)
@@ -153,6 +197,31 @@ Preferred communication style: Simple, everyday language.
 
 **Environment Configuration:**
 - All secrets managed through environment variables
-- Required: Twilio credentials, database URL, Cliniko API key, public base URL
-- Optional: OpenAI API key, feature flags for recording/transcription/intent engine
+- Required:
+  - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
+  - DATABASE_URL, PG* credentials
+  - CLINIKO_API_KEY
+  - PUBLIC_BASE_URL (for webhook callbacks)
+  - SESSION_SECRET
+- Optional:
+  - OPENAI_API_KEY (for GPT-4o-mini intent detection)
+  - USE_OPENAI_INTENT (boolean flag, defaults to false)
+  - CALL_RECORDING_ENABLED (boolean, defaults to false)
+  - TRANSCRIPTION_ENABLED (boolean, defaults to false)
+  - IDENTITY_CAPTURE (boolean, defaults to true)
 - Timezone configuration (default: Australia/Brisbane)
+
+**WebSocket Real-time Updates:**
+- Server: WebSocket server on `/ws` path
+- Client: Automatic reconnection with exponential backoff (1s → 2s → 4s → ... → 30s max)
+- Events:
+  - call:started - New call logged
+  - call:updated - Call metadata/intent/summary updated
+  - call:ended - Call completed
+  - alert:created - New alert for receptionist
+  - alert:dismissed - Alert resolved
+- Cache invalidation:
+  - /api/calls and /api/calls/recent
+  - /api/alerts and /api/alerts/recent
+  - /api/stats
+- Connection resilience with automatic recovery
