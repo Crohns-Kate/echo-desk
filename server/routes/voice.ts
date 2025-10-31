@@ -29,6 +29,37 @@ function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void)
   res.type('text/xml').send(xml);
 }
 
+// Helper to update conversation context with user and assistant turns
+async function updateConversationTurns(
+  conversationId: number | undefined,
+  userUtterance: string,
+  assistantResponse: string,
+  intent?: string,
+  confidence?: number
+) {
+  if (!conversationId) return;
+  
+  const conversation = await storage.getConversation(conversationId);
+  if (!conversation) return;
+  
+  const existingContext = conversation.context as any;
+  const turns = existingContext?.turns || [];
+  
+  const updatedContext = {
+    turns: [
+      ...turns,
+      { role: 'user' as const, content: userUtterance },
+      { role: 'assistant' as const, content: assistantResponse },
+    ],
+    previousIntent: intent || existingContext?.previousIntent,
+    previousConfidence: confidence || existingContext?.previousConfidence,
+  };
+  
+  await storage.updateConversation(conversationId, {
+    context: updatedContext as any,
+  });
+}
+
 export function registerVoice(app: Express) {
   // Incoming call - greet and gather
   app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
@@ -66,9 +97,13 @@ export function registerVoice(app: Express) {
         vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
       });
 
-      // Log call with initial data
+      // Create conversation for context tracking
+      const conversation = await storage.createConversation(tenant.id, undefined, true);
+      
+      // Log call with conversation ID
       const call = await storage.logCall({ 
-        tenantId: tenant.id, 
+        tenantId: tenant.id,
+        conversationId: conversation.id,
         callSid, 
         fromNumber: from, 
         toNumber: to 
@@ -147,13 +182,26 @@ export function registerVoice(app: Express) {
 
       // Start - detect intent
       if (route === 'start') {
-        const det = await detectIntent(speech || '');
+        // Get call and conversation for context
+        const call = callSid ? await storage.getCallByCallSid(callSid) : undefined;
+        const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : undefined;
+        
+        // Build conversation context from JSONB
+        const conversationContext = conversation?.context as any;
+        const turns = conversationContext?.turns || [];
+        
+        // Detect intent with conversation context
+        const det = await detectIntent(speech || '', {
+          turns,
+          previousIntent: conversationContext?.previousIntent,
+          confidence: conversationContext?.previousConfidence,
+        });
         
         // Update call log with detected intent
         if (callSid && det.intent !== 'unknown') {
           const updatedCall = await storage.updateCall(callSid, { 
             intent: det.intent,
-            summary: `Caller requested: ${det.intent}`
+            summary: `Caller requested: ${det.intent} (confidence: ${(det.confidence * 100).toFixed(0)}%)`
           });
           
           if (updatedCall) {
@@ -167,6 +215,9 @@ export function registerVoice(app: Express) {
         const hasEmail = !!id?.email;
         
         if (env.IDENTITY_CAPTURE && (det.intent === 'book' || det.intent === 'reschedule') && (!hasName || !hasEmail)) {
+          const assistantMsg = 'Redirecting to identity capture wizard';
+          await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+          
           return twiml(res, (vr) => {
             vr.redirect({ method: 'POST' }, abs(`/api/voice/wizard?step=1&callSid=${encodeURIComponent(callSid)}&intent=${det.intent}`));
           });
@@ -175,19 +226,30 @@ export function registerVoice(app: Express) {
         // Route by intent
         switch (det.intent) {
           case 'book':
-            return twiml(res, (vr) => {
-              const g = gather(vr, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
-              saySafe(g, 'Which day suits you?');
-            });
+            {
+              const assistantMsg = 'Which day suits you?';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+              
+              return twiml(res, (vr) => {
+                const g = gather(vr, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
+                saySafe(g, assistantMsg);
+              });
+            }
           
           case 'reschedule':
             {
               const appointments = await getPatientAppointments(from);
               if (appointments.length === 0) {
+                const assistantMsg = 'I could not find any upcoming appointments. Would you like to book a new one? Call back when ready. Goodbye';
+                await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+                
                 return twiml(res, (vr) => {
-                  saySafe(vr, 'I could not find any upcoming appointments. Would you like to book a new one? Call back when ready. Goodbye');
+                  saySafe(vr, assistantMsg);
                 });
               }
+              
+              const assistantMsg = 'Looking up your appointments';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
               return twiml(res, (vr) => {
                 vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=reschedule-lookup&callSid=${encodeURIComponent(callSid)}`));
@@ -198,10 +260,16 @@ export function registerVoice(app: Express) {
             {
               const appointments = await getPatientAppointments(from);
               if (appointments.length === 0) {
+                const assistantMsg = 'I could not find any upcoming appointments. Goodbye';
+                await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+                
                 return twiml(res, (vr) => {
-                  saySafe(vr, 'I could not find any upcoming appointments. Goodbye');
+                  saySafe(vr, assistantMsg);
                 });
               }
+              
+              const assistantMsg = 'Looking up your appointments for cancellation';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
               return twiml(res, (vr) => {
                 vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=cancel-lookup&callSid=${encodeURIComponent(callSid)}`));
@@ -210,6 +278,9 @@ export function registerVoice(app: Express) {
           
           case 'human':
             {
+              const assistantMsg = 'No problem. A receptionist will call you back shortly. Goodbye';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+              
               const alert = await storage.createAlert({ 
                 tenantId: tenant.id, 
                 reason: 'human_request', 
@@ -218,41 +289,52 @@ export function registerVoice(app: Express) {
               
               // Emit WebSocket event for new alert
               emitAlertCreated(alert);
-            }
             
-            if (callSid) {
-              const updatedCall = await storage.updateCall(callSid, { 
-                summary: 'Caller requested to speak with receptionist'
-              });
-              
-              if (updatedCall) {
-                emitCallUpdated(updatedCall);
+              if (callSid) {
+                const updatedCall = await storage.updateCall(callSid, { 
+                  summary: 'Caller requested to speak with receptionist'
+                });
+                
+                if (updatedCall) {
+                  emitCallUpdated(updatedCall);
+                }
               }
+              
+              return twiml(res, (vr) => { 
+                saySafe(vr, assistantMsg); 
+              });
             }
-            
-            return twiml(res, (vr) => { 
-              saySafe(vr, 'No problem. A receptionist will call you back shortly. Goodbye'); 
-            });
           
           case 'hours':
-            if (callSid) {
-              const updatedCall = await storage.updateCall(callSid, { 
-                summary: 'Caller inquired about clinic hours'
-              });
+            {
+              const assistantMsg = 'We are open weekdays nine to five. Goodbye';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
               
-              if (updatedCall) {
-                emitCallUpdated(updatedCall);
+              if (callSid) {
+                const updatedCall = await storage.updateCall(callSid, { 
+                  summary: 'Caller inquired about clinic hours'
+                });
+                
+                if (updatedCall) {
+                  emitCallUpdated(updatedCall);
+                }
               }
+              
+              return twiml(res, (vr) => { 
+                saySafe(vr, assistantMsg); 
+              });
             }
-            return twiml(res, (vr) => { 
-              saySafe(vr, 'We are open weekdays nine to five. Goodbye'); 
-            });
           
           default:
-            return twiml(res, (vr) => {
-              const g = gather(vr, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-              saySafe(g, 'Sorry, could you say that another way?');
-            });
+            {
+              const assistantMsg = 'Sorry, could you say that another way?';
+              await updateConversationTurns(conversation?.id, speech || '', assistantMsg, det.intent, det.confidence);
+              
+              return twiml(res, (vr) => {
+                const g = gather(vr, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+                saySafe(g, assistantMsg);
+              });
+            }
         }
       }
 

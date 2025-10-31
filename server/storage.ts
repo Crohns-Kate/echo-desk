@@ -109,6 +109,15 @@ export class DatabaseStorage implements IStorage {
     return conversation || undefined;
   }
 
+  async getConversation(id: number): Promise<Conversation | undefined> {
+    const [conversation] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+    return conversation || undefined;
+  }
+
   async logCall(data: InsertCallLog): Promise<CallLog> {
     const [call] = await db.insert(callLogs).values(data).returning();
     return call;
