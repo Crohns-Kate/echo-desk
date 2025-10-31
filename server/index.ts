@@ -66,6 +66,13 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
+  // Log Cliniko configuration on startup
+  console.log('[Cliniko] Configuration:');
+  console.log(`  Region: ${process.env.CLINIKO_REGION || 'NOT SET'}`);
+  console.log(`  Business ID: ${process.env.CLINIKO_BUSINESS_ID ? '...' + process.env.CLINIKO_BUSINESS_ID.slice(-4) : 'NOT SET'}`);
+  console.log(`  Practitioner ID: ${process.env.CLINIKO_PRACTITIONER_ID ? '...' + process.env.CLINIKO_PRACTITIONER_ID.slice(-4) : 'NOT SET'}`);
+  console.log(`  Appointment Type ID: ${process.env.CLINIKO_APPT_TYPE_ID ? '...' + process.env.CLINIKO_APPT_TYPE_ID.slice(-4) : 'NOT SET'}`);
+
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.

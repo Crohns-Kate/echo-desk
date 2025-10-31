@@ -224,6 +224,10 @@ Preferred communication style: Simple, everyday language.
   - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
   - DATABASE_URL, PG* credentials
   - CLINIKO_API_KEY
+  - CLINIKO_REGION (default: au4)
+  - CLINIKO_BUSINESS_ID (auto-discovered from Cliniko account)
+  - CLINIKO_PRACTITIONER_ID (auto-discovered from Cliniko account)
+  - CLINIKO_APPT_TYPE_ID (auto-discovered from Cliniko account)
   - PUBLIC_BASE_URL (for webhook callbacks)
   - SESSION_SECRET
 - Optional:
@@ -233,6 +237,7 @@ Preferred communication style: Simple, everyday language.
   - TRANSCRIPTION_ENABLED (boolean, defaults to false)
   - IDENTITY_CAPTURE (boolean, defaults to true)
 - Timezone configuration (default: Australia/Brisbane)
+- Health check endpoint: `/__cliniko/health` returns Cliniko configuration status
 
 **WebSocket Real-time Updates:**
 - Server: WebSocket server on `/ws` path

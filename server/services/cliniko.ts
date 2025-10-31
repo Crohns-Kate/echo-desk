@@ -59,7 +59,7 @@ interface ClinikoAppointment {
 
 async function clinikoGet<T>(endpoint: string): Promise<T> {
   const url = `${base}${endpoint}`;
-  console.log('[Cliniko] GET', url);
+  console.log('[Cliniko] GET', url.replace(base, ''));
   const res = await fetch(url, { headers });
   if (!res.ok) {
     const text = await res.text();
@@ -70,7 +70,7 @@ async function clinikoGet<T>(endpoint: string): Promise<T> {
 
 async function clinikoPost<T>(endpoint: string, body: any): Promise<T> {
   const url = `${base}${endpoint}`;
-  console.log('[Cliniko] POST', url);
+  console.log('[Cliniko] POST', url.replace(base, ''));
   const res = await fetch(url, {
     method: 'POST',
     headers,
@@ -142,35 +142,29 @@ export async function getAvailability(opts?: {
   part?: 'early' | 'late' | 'morning' | 'afternoon';
 }): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string; businessId: string; duration: number }>> {
   try {
-    const businesses = await getBusinesses();
-    const business = businesses[0];
-    if (!business) {
-      throw new Error('No business found in Cliniko account');
-    }
+    // Use configured IDs from environment
+    const businessId = env.CLINIKO_BUSINESS_ID;
+    const practitionerId = env.CLINIKO_PRACTITIONER_ID;
+    const appointmentTypeId = env.CLINIKO_APPT_TYPE_ID;
     
-    const practitioners = await getPractitioners();
-    if (practitioners.length === 0) {
-      throw new Error('No practitioners enabled for online bookings');
-    }
+    // Fetch appointment type details for duration
+    const appointmentTypes = await getAppointmentTypes(practitionerId);
+    const appointmentType = appointmentTypes.find(at => at.id === appointmentTypeId) || appointmentTypes[0];
     
-    const practitioner = practitioners[0];
-    const appointmentTypes = await getAppointmentTypes(practitioner.id);
-    if (appointmentTypes.length === 0) {
-      throw new Error('No appointment types enabled for online bookings');
+    if (!appointmentType) {
+      throw new Error('No appointment types found for practitioner');
     }
-    
-    const appointmentType = appointmentTypes[0];
     
     // CRITICAL FIX: Clamp date window to ≤7 days and ensure future dates
-    const now = new Date();
-    const startDate = opts?.dayIso ? new Date(opts.dayIso) : now;
+    const today = new Date();
+    const startDate = opts?.dayIso ? new Date(opts.dayIso) : today;
     
     // Ensure start date is not in the past
-    if (startDate < now) {
-      startDate.setTime(now.getTime());
+    if (startDate < today) {
+      startDate.setTime(today.getTime());
     }
     
-    // Clamp to max 7 days from start
+    // Clamp to max 6 days from start (7-day window)
     const endDate = new Date(startDate);
     endDate.setDate(endDate.getDate() + 7);
     
@@ -179,7 +173,7 @@ export async function getAvailability(opts?: {
     const to = endDate.toISOString().split('T')[0];
     
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-      `/businesses/${business.id}/practitioners/${practitioner.id}/appointment_types/${appointmentType.id}/available_times?from=${from}&to=${to}&per_page=20`
+      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=20`
     );
     
     const times = data.available_times || [];
@@ -200,9 +194,9 @@ export async function getAvailability(opts?: {
     
     return filtered.slice(0, 5).map(t => ({
       startIso: t.appointment_start,
-      practitionerId: practitioner.id,
-      appointmentTypeId: appointmentType.id,
-      businessId: business.id,
+      practitionerId,
+      appointmentTypeId,
+      businessId,
       duration: appointmentType.duration_in_minutes
     }));
   } catch (e) {

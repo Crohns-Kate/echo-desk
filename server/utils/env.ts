@@ -1,3 +1,7 @@
+// Determine Cliniko base URL from region
+const CLINIKO_REGION = process.env.CLINIKO_REGION || 'au4';
+const CLINIKO_BASE_URL = `https://api.${CLINIKO_REGION}.cliniko.com/v1`;
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL!,
@@ -7,7 +11,11 @@ export const env = {
   TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER!,
   DATABASE_URL: process.env.DATABASE_URL!,
   CLINIKO_API_KEY: process.env.CLINIKO_API_KEY!,
-  CLINIKO_BASE_URL: process.env.CLINIKO_BASE_URL || 'https://api.au4.cliniko.com/v1',
+  CLINIKO_REGION,
+  CLINIKO_BASE_URL,
+  CLINIKO_BUSINESS_ID: process.env.CLINIKO_BUSINESS_ID!,
+  CLINIKO_PRACTITIONER_ID: process.env.CLINIKO_PRACTITIONER_ID!,
+  CLINIKO_APPT_TYPE_ID: process.env.CLINIKO_APPT_TYPE_ID!,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
   IDENTITY_CAPTURE: (process.env.IDENTITY_CAPTURE ?? 'true') !== 'false',
@@ -20,7 +28,7 @@ export const env = {
 
 const required = [
   'PUBLIC_BASE_URL','TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_PHONE_NUMBER',
-  'DATABASE_URL','CLINIKO_API_KEY'
+  'DATABASE_URL','CLINIKO_API_KEY','CLINIKO_BUSINESS_ID','CLINIKO_PRACTITIONER_ID','CLINIKO_APPT_TYPE_ID'
 ] as const;
 
 for (const k of required) {
