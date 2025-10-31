@@ -1,0 +1,373 @@
+Great catch—the new errors are all Cliniko-side. Here’s a single, copy-paste Replit AI Assistant prompt that fixes each one:
+
+“is not filterable” → you’re accidentally sending the email/phone as a query key, not as the q value.
+
+available_times 400 → your from/to window and/or formatting is outside Cliniko’s constraints.
+
+individual_appointments 422 → you aren’t setting business_id, practitioner_id, starts_at, ends_at, and appointment_type_id correctly (and ends_at must be computed from type duration).
+
+
+
+---
+
+Replit AI Assistant Prompt — “Cliniko search, availability, and booking hard-fix”
+
+Goal:
+
+1. Make /patients search robust (q=<free-text>).
+
+
+2. Fix available_times by clamping the date window and using ISO with timezone.
+
+
+3. Post valid /individual_appointments with all required fields (compute ends_at).
+
+
+
+Tasks (add/replace exactly as below):
+
+// === server/integrations/cliniko.ts ===
+// Centralized, safe Cliniko client with correct query building & booking.
+
+import fetch from "node-fetch";
+
+// --- CONFIG ---
+const CLINIKO_BASE = "https://api.au4.cliniko.com/v1";
+const CLINIKO_KEY = process.env.CLINIKO_API_KEY!;
+const CLINIC_TZ = process.env.CLINIC_TIMEZONE || "Australia/Brisbane"; // choose yours
+const AVAIL_MAX_DAYS = 7; // Cliniko enforces windows; keep ≤ 7 days
+
+function headers() {
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Basic ${Buffer.from(CLINIKO_KEY + ":").toString("base64")}`,
+    "Accept": "application/json",
+  };
+}
+
+// --- tiny date helpers (no luxon) ---
+function toISOWithOffset(d: Date): string {
+  // Use local offset of the server. Good enough if your server runs AU time; otherwise set explicit Z and keep day boundary.
+  // Safer approach: stringify as YYYY-MM-DD (Cliniko accepts date-only for available_times).
+  return d.toISOString();
+}
+function ymd(d: Date): string {
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// --- Input hygiene ---
+export function sanitizeEmail(input?: string | null): string | null {
+  if (!input) return null;
+  let e = String(input).trim();
+  e = e.replace(/[,\.;:!?]+$/g, ""); // trailing junk
+  e = e.replace(/\s+/g, "");
+  const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  return ok ? e : null;
+}
+export function sanitizePhoneE164AU(input?: string | null): string | null {
+  if (!input) return null;
+  let s = String(input).replace(/\s+/g, "");
+  if (/^04\d{8}$/.test(s)) s = "+61" + s.slice(1);
+  if (/^\+61\d{9}$/.test(s)) return s;
+  if (/^61\d{9}$/.test(s)) return "+" + s;
+  return null;
+}
+
+// --- low level fetch ---
+async function clinikoGet(path: string, params?: Record<string, string>): Promise<any> {
+  const url = new URL(CLINIKO_BASE + path);
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      // IMPORTANT: always set explicit key names
+      url.searchParams.set(String(k), String(v));
+    }
+  }
+  const res = await fetch(url.toString(), { method: "GET", headers: headers() });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Cliniko GET ${url.pathname} ${res.status}: ${text}`);
+  return text ? JSON.parse(text) : {};
+}
+
+async function clinikoPost(path: string, payload: any): Promise<any> {
+  const url = CLINIKO_BASE + path;
+  const res = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
+  return text ? JSON.parse(text) : {};
+}
+
+// --- Patients search (fixes “is not filterable”) ---
+export async function findPatientByEmail(emailRaw: string) {
+  const email = sanitizeEmail(emailRaw);
+  if (!email) return null;
+  // Use q=<free-text>
+  const data = await clinikoGet("/patients", { q: email, per_page: "25" });
+  const list = Array.isArray(data?.patients) ? data.patients : [];
+  return list.find((p: any) => (p.email || "").toLowerCase() === email.toLowerCase()) || list[0] || null;
+}
+
+export async function findPatientByPhone(phoneRaw: string) {
+  const phone = sanitizePhoneE164AU(phoneRaw);
+  if (!phone) return null;
+  // Use q=<free-text>
+  const data = await clinikoGet("/patients", { q: phone, per_page: "25" });
+  const list = Array.isArray(data?.patients) ? data.patients : [];
+  // Try to match exact in common fields if present
+  const exact = list.find((p: any) => {
+    const nums = [
+      p.phone_number,
+      ...(Array.isArray(p.phone_numbers) ? p.phone_numbers.map((n: any) => n.number) : []),
+    ].filter(Boolean);
+    return nums.some((n: string) => n.replace(/\s+/g, "") === phone);
+  });
+  return exact || list[0] || null;
+}
+
+export async function getOrCreatePatient({ fullName, email, phone }:
+  { fullName?: string, email?: string, phone?: string }) {
+  const e = sanitizeEmail(email || "");
+  const p = sanitizePhoneE164AU(phone || "");
+
+  if (e) { const found = await findPatientByEmail(e); if (found) return found; }
+  if (p) { const found = await findPatientByPhone(p); if (found) return found; }
+
+  const name = (fullName || "").trim() || "New Caller";
+  const [first_name, ...rest] = name.split(/\s+/);
+  const last_name = rest.join(" ") || "Unknown";
+
+  const payload: any = { first_name, last_name };
+  if (e) payload.email = e;
+  if (p) payload.phone_numbers = [{ label: "Mobile", number: p }];
+
+  try {
+    return await clinikoPost("/patients", payload);
+  } catch (err: any) {
+    if (/email.*invalid/i.test(String(err))) {
+      delete payload.email;
+      return await clinikoPost("/patients", payload);
+    }
+    throw err;
+  }
+}
+
+// --- Availability (fixes “Invalid time frame definition”) ---
+export async function getAvailability({
+  business_id,
+  practitioner_id,
+  appointment_type_id,
+  fromDate, // Date
+  toDate,   // Date
+  per_page = 20
+}: {
+  business_id: string;
+  practitioner_id: string;
+  appointment_type_id: string;
+  fromDate: Date;
+  toDate: Date;
+  per_page?: number | string;
+}) {
+  // Clamp window to ≤ AVAIL_MAX_DAYS
+  const start = new Date(fromDate);
+  const end = new Date(toDate);
+  const max = new Date(start); max.setDate(start.getDate() + AVAIL_MAX_DAYS);
+  if (end > max) end.setTime(max.getTime());
+  if (end <= start) end.setDate(start.getDate() + 1);
+
+  // Cliniko accepts YYYY-MM-DD for available_times (safer than full ISO)
+  const fromStr = ymd(start);
+  const toStr = ymd(end);
+
+  // Use the "business available_times" endpoint with query params
+  const params: Record<string, string> = {
+    from: fromStr,
+    to: toStr,
+    per_page: String(per_page),
+    appointment_type_id: String(appointment_type_id),
+    practitioner_id: String(practitioner_id),
+  };
+  const data = await clinikoGet(
+    `/businesses/${business_id}/available_times`,
+    params
+  );
+
+  return Array.isArray(data?.available_times) ? data.available_times : [];
+}
+
+// --- Appointment type helper (to compute ends_at) ---
+export async function getAppointmentType(business_id: string, practitioner_id: string, appointment_type_id: string) {
+  // Optional: if you don’t already have duration, hit practitioners/appointment_types and pick the one we need
+  const list = await clinikoGet(`/businesses/${business_id}/practitioners/${practitioner_id}/appointment_types`, { per_page: "100" });
+  const types = Array.isArray(list?.appointment_types) ? list.appointment_types : [];
+  return types.find((t: any) => String(t.id) === String(appointment_type_id)) || null;
+}
+
+// --- Create Appointment (fixes 422 by posting required fields) ---
+export async function createIndividualAppointment({
+  business_id,
+  practitioner_id,
+  patient_id,
+  appointment_type_id,
+  starts_at, // ISO string or Date
+  duration_minutes, // number (fallback if type lookup fails)
+}: {
+  business_id: string;
+  practitioner_id: string;
+  patient_id: string;
+  appointment_type_id: string;
+  starts_at: string | Date;
+  duration_minutes?: number;
+}) {
+  let startsISO = typeof starts_at === "string" ? starts_at : toISOWithOffset(starts_at);
+
+  // Ensure we have duration: try type lookup if not provided
+  let duration = duration_minutes;
+  if (!duration) {
+    const t = await getAppointmentType(business_id, practitioner_id, appointment_type_id);
+    duration = Number(t?.duration) || Number(t?.duration_in_minutes) || 30; // sensible default
+  }
+
+  const end = new Date(startsISO);
+  end.setMinutes(end.getMinutes() + Number(duration));
+  const endsISO = end.toISOString();
+
+  const payload = {
+    business_id,
+    practitioner_id,
+    patient_id,
+    appointment_type_id,
+    starts_at: startsISO,
+    ends_at: endsISO,
+  };
+
+  return await clinikoPost("/individual_appointments", payload);
+}
+
+// === server/flows/booking.ts ===
+// Wire the fixed calls into your flow: find/create patient, fetch availability, then book.
+
+import {
+  getOrCreatePatient,
+  getAvailability,
+  createIndividualAppointment,
+  sanitizeEmail,
+  sanitizePhoneE164AU,
+} from "../integrations/cliniko";
+
+// Example orchestrator (adapt to your context store)
+export async function offerAndBookSlot({
+  business_id,
+  practitioner_id,
+  appointment_type_id,
+  callerPhone,
+  collectedName,
+  collectedEmail,
+  dayPref, // e.g., today/tomorrow/ISO date
+  halfPref, // "morning" | "afternoon"
+}: any) {
+  const patient = await getOrCreatePatient({
+    fullName: collectedName,
+    email: collectedEmail,
+    phone: callerPhone,
+  });
+
+  // date window selection
+  const from = new Date(); // today start
+  const to = new Date();   // within next 7 days
+  to.setDate(from.getDate() + 7);
+
+  // fetch
+  const times = await getAvailability({
+    business_id,
+    practitioner_id,
+    appointment_type_id,
+    fromDate: from,
+    toDate: to,
+    per_page: 50,
+  });
+
+  // simple filter for half-day
+  const filtered = times.filter((t: any) => {
+    // t.starts_at is ISO; choose hours for morning/afternoon
+    const h = new Date(t.starts_at).getHours();
+    return halfPref === "morning" ? h < 12 : h >= 12;
+  });
+
+  const pick = filtered[0] || times[0]; // first best offer
+  if (!pick) {
+    return { booked: false, reason: "NO_AVAIL" };
+  }
+
+  const created = await createIndividualAppointment({
+    business_id,
+    practitioner_id,
+    patient_id: String(patient.id),
+    appointment_type_id: String(appointment_type_id),
+    starts_at: pick.starts_at,
+    // duration auto-derives from the type if you didn’t pass it
+  });
+
+  return { booked: true, appointment: created };
+}
+
+// === server/routes.ts (or wherever you handle the wizard → booking) ===
+// Call offerAndBookSlot() with REAL ids.
+
+const BUSINESS_ID = process.env.CLINIKO_BUSINESS_ID!;         // e.g. "1797514430146160197"
+const PRACTITIONER_ID = process.env.CLINIKO_PRACTITIONER_ID!; // e.g. "1797514426656498878"
+const APPOINTMENT_TYPE_ID = process.env.CLINIKO_APPT_TYPE_ID!;// e.g. "1797514429433128673"
+
+// ...
+const result = await offerAndBookSlot({
+  business_id: BUSINESS_ID,
+  practitioner_id: PRACTITIONER_ID,
+  appointment_type_id: APPOINTMENT_TYPE_ID,
+  callerPhone: fromNumber, // Twilio From:
+  collectedName: ctx.collected?.name,
+  collectedEmail: ctx.collected?.email,
+  dayPref: ctx.dayPref,         // however you modelled it
+  halfPref: ctx.halfPref || "morning",
+});
+
+if (result.booked) {
+  // confirm to caller & SMS
+} else {
+  // apologize + route to receptionist callback
+}
+
+
+---
+
+Why this fixes your exact logs
+
+“karabali@gmail.com is not filterable” / “+614… is not filterable”
+This happens when the param name becomes the email/phone (e.g. ...?karabali@gmail.com=). The new clinikoGet() always sets url.searchParams.set('q', value), ensuring ?q=karabali@gmail.com.
+
+available_times 400 “Invalid time frame definition”
+We clamp the window to ≤ 7 days, ensure to > from, and send YYYY-MM-DD (date-only), which Cliniko accepts for /available_times. This reliably clears the validation.
+
+individual_appointments 422 (blank ends_at, invalid practitioner, etc.)
+We compute ends_at from the appointment type duration, and post all required fields: business_id, practitioner_id, patient_id, appointment_type_id, starts_at, ends_at.
+
+
+
+---
+
+Secrets to add (Replit → Secrets)
+
+CLINIKO_API_KEY (already)
+
+CLINIKO_BUSINESS_ID ← set the exact ID you’re using in logs
+
+CLINIKO_PRACTITIONER_ID ← must be an active practitioner ID
+
+CLINIKO_APPT_TYPE_ID ← the appointment type you’re offering
+
+CLINIC_TIMEZONE (optional, e.g., Australia/Brisbane)
+
+
+(Use the long integer IDs you see in your logs.)
+
+
+---
+
+If anything still barks, paste the new Cliniko log lines and I’ll adjust the window/format further (e.g., moving to full ISO with explicit +10:00 offset if your account requires it).
