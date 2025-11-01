@@ -35,6 +35,7 @@ import {
   isSameLocalDay,
   partOfDayFilter,
   filterSlotsByPartOfDay,
+  ssmlTime,
   AUST_TZ
 } from '../time';
 
@@ -44,6 +45,14 @@ function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void)
   const xml = vr.toString();
   console.log('[VOICE][TwiML OUT]', xml);
   res.type('text/xml').send(xml);
+}
+
+// Helper to parse option index from user utterance
+function parseOptionIndex(utterance: string, numOffered: number): number | null {
+  if (/\b(one|1|first)\b/i.test(utterance)) return 0;
+  if (/\b(two|2|second)\b/i.test(utterance)) return 1;
+  if (/\b(yes|yeah|sure|ok|okay)\b/i.test(utterance) && numOffered === 1) return 0;
+  return null;
 }
 
 // Helper to update conversation context with user and assistant turns
@@ -610,7 +619,18 @@ export function registerVoice(app: Express) {
         } else if (twoSlots.length === 1) {
           const slot1 = twoSlots[0];
           if (!slot1) return; // Safety check
-          const time1 = formatSlotForTTS(slot1.startIso, AUST_TZ);
+          
+          // Store offered slot ISOs for exact booking
+          if (conversation) {
+            await storage.updateConversation(conversation.id, {
+              context: { ...context, offeredSlotISOs: [slot1.startIso] }
+            });
+          }
+          
+          // Use SSML for natural time pronunciation
+          const time1SSML = ssmlTime(slot1.startIso, AUST_TZ);
+          const timeInner = time1SSML.replace('<speak>', '').replace('</speak>', '');
+          
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
@@ -621,15 +641,27 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `I have ${time1}. Would you like to take that time`);
+            say(g, `<speak>I have one option available: ${timeInner}. Would you like to take that time</speak>`);
             pause(g, 1);
           });
         } else {
           const slot1 = twoSlots[0];
           const slot2 = twoSlots[1];
           if (!slot1 || !slot2) return; // Safety check
-          const time1 = formatSlotForTTS(slot1.startIso, AUST_TZ);
-          const time2 = formatSlotForTTS(slot2.startIso, AUST_TZ);
+          
+          // Store offered slot ISOs for exact booking
+          if (conversation) {
+            await storage.updateConversation(conversation.id, {
+              context: { ...context, offeredSlotISOs: [slot1.startIso, slot2.startIso] }
+            });
+          }
+          
+          // Use SSML for natural time pronunciation
+          const time1SSML = ssmlTime(slot1.startIso, AUST_TZ);
+          const time2SSML = ssmlTime(slot2.startIso, AUST_TZ);
+          const time1Inner = time1SSML.replace('<speak>', '').replace('</speak>', '');
+          const time2Inner = time2SSML.replace('<speak>', '').replace('</speak>', '');
+          
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
@@ -640,74 +672,25 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `I have two options. Option one ${time1}. Or option two ${time2}`);
+            say(g, `<speak>I have two options. Option one, ${time1Inner}. <break time="200ms"/> Or option two, ${time2Inner}.</speak>`);
             pause(g, 1);
           });
         }
       }
 
-      // Booking flow - choose (parse choice and book with fuzzy fallback)
+      // Booking flow - choose (robust option parsing with confirmation)
       if (route === 'book-choose' || route === 'reschedule-choose') {
         const speech = (req.body.SpeechResult || '').toLowerCase();
         const aptId = req.query.aptId as string | undefined;
         
-        // Get conversation to retrieve stored slots
+        // Get conversation to retrieve stored slot ISOs
         const call = await storage.getCallByCallSid(callSid);
         const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
         const context = conversation?.context as any || {};
-        const availableSlots = context.availableSlots || [];
+        const offeredSlotISOs = context.offeredSlotISOs || [];
         
-        // Helper to parse option index
-        function parseOptionIndex(utterance: string): number | null {
-          if (/\b(one|1|first)\b/i.test(utterance)) return 0;
-          if (/\b(two|2|second)\b/i.test(utterance)) return 1;
-          if (/\b(yes|yeah|sure|ok|okay)\b/i.test(utterance) && availableSlots.length === 1) return 0;
-          return null;
-        }
-        
-        // Parse user's choice - prefer explicit "option one/two"
-        let idx = parseOptionIndex(speech);
-        
-        // Fuzzy fallback: if ASR misheard time (e.g., "115 m" instead of "11:15 am")
-        if (idx === null && availableSlots.length > 0) {
-          const digits = speech.replace(/\D/g, ''); // Extract digits only
-          if (digits.length >= 3) {
-            // Parse rough hour and minute
-            const wantH = parseInt(digits.slice(0, -2), 10);
-            const wantM = parseInt(digits.slice(-2), 10);
-            const targetMins = wantH * 60 + wantM;
-            
-            // Find closest slot by time
-            const deltas = availableSlots.map((slot: any) => {
-              const d = new Date(slot.startIso);
-              const h = parseInt(
-                new Intl.DateTimeFormat('en-AU', {
-                  timeZone: AUST_TZ,
-                  hour: '2-digit',
-                  hour12: false
-                }).format(d),
-                10
-              );
-              const m = parseInt(
-                new Intl.DateTimeFormat('en-AU', {
-                  timeZone: AUST_TZ,
-                  minute: '2-digit',
-                  hour12: false
-                }).format(d),
-                10
-              );
-              return Math.abs((h * 60 + m) - targetMins);
-            });
-            idx = deltas.indexOf(Math.min(...deltas));
-          } else {
-            idx = 0; // Default to first option if nothing else works
-          }
-        }
-        
-        const chosen = availableSlots[idx ?? 0];
-        
-        // If no valid choice, ask again
-        if (!chosen) {
+        // Safety: if no offered slots, redirect back
+        if (!offeredSlotISOs.length) {
           return twiml(res, (vr) => {
             const g = vr.gather({
               input: ['speech'],
@@ -715,11 +698,66 @@ export function registerVoice(app: Express) {
               timeout: 5,
               speechTimeout: 'auto',
               actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+              action: abs(`/api/voice/handle?route=${route.replace('choose','part')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
               method: 'POST'
             });
-            say(g, 'Sorry I did not catch that. Say option one or option two');
+            say(g, 'Sorry I lost those options. Should I search again');
             pause(g, 1);
+          });
+        }
+        
+        // Check if chosenSlotISO was already set (from confirm-yesno redirect)
+        let chosenSlotISO = context.chosenSlotISO;
+        
+        if (!chosenSlotISO) {
+          // Parse user's choice - prefer explicit "option one/two"
+          const idx = parseOptionIndex(speech, offeredSlotISOs.length);
+          
+          if (idx === null) {
+            // Didn't get clear "option one/two" → confirm first option
+            const slotISO = offeredSlotISOs[0];
+            
+            if (conversation) {
+              await storage.updateConversation(conversation.id, {
+                context: { ...context, pendingSlotISO: slotISO }
+              });
+            }
+            
+            const timeSSML = ssmlTime(slotISO, AUST_TZ);
+            const timeInner = timeSSML.replace('<speak>', '').replace('</speak>', '');
+            
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech'],
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=${route.replace('choose','confirm-yesno')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+                method: 'POST'
+              });
+              say(g, `<speak>Just to confirm, did you want ${timeInner}?</speak>`);
+              pause(g, 1);
+            });
+          }
+          
+          // Got clear option selection → set chosenSlotISO
+          chosenSlotISO = offeredSlotISOs[idx] || offeredSlotISOs[0];
+          
+          if (conversation) {
+            await storage.updateConversation(conversation.id, {
+              context: { ...context, chosenSlotISO }
+            });
+          }
+        }
+        
+        // Fetch slot details from Cliniko to get appointment metadata
+        const allSlots = await getAvailability();
+        const slotData = allSlots.find(s => s.startIso === chosenSlotISO);
+        
+        if (!slotData) {
+          return twiml(res, (vr) => {
+            say(vr, 'Sorry that time slot is no longer available. Please call back to rebook');
           });
         }
         
@@ -728,7 +766,8 @@ export function registerVoice(app: Express) {
         
         let apt;
         if (route === 'reschedule-choose' && aptId) {
-          apt = await rescheduleAppointment(aptId, chosen.startIso);
+          // Reschedule using exact chosen slot ISO
+          apt = await rescheduleAppointment(aptId, chosenSlotISO);
           
           // Update appointment status in our database
           const existing = await storage.findUpcomingByPhone(from);
@@ -742,18 +781,19 @@ export function registerVoice(app: Express) {
               phone: from,
               patientId: phoneData?.patientId || null,
               clinikoAppointmentId: apt.id,
-              startsAt: new Date(chosen.startIso),
+              startsAt: new Date(chosenSlotISO),
               status: 'scheduled'
             });
           }
         } else {
+          // Book using exact chosen slot ISO and metadata from Cliniko
           apt = await createAppointmentForPatient(from, {
-            practitionerId: chosen.practitionerId,
-            appointmentTypeId: chosen.appointmentTypeId,
-            startsAt: chosen.startIso,
-            businessId: chosen.businessId,
-            duration: chosen.duration,
-            notes: route.startsWith('reschedule') ? 'Rescheduled via EchoDesk' : 'Booked via EchoDesk',
+            practitionerId: slotData.practitionerId,
+            appointmentTypeId: slotData.appointmentTypeId,
+            startsAt: chosenSlotISO,
+            businessId: slotData.businessId,
+            duration: slotData.duration,
+            notes: 'Booked via EchoDesk',
             fullName: phoneData?.fullName || undefined,
             email: phoneData?.email || undefined
           });
@@ -764,7 +804,7 @@ export function registerVoice(app: Express) {
               phone: from,
               patientId: phoneData?.patientId || null,
               clinikoAppointmentId: apt.id,
-              startsAt: new Date(chosen.startIso),
+              startsAt: new Date(chosenSlotISO),
               status: 'scheduled'
             });
           }
@@ -773,7 +813,7 @@ export function registerVoice(app: Express) {
         // Update call log with appointment details
         if (callSid) {
           const updatedCall = await storage.updateCall(callSid, {
-            summary: `${route.startsWith('reschedule') ? 'Rescheduled' : 'Booked'} appointment for ${formatAppointmentTimeAU(chosen.startIso)}`
+            summary: `${route.startsWith('reschedule') ? 'Rescheduled' : 'Booked'} appointment for ${formatAppointmentTimeAU(chosenSlotISO)}`
           });
           
           if (updatedCall) {
@@ -782,7 +822,7 @@ export function registerVoice(app: Express) {
         }
         
         // Send SMS confirmation with AU timezone formatting
-        const aptDate = formatAppointmentTimeAU(chosen.startIso);
+        const aptDate = formatAppointmentTimeAU(chosenSlotISO);
         
         if (route === 'reschedule-choose') {
           await sendAppointmentRescheduled({
@@ -798,9 +838,55 @@ export function registerVoice(app: Express) {
           });
         }
         
+        // Speak confirmation with SSML time
+        const confirmTimeSSML = ssmlTime(chosenSlotISO, AUST_TZ);
+        const confirmTimeInner = confirmTimeSSML.replace('<speak>', '').replace('</speak>', '');
+        
         return twiml(res, (vr) => {
-          say(vr, 'All set. We will send a confirmation by message. Goodbye');
+          say(vr, `<speak>All set. Your booking is confirmed for ${confirmTimeInner}. We will send a confirmation by message. Goodbye</speak>`);
         });
+      }
+      
+      // Booking flow - confirm yes/no (for ambiguous choices)
+      if (route === 'book-confirm-yesno' || route === 'reschedule-confirm-yesno') {
+        const speech = (req.body.SpeechResult || '').toLowerCase();
+        const aptId = req.query.aptId as string | undefined;
+        
+        // Get conversation context
+        const call = await storage.getCallByCallSid(callSid);
+        const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
+        const context = conversation?.context as any || {};
+        const pendingSlotISO = context.pendingSlotISO;
+        const offeredSlotISOs = context.offeredSlotISOs || [];
+        
+        if (/\b(yes|yeah|sure|ok|okay)\b/i.test(speech)) {
+          // User confirmed → set as chosen and redirect to book-choose
+          if (conversation && pendingSlotISO) {
+            await storage.updateConversation(conversation.id, {
+              context: { ...context, chosenSlotISO: pendingSlotISO }
+            });
+          }
+          
+          // Redirect back to book-choose which will now find chosenSlotISO and book it
+          return twiml(res, (vr) => {
+            vr.redirect(abs(`/api/voice/handle?route=${route.replace('confirm-yesno','choose')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`));
+          });
+        } else {
+          // User said no → ask again for option one or two
+          return twiml(res, (vr) => {
+            const g = vr.gather({
+              input: ['speech'],
+              language: 'en-AU',
+              timeout: 5,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=${route.replace('confirm-yesno','choose')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+              method: 'POST'
+            });
+            say(g, 'Okay. Would you like option one or option two');
+            pause(g, 1);
+          });
+        }
       }
 
       // Lookup appointment for rescheduling (use our database first)
