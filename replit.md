@@ -2,16 +2,7 @@
 
 ## Overview
 
-EchoDesk is a production-grade voice receptionist dashboard for Australian healthcare clinics. It provides real-time monitoring of Twilio voice calls, manages caller alerts, and integrates with Cliniko for complete appointment lifecycle management. The application features:
-
-- **Full Cliniko Integration**: Live appointment booking, rescheduling, and cancellation with real patient lookup
-- **SMS Confirmations**: Automated appointment confirmations sent via Twilio SMS with Australian date formatting
-- **Real-time Updates**: WebSocket-powered dashboard with automatic call/alert updates and connection resilience
-- **AI Intent Detection**: GPT-4o-mini powered conversation understanding with multi-turn context and confidence scoring
-- **Identity Capture**: Wizard-based patient information collection for first-time callers
-- **Call Recording**: Twilio recording with automated transcription for quality assurance
-
-The application enables clinic receptionists to monitor active calls, review comprehensive call history, manage patient identity, and oversee the complete appointment workflow through an intuitive Material Design 3-inspired interface.
+EchoDesk is a production-grade voice receptionist dashboard designed for Australian healthcare clinics. Its primary purpose is to provide real-time monitoring of Twilio voice calls, manage caller alerts, and offer comprehensive appointment lifecycle management through integration with Cliniko. Key capabilities include full Cliniko integration for bookings, rescheduling, and cancellations, automated SMS confirmations, a WebSocket-powered real-time dashboard, AI-driven intent detection using GPT-4o-mini, a wizard for new patient identity capture, and call recording with automated transcription. The project aims to streamline clinic operations by providing an intuitive interface for receptionists to manage calls, patient identity, and appointment workflows.
 
 ## User Preferences
 
@@ -21,271 +12,23 @@ Preferred communication style: Simple, everyday language.
 
 ### Frontend Architecture
 
-**Framework & Build System:**
-- React 18 with TypeScript using Vite as the build tool and development server
-- Client-side routing implemented with Wouter for lightweight navigation
-- Component library based on shadcn/ui (Radix UI primitives with Tailwind CSS)
-
-**State Management:**
-- TanStack Query (React Query) for server state management, caching, and API synchronization
-- WebSocket integration for real-time updates with automatic cache invalidation
-- Exponential backoff reconnection (1s → 30s) for connection resilience
-- No global client state - relies on React Query's intelligent caching and refetching strategies
-
-**UI Design System:**
-- Material Design 3 principles adapted for healthcare operations
-- Tailwind CSS with custom design tokens defined in CSS variables
-- Typography: Inter (primary), JetBrains Mono (monospace for IDs/timestamps)
-- Color system using HSL with CSS custom properties for theme flexibility
-- Component variants using class-variance-authority for consistent styling patterns
-
-**Routing Structure:**
-- `/` - Dashboard with real-time metrics and recent activity
-- `/calls` - Complete call history with search functionality
-- `/calls/:id` - Individual call detail view
-- `/alerts` - Alert management interface
-- `/tenants` - Multi-tenant clinic configuration
+The frontend uses React 18 with TypeScript and Vite. Navigation is handled by Wouter, and components are built with shadcn/ui (Radix UI primitives + Tailwind CSS). State management, caching, and API synchronization are managed by TanStack Query, which also integrates WebSockets for real-time updates and automatic cache invalidation with exponential backoff for connection resilience. The UI adheres to Material Design 3 principles, using Tailwind CSS with custom HSL-based design tokens and specific typography (Inter and JetBrains Mono). Routing includes a dashboard, call history, individual call details, alert management, and multi-tenant configuration.
 
 ### Backend Architecture
 
-**Server Framework:**
-- Express.js with TypeScript running on Node.js
-- Custom Vite integration for HMR in development
-- ES modules throughout the codebase
-
-**API Design:**
-- RESTful endpoints under `/api` namespace
-- Twilio webhook endpoints under `/api/voice` for voice call handling
-- Request/response logging middleware for debugging
-- Raw body preservation for Twilio signature validation
-
-**Voice Call Processing:**
-- TwiML generation for Twilio voice responses (NO `<Start>` tag - eliminates error 13520)
-- Amazon Polly for text-to-speech in Australian English
-- **Voice Constants & Safety** (`server/utils/voice-constants.ts`):
-  - `VOICE_NAME` - Configurable via env (default: "Polly.Olivia-Neural")
-  - `ttsClean()` - Extremely conservative text sanitizer:
-    - Strips SSML tags, non-ASCII characters, fancy quotes
-    - Removes punctuation that trips Polly (?,!,:;())
-    - Collapses whitespace, ensures plain text only
-  - `say(node, text)` - Multi-level voice fallback system:
-    - Primary: VOICE_NAME (env-configurable)
-    - Fallback: alice (Twilio default)
-    - Auto-skips empty strings
-    - NO bargeIn parameter (eliminated for 12200 warning prevention)
-  - `pause(node, secs)` - Integer-only pause helper:
-    - Enforces integer values for Twilio compliance
-    - Default: 1 second
-    - Coerces non-integers to 1
-- Enhanced intent detection system:
-  - Primary: GPT-4o-mini with confidence scoring (0.0-1.0)
-  - Fallback: Regex-based pattern matching
-  - Multi-turn conversation context tracking
-  - Full dialogue history for intent refinement
-  - Supports: book, reschedule, cancel, human, hours intents
-- Identity capture wizard for first-time callers
-- **Natural Time Formatting & Slot Integration** (`server/time.ts`):
-  - `formatSlotForTTS(utcIso, tz)` - Formats times for natural speech (e.g., "10:30 am" with colon and space)
-  - `nextWeekdayFromUtterance(day, tz)` - Accurately maps spoken weekdays to ISO dates in Australia/Brisbane timezone
-  - `isSameLocalDay(utcIso, targetIso, tz)` - Filters slots to exact local date matches
-  - `partOfDayFilter(slots, part, tz)` - Splits slots by morning/afternoon in local timezone
-  - Fetches real available slots for specific days from Cliniko API
-  - Filters by morning (< 12pm) / afternoon (≥ 12pm) in Australia/Brisbane timezone
-  - Speaks actual appointment times in Australian format (e.g., "10:30 am Saturday 2 November")
-  - Intelligent fallback logic:
-    - 0 slots requested time → offers opposite time if available, else asks for another day
-    - 1 slot available → yes/no confirmation ("I have 10:30 am. Would you like to take that time?")
-    - 2+ slots → first/second choice ("Option one 10:30 am or option two 2:45 pm")
-  - Context-aware preference flipping when user accepts fallback offer
-  - Stores selected slots in conversation context for booking
-  - **Robust Option Parsing**: Explicit "option one/two" detection + fuzzy time matching fallback for ASR errors
-- **Appointment Persistence** (`appointments` table):
-  - Stores phone, patient_id, cliniko_appointment_id, starts_at for each booking
-  - Enables reschedule lookup by phone number without Cliniko API dependency
-  - Status tracking (scheduled/rescheduled/cancelled)
-  - Automatically persists appointments after successful booking/rescheduling
-- Complete appointment lifecycle management:
-  - New booking with real Cliniko slot selection and local persistence
-  - Rescheduling with database-first appointment lookup (Cliniko fallback)
-  - Cancellation with confirmation
-  - SMS confirmations with Australian timezone formatting for all operations
-
-**Middleware Layers:**
-1. Body parsing (JSON with raw body buffer for webhooks)
-2. Request timing and logging
-3. Twilio signature validation (optional in development)
-4. Error handling and response formatting
-
-**TwiML Hardening (Eliminates Twilio 13520/12200 errors):**
-- ALL `<Gather>` elements include `language='en-AU'` for Australian speech recognition (14 gather calls across incoming, handle, wizard routes)
-- NO `language` attributes on `<Say>` elements (language is set on Gather only)
-- NO `bargeIn` attributes on `<Say>` or `<Gather>` elements
-- All pauses use integer values only via `pause()` helper
-- Standard Gather pattern: `vr.gather({ input: ['speech'], language: 'en-AU', timeout: 5, speechTimeout: 'auto', actionOnEmptyResult: true, ... })`
-- Every Gather followed by: `say(g, text); pause(g, 1);` pattern
-- Comprehensive error handling: All voice handlers (/incoming, /handle, /wizard) create fresh VoiceResponse objects in catch blocks
-- Enhanced logging: All TwiML output logged with `[VOICE][TwiML OUT]` prefix; errors logged with stack traces
-- Test endpoints: 
-  - `/api/voice/ping` - Simple TwiML validation (returns success message)
-  - `/api/voice/test-echo` - Interactive TwiML validation (gather-based echo loop)
+The backend is built with Express.js and TypeScript on Node.js. It features RESTful APIs under `/api` and Twilio webhook endpoints under `/api/voice`. Voice call processing leverages TwiML generation, Amazon Polly for Australian English text-to-speech, and a robust intent detection system. This system primarily uses GPT-4o-mini with confidence scoring and multi-turn context, falling back to regex matching. It includes an identity capture wizard and sophisticated natural time formatting and slot integration for Cliniko appointments, handling local timezones, speakable time formats, and slot freezing to prevent race conditions. TwiML hardening measures eliminate common Twilio errors. Appointment persistence is managed in a local database to facilitate rescheduling and cancellation workflows, and SMS confirmations are automated for all appointment actions.
 
 ### Data Storage & Schema
 
-**Database:**
-- PostgreSQL via Neon serverless driver
-- Drizzle ORM for type-safe database queries and schema management
-- WebSocket connection pooling for serverless compatibility
+PostgreSQL, accessed via Neon serverless driver and Drizzle ORM, serves as the database. Core tables include `tenants` for multi-clinic configurations, `phoneMap` for caller identity, `leads` for phone number tracking and opt-out management, `conversations` for multi-turn interaction state with JSONB context, `callLogs` for comprehensive call history, and `alerts` for real-time receptionist notifications. The schema emphasizes serial primary keys, timestamps, JSONB for flexible data, and foreign key relationships.
 
-**Core Tables:**
+## External Dependencies
 
-1. **tenants** - Multi-tenant clinic configurations
-   - Stores clinic name, greeting messages, timezone settings
-   - Slug-based tenant identification
-
-2. **phoneMap** - Caller identity registry
-   - Maps phone numbers to patient information
-   - Stores full name, email, Cliniko patient ID
-   - Updated through identity capture wizard
-
-3. **leads** - Phone number tracking
-   - Opt-out management for SMS/marketing
-   - Tracks opt-out dates
-
-4. **conversations** - Multi-turn interaction state
-   - Links to tenant and lead via foreign keys
-   - Voice/SMS flag for channel tracking
-   - JSONB context storing full dialogue history:
-     - Array of user/assistant turns with content
-     - Previous intent and confidence for refinement
-     - Supports GPT-4o-mini multi-turn understanding
-   - State machine tracking (active/completed/abandoned)
-   - Linked to calls via conversationId
-
-5. **callLogs** - Comprehensive call history
-   - Twilio call metadata (CallSid, From, To, duration)
-   - Intent classification with confidence percentage
-   - Detailed call summary with outcomes
-   - Appointment booking/rescheduling/cancellation results
-   - Recording and transcription URLs
-   - Status tracking (queued/ringing/in-progress/completed)
-   - Linked to conversation for context retrieval
-
-6. **alerts** - Real-time notifications
-   - System alerts for reception staff
-   - Categorized by reason (unknown_caller, booking_failed, etc.)
-   - Status tracking (open/dismissed)
-   - Linked to calls and tenants
-
-**Schema Design Principles:**
-- Serial primary keys for all tables
-- Timestamp tracking (createdAt, updatedAt where applicable)
-- JSONB for flexible context storage
-- Foreign key relationships for data integrity
-- Text fields for Cliniko IDs (API returns strings)
-
-### External Dependencies
-
-**Twilio Integration:**
-- Voice API for inbound call handling with TwiML generation
-- SMS API for appointment confirmations and notifications
-- Webhook endpoints for call lifecycle:
-  - Incoming call handler with greeting
-  - Recording callback with URL storage
-  - Transcription callback with text extraction
-- Signature validation for webhook security (development bypass available)
-- Call recording with automated transcription
-- SMS confirmation system:
-  - Appointment booking confirmations
-  - Rescheduling notifications
-  - Cancellation notices
-  - Australian date/time formatting
-
-**Cliniko API:**
-- Full RESTful API integration for complete appointment lifecycle
-- Basic authentication with API key
-- Comprehensive endpoints:
-  - Real-time practitioner availability queries
-  - Appointment type enumeration
-  - Patient lookup by phone number
-  - Patient creation for new callers
-  - Appointment creation with auto-conflict detection
-  - Appointment rescheduling
-  - Appointment cancellation
-- Australian region endpoint (api.au4.cliniko.com)
-- Security: Redacted request body logging to prevent PII leakage
-
-**Timezone Utilities** (`server/utils/tz.ts`):
-- All timezone conversions use Australia/Sydney timezone
-- `toSydney(utcIso)` - Converts UTC ISO string to ZonedDateTime in Australia/Sydney
-- `speakTimeAU(utcIso)` - Formats time for voice output (e.g., "10:00am")
-- `speakDayAU(utcIso)` - Formats day for voice output (e.g., "Saturday 1 November")
-- `formatAppointmentTimeAU(utcIso)` - Formats full appointment for SMS (e.g., "Saturday 1 November at 10:00am")
-- `isMorningAU(utcIso)` - Returns true if hour < 12 in Australian timezone
-- `dateOnlyAU(utcIso)` - Extracts date-only string (YYYY-MM-DD) in Australian timezone
-- `tomorrowAU()` - Returns tomorrow's date in Australian timezone
-- All functions handle DST transitions automatically (AEDT/AEST)
-
-**AWS Polly (via Twilio):**
-- Olivia-Neural voice for Australian English TTS (configurable via VOICE_NAME env var)
-- SSML support for pronunciation control
-- Integrated through Twilio's `<Say>` verb with voice parameter
-
-**OpenAI (Optional):**
-- GPT-4o-mini for enhanced intent detection with:
-  - JSON structured output format
-  - Confidence scoring (0.0 to 1.0)
-  - Reasoning explanation for transparency
-  - Multi-turn context awareness
-  - Full conversation history analysis
-- Graceful fallback to regex-based intent matching on errors or when disabled
-- Temperature 0.3 for consistent classifications
-- Environment flag (USE_OPENAI_INTENT) to enable/disable
-
-**Google Fonts:**
-- Inter font family (300-700 weights)
-- JetBrains Mono (400-500 weights)
-- Loaded via CDN for consistent typography
-
-**Development Tools:**
-- Replit-specific plugins for runtime error overlay and dev banner
-- Cartographer for code mapping (Replit environment only)
-
-**Session Management:**
-- connect-pg-simple for PostgreSQL session storage
-- Session data persisted across server restarts
-
-**Environment Configuration:**
-- All secrets managed through environment variables
-- Required:
-  - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
-  - DATABASE_URL, PG* credentials
-  - CLINIKO_API_KEY
-  - CLINIKO_REGION (default: au4)
-  - CLINIKO_BUSINESS_ID (auto-discovered from Cliniko account)
-  - CLINIKO_PRACTITIONER_ID (auto-discovered from Cliniko account)
-  - CLINIKO_APPT_TYPE_ID (auto-discovered from Cliniko account)
-  - PUBLIC_BASE_URL (for webhook callbacks)
-  - SESSION_SECRET
-- Optional:
-  - OPENAI_API_KEY (for GPT-4o-mini intent detection)
-  - USE_OPENAI_INTENT (boolean flag, defaults to false)
-  - CALL_RECORDING_ENABLED (boolean, defaults to false)
-  - TRANSCRIPTION_ENABLED (boolean, defaults to false)
-  - IDENTITY_CAPTURE (boolean, defaults to true)
-- Timezone configuration (default: Australia/Brisbane)
-- Health check endpoint: `/__cliniko/health` returns Cliniko configuration status
-
-**WebSocket Real-time Updates:**
-- Server: WebSocket server on `/ws` path
-- Client: Automatic reconnection with exponential backoff (1s → 2s → 4s → ... → 30s max)
-- Events:
-  - call:started - New call logged
-  - call:updated - Call metadata/intent/summary updated
-  - call:ended - Call completed
-  - alert:created - New alert for receptionist
-  - alert:dismissed - Alert resolved
-- Cache invalidation:
-  - /api/calls and /api/calls/recent
-  - /api/alerts and /api/alerts/recent
-  - /api/stats
-- Connection resilience with automatic recovery
+-   **Twilio:** Used for Voice API (inbound calls, TwiML generation, recording, transcription), SMS API (confirmations, notifications), and webhook handling with signature validation.
+-   **Cliniko API:** Provides full RESTful integration for appointment lifecycle management, including availability, patient lookup/creation, appointment creation, rescheduling, and cancellation, targeting the Australian region endpoint.
+-   **AWS Polly (via Twilio):** Utilized for Australian English text-to-speech with the Olivia-Neural voice.
+-   **OpenAI:** GPT-4o-mini is optionally used for advanced intent detection, offering confidence scoring, multi-turn context, and structured JSON output. A regex-based fallback is in place.
+-   **Google Fonts:** Inter and JetBrains Mono fonts are loaded via CDN for consistent typography.
+-   **Neon:** Provides serverless PostgreSQL database hosting.
+-   **connect-pg-simple:** Used for PostgreSQL-based session management.
+-   **Vite:** Frontend build tool and development server.
