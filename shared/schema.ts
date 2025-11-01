@@ -71,6 +71,18 @@ export const alerts = pgTable("alerts", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Appointments - tracks booked appointments for reschedule/cancel lookup
+export const appointments = pgTable("appointments", {
+  id: serial("id").primaryKey(),
+  phone: text("phone").notNull(),
+  patientId: text("patient_id"), // Cliniko patient ID
+  clinikoAppointmentId: text("cliniko_appointment_id").notNull(),
+  startsAt: timestamp("starts_at").notNull(),
+  status: text("status").default("scheduled"), // 'scheduled' | 'rescheduled' | 'cancelled'
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // Relations
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   callLogs: many(callLogs),
@@ -120,6 +132,12 @@ export const insertAlertSchema = createInsertSchema(alerts).omit({
   createdAt: true,
 });
 
+export const insertAppointmentSchema = createInsertSchema(appointments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 // Types
 export type Tenant = typeof tenants.$inferSelect;
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
@@ -136,3 +154,6 @@ export type InsertCallLog = z.infer<typeof insertCallLogSchema>;
 
 export type Alert = typeof alerts.$inferSelect;
 export type InsertAlert = z.infer<typeof insertAlertSchema>;
+
+export type Appointment = typeof appointments.$inferSelect;
+export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
