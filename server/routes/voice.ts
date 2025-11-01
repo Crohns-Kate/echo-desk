@@ -36,7 +36,9 @@ import {
   partOfDayFilter,
   filterSlotsByPartOfDay,
   ssmlTime,
-  AUST_TZ
+  AUST_TZ,
+  localDayWindow,
+  speakableTime
 } from '../time';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
@@ -47,8 +49,13 @@ function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void)
   res.type('text/xml').send(xml);
 }
 
-// Helper to parse option index from user utterance
-function parseOptionIndex(utterance: string, numOffered: number): number | null {
+// Helper to parse option index from user utterance or DTMF
+function parseOptionIndex(utterance: string, digits: string | undefined, numOffered: number): number | null {
+  // DTMF has priority (more explicit)
+  if (digits === '1') return 0;
+  if (digits === '2' && numOffered >= 2) return 1;
+  
+  // Speech fallback
   if (/\b(one|1|first)\b/i.test(utterance)) return 0;
   if (/\b(two|2|second)\b/i.test(utterance)) return 1;
   if (/\b(yes|yeah|sure|ok|okay)\b/i.test(utterance) && numOffered === 1) return 0;
@@ -547,25 +554,20 @@ export function registerVoice(app: Express) {
           });
         }
         
-        // Fetch all available slots (use dayIso parameter to get slots)
-        const allRawSlots = await getAvailability();
+        // Calculate exact day window in Australia/Brisbane timezone
+        const { fromDate, toDate } = localDayWindow(requestedDayISO, AUST_TZ);
         
-        // Filter to ONLY the requested day using local timezone matching
-        const daySlots = allRawSlots.filter(slot => 
-          isSameLocalDay(slot.startIso, requestedDayISO, AUST_TZ)
-        );
+        console.log(`[AVAIL] Fetching ${wantMorning ? 'morning' : 'afternoon'} slots for ${requestedDayISO} (from=${fromDate} to=${toDate})`);
         
-        // Filter by part of day
-        const partSlots = filterSlotsByPartOfDay(
-          daySlots.map(s => s.startIso),
-          wantMorning ? 'morning' : 'afternoon',
-          AUST_TZ
-        );
+        // Fetch slots for exact day with part-of-day filtering in Cliniko service
+        const filteredSlots = await getAvailability({
+          fromDate,
+          toDate,
+          part: wantMorning ? 'morning' : 'afternoon',
+          timezone: AUST_TZ
+        });
         
-        // Map back to full slot objects
-        const filteredSlots = partSlots.map(iso => 
-          daySlots.find(s => s.startIso === iso)
-        ).filter(Boolean);
+        console.log(`[AVAIL] Found ${filteredSlots.length} ${wantMorning ? 'morning' : 'afternoon'} slots on ${requestedDayISO}`);
         
         // Take first two slots
         const twoSlots = filteredSlots.slice(0, 2);
@@ -586,11 +588,17 @@ export function registerVoice(app: Express) {
         if (twoSlots.length === 0) {
           // Check opposite time
           const oppositePart = wantMorning ? 'afternoon' : 'morning';
-          const oppositeSlots = filterSlotsByPartOfDay(
-            daySlots.map(s => s.startIso),
-            oppositePart,
-            AUST_TZ
-          );
+          
+          console.log(`[AVAIL] No ${wantMorning ? 'morning' : 'afternoon'} slots. Checking ${oppositePart}...`);
+          
+          const oppositeSlots = await getAvailability({
+            fromDate,
+            toDate,
+            part: oppositePart,
+            timezone: AUST_TZ
+          });
+          
+          console.log(`[AVAIL] Found ${oppositeSlots.length} ${oppositePart} slots as fallback`);
           
           if (oppositeSlots.length > 0) {
             if (conversation) {
@@ -638,13 +646,14 @@ export function registerVoice(app: Express) {
             });
           }
           
-          // Use SSML for natural time pronunciation
-          const time1SSML = ssmlTime(slot1.startIso, AUST_TZ);
-          const timeInner = time1SSML.replace('<speak>', '').replace('</speak>', '');
+          // Use natural time pronunciation
+          const time1Speakable = speakableTime(slot1.startIso, AUST_TZ);
+          
+          console.log(`[OFFER] 1 option: ${slot1.startIso} → "${time1Speakable}"`);
           
           return twiml(res, (vr) => {
             const g = vr.gather({
-              input: ['speech'],
+              input: ['speech', 'dtmf'],
               language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
@@ -652,7 +661,7 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `<speak>I have one option available: ${timeInner}. Would you like to take that time</speak>`);
+            say(g, `I have one option available: ${time1Speakable}. Would you like to take that time`);
             pause(g, 1);
           });
         } else {
@@ -667,15 +676,15 @@ export function registerVoice(app: Express) {
             });
           }
           
-          // Use SSML for natural time pronunciation
-          const time1SSML = ssmlTime(slot1.startIso, AUST_TZ);
-          const time2SSML = ssmlTime(slot2.startIso, AUST_TZ);
-          const time1Inner = time1SSML.replace('<speak>', '').replace('</speak>', '');
-          const time2Inner = time2SSML.replace('<speak>', '').replace('</speak>', '');
+          // Use natural time pronunciation
+          const time1Speakable = speakableTime(slot1.startIso, AUST_TZ);
+          const time2Speakable = speakableTime(slot2.startIso, AUST_TZ);
+          
+          console.log(`[OFFER] 2 options: 1="${time1Speakable}" (${slot1.startIso}), 2="${time2Speakable}" (${slot2.startIso})`);
           
           return twiml(res, (vr) => {
             const g = vr.gather({
-              input: ['speech'],
+              input: ['speech', 'dtmf'],
               language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
@@ -683,7 +692,7 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `<speak>I have two options. Option one, ${time1Inner}. <break time="200ms"/> Or option two, ${time2Inner}.</speak>`);
+            say(g, `I have two options. Option one, ${time1Speakable}. Or option two, ${time2Speakable}. Press 1 or 2, or say your choice.`);
             pause(g, 1);
           });
         }
@@ -692,7 +701,10 @@ export function registerVoice(app: Express) {
       // Booking flow - choose (robust option parsing with confirmation)
       if (route === 'book-choose' || route === 'reschedule-choose') {
         const speech = (req.body.SpeechResult || '').toLowerCase();
+        const digits = req.body.Digits as string | undefined;
         const aptId = req.query.aptId as string | undefined;
+        
+        console.log(`[CHOOSE] speech="${speech}" digits=${digits || 'none'}`);
         
         // Get conversation to retrieve stored slot ISOs
         const call = await storage.getCallByCallSid(callSid);
@@ -704,7 +716,7 @@ export function registerVoice(app: Express) {
         if (!offeredSlotISOs.length) {
           return twiml(res, (vr) => {
             const g = vr.gather({
-              input: ['speech'],
+              input: ['speech', 'dtmf'],
               language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
@@ -721,8 +733,8 @@ export function registerVoice(app: Express) {
         let chosenSlotISO = context.chosenSlotISO;
         
         if (!chosenSlotISO) {
-          // Parse user's choice - prefer explicit "option one/two"
-          const idx = parseOptionIndex(speech, offeredSlotISOs.length);
+          // Parse user's choice - prefer DTMF, then explicit speech "option one/two"
+          const idx = parseOptionIndex(speech, digits, offeredSlotISOs.length);
           
           if (idx === null) {
             // Didn't get clear "option one/two" → confirm first option
@@ -777,8 +789,12 @@ export function registerVoice(app: Express) {
         
         let apt;
         if (route === 'reschedule-choose' && aptId) {
+          console.log(`[BOOK] Rescheduling aptId=${aptId} → ${chosenSlotISO}`);
+          
           // Reschedule using exact chosen slot ISO
           apt = await rescheduleAppointment(aptId, chosenSlotISO);
+          
+          console.log(`[BOOK] Rescheduled successfully: ${apt?.id}`);
           
           // Update appointment status in our database
           const existing = await storage.findUpcomingByPhone(from);
@@ -797,6 +813,8 @@ export function registerVoice(app: Express) {
             });
           }
         } else {
+          console.log(`[BOOK] Creating new appointment: ${chosenSlotISO} for ${from}`);
+          
           // Book using exact chosen slot ISO and metadata from Cliniko
           apt = await createAppointmentForPatient(from, {
             practitionerId: slotData.practitionerId,
@@ -808,6 +826,8 @@ export function registerVoice(app: Express) {
             fullName: phoneData?.fullName || undefined,
             email: phoneData?.email || undefined
           });
+          
+          console.log(`[BOOK] Booked successfully: ${apt?.id}`);
           
           // Persist the appointment in our database for reschedule lookup
           if (apt?.id) {
