@@ -5,18 +5,21 @@ import {
   conversations, 
   callLogs, 
   alerts,
+  appointments,
   type Tenant, 
   type PhoneMap,
   type Conversation,
   type CallLog,
   type Alert,
+  type Appointment,
   type InsertTenant,
   type InsertPhoneMap,
   type InsertCallLog,
-  type InsertAlert
+  type InsertAlert,
+  type InsertAppointment
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, gt } from "drizzle-orm";
 
 export interface IStorage {
   // Tenants
@@ -43,6 +46,11 @@ export interface IStorage {
   createAlert(data: InsertAlert): Promise<Alert>;
   listAlerts(tenantId?: number, limit?: number): Promise<Alert[]>;
   dismissAlert(id: number): Promise<Alert | undefined>;
+
+  // Appointments
+  saveAppointment(data: InsertAppointment): Promise<Appointment>;
+  findUpcomingByPhone(phone: string): Promise<Appointment | undefined>;
+  updateAppointmentStatus(id: number, status: string): Promise<Appointment | undefined>;
 
   // Stats
   getStats(tenantId?: number): Promise<{
@@ -201,6 +209,37 @@ export class DatabaseStorage implements IStorage {
       pendingAlerts,
       todayCalls,
     };
+  }
+
+  async saveAppointment(data: InsertAppointment): Promise<Appointment> {
+    const [appointment] = await db.insert(appointments).values(data).returning();
+    return appointment;
+  }
+
+  async findUpcomingByPhone(phone: string): Promise<Appointment | undefined> {
+    const now = new Date();
+    const [appointment] = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.phone, phone),
+          eq(appointments.status, 'scheduled'),
+          gt(appointments.startsAt, now)
+        )
+      )
+      .orderBy(appointments.startsAt)
+      .limit(1);
+    return appointment || undefined;
+  }
+
+  async updateAppointmentStatus(id: number, status: string): Promise<Appointment | undefined> {
+    const [appointment] = await db
+      .update(appointments)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(appointments.id, id))
+      .returning();
+    return appointment || undefined;
   }
 
   async seed(): Promise<void> {
