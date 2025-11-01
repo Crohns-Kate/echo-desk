@@ -1,0 +1,184 @@
+You're super close. Two issues left:
+
+1. Polly reads “1115” weirdly → use SSML <say-as interpret-as="time">11:15 a.m.</say-as> (and always include <speak>).
+
+
+2. It booked 9:00 a.m. even though options were 10:30/11:15 → your handler is likely defaulting to the first morning slot (or a stale slot list) when ASR parses “115 m”. We’ll (a) persist the offered slots, (b) require “option one/two” OR confirm the parsed time, and (c) always book the exact starts_at returned by Cliniko (don’t recompute).
+
+
+
+Paste this into Replit AI and run it against your repo:
+
+
+---
+
+Replit AI Assistant Prompt — “Fix time TTS + exact slot booking + confirm step”
+
+Objective
+
+Speak times naturally (no “one one one five em”).
+
+Map “option one/two” reliably and avoid stale/fallback slots.
+
+Book exactly the Cliniko starts_at that was offered.
+
+Add a short confirmation step before creating the appointment.
+
+
+Changes
+
+1. Create server/time.ts
+
+
+
+export const AUST_TZ = process.env.TZ || "Australia/Brisbane";
+
+function pad(n:number){ return n.toString().padStart(2,"0"); }
+
+export function toHhMm12SSML(iso: string) {
+  const d = new Date(iso);
+  const hours = d.toLocaleString("en-AU", { timeZone: AUST_TZ, hour: "numeric", hour12: true });
+  // Get exact hh:mm in 12h for SSML
+  const h24 = parseInt(d.toLocaleString("en-AU",{ timeZone:AUST_TZ, hour:"2-digit", hour12:false }),10);
+  const m = pad(parseInt(d.toLocaleString("en-AU",{ timeZone:AUST_TZ, minute:"2-digit", hour12:false }),10));
+  const h12 = ((h24 + 11) % 12) + 1;
+  const ampm = h24 < 12 ? "a.m." : "p.m.";
+  return { hhmm:`${pad(h12)}:${m}`, ampm, spoken: `${hours}:${m} ${ampm}` };
+}
+
+export function ssmlTime(iso: string) {
+  const t = toHhMm12SSML(iso);
+  return `<speak><say-as interpret-as="time" format="hms12">${t.hhmm} ${t.ampm}</say-as></speak>`;
+}
+
+2. Persist the two offered options and never fall back to an unrelated slot
+
+
+
+In your state/session object (e.g., ctx.state), store:
+
+requestedDayISO
+
+offeredSlots: string[] (two ISO strings)
+
+
+When building the two options, only use the freshly-fetched list for that day/part.
+Do not default to “first slot of morning”. If fewer than 2 exist, speak only what exists.
+
+
+3. Offer times with SSML (Polly-friendly) Replace the string you pass to <Say> when reading options:
+
+
+
+import { ssmlTime } from "./server/time";
+
+function sayTwoOptions(twiml: any, aISO: string, bISO?: string) {
+  const a = ssmlTime(aISO);
+  const b = bISO ? ssmlTime(bISO) : null;
+  const s = b
+    ? `<speak>I have two options. Option one, ${a.replace("<speak>","").replace("</speak>","")}. <break time="200ms"/> Or option two, ${b.replace("<speak>","").replace("</speak>","")}.</speak>`
+    : `<speak>I have one option available: ${a}.</speak>`;
+  twiml.say({ voice: "Polly.Olivia-Neural", language: "en-AU" }, s);
+}
+
+And in your book-part → book-choose route:
+
+ctx.state.offeredSlots = [opt1ISO, opt2ISO].filter(Boolean);
+sayTwoOptions(gather, opt1ISO, opt2ISO);
+
+4. Selection logic: prefer “option one/two”, else confirm
+
+
+
+function pickIndexFromUtterance(u:string){
+  const x = (u||"").toLowerCase();
+  if (/\b(one|1)\b/.test(x)) return 0;
+  if (/\b(two|2)\b/.test(x)) return 1;
+  return null;
+}
+
+async function handleChoose(ctx){
+  const offered = ctx.state.offeredSlots || [];
+  if (!offered.length) {
+    return ctx.sayGather("Sorry, I’ve lost those options. Should I search again?",
+      { route: "book-part" });
+  }
+  let idx = pickIndexFromUtterance(ctx.inputSpeech);
+  if (idx === null) {
+    // We didn’t get “option one/two” clearly — confirm the first option instead of guessing.
+    const iso = offered[0];
+    ctx.state.pendingSlotISO = iso;
+    const confirm = `<speak>Just to confirm, did you want ${ssmlTime(iso).replace("<speak>","").replace("</speak>","")}?</speak>`;
+    return ctx.sayGather(confirm, { route: "book-confirm-yesno" });
+  }
+  ctx.state.chosenSlotISO = offered[idx] || offered[0];
+  return ctx.redirect({ route:"book-confirm" });
+}
+
+5. Confirm step (prevents wrong-time bookings)
+
+
+
+async function bookConfirmYesNo(ctx){
+  const u = (ctx.inputSpeech||"").toLowerCase();
+  if (u.includes("yes")) {
+    ctx.state.chosenSlotISO = ctx.state.pendingSlotISO;
+    return ctx.redirect({ route: "book-confirm" });
+  }
+  return ctx.sayGather("Okay—would you like option one or option two?", { route:"book-choose" });
+}
+
+6. Book exactly the slot we offered When posting to Cliniko, use the chosen slot’s starts_at exactly (no recompute), and compute ends_at by adding the appointment type’s duration (or use any ends_at Cliniko returns from available times if present).
+
+
+
+const isoStart = ctx.state.chosenSlotISO;           // from offeredSlots
+const durationMins = selectedType.duration || 45;   // fetch from /appointment_types
+const start = new Date(isoStart);
+const end = new Date(start.getTime() + durationMins*60000);
+
+const payload = {
+  appointment_type_id: appointmentTypeId,
+  business_id: businessId,
+  practitioner_id: practitionerId,
+  patient_id: patient.id,
+  starts_at: start.toISOString(),   // use ISO from offered slot
+  ends_at: end.toISOString(),
+  // ...
+};
+
+7. Speak confirmations with SSML time
+
+
+
+const confirmSpoken = `<speak>Your booking is confirmed for ${ssmlTime(isoStart).replace("<speak>","").replace("</speak>","")} on ${weekdayName}.</speak>`;
+twiml.say({ voice:"Polly.Olivia-Neural", language:"en-AU" }, confirmSpoken);
+
+8. Safety rails
+
+
+
+If ASR confidence < 0.6 and no “option one/two” → ask explicitly: “Please say ‘option one’ or ‘option two’.”
+
+Log offeredSlots and chosenSlotISO to verify the mapping.
+
+Ensure all <Say> SSML strings are wrapped with <speak> (Twilio 13520 “Invalid text” happens when malformed SSML is sent).
+
+
+Test script
+
+Call and say: “Book Monday morning.”
+
+You should hear: “Option one, 10:30 a.m. … or option two, 11:15 a.m.”
+
+Say: “Option two.” → it books 11:15 a.m.
+
+Say something fuzzy like “eleven fifteen” → you get a confirmation: “Did you want eleven fifteen a.m.?” (Yes/No).
+
+
+
+---
+
+If you still ever hear “one thousand fifteen em,” it means a message slipped through without <speak>…<say-as interpret-as="time">…</say-as></speak>. Search your codebase for any remaining raw “1030am/1115am” strings and replace with ssmlTime(slotISO).
+
+Want me to generate a one-file diff you can paste over your handlers?

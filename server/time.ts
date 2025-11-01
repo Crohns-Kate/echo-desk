@@ -14,7 +14,44 @@ export function toLocal(dateISO: string | Date, tz = AUST_TZ): Date {
 }
 
 /**
- * Format slot time for TTS in natural Australian format
+ * Pad number with leading zero
+ */
+function pad(n: number): string {
+  return n.toString().padStart(2, "0");
+}
+
+/**
+ * Format time for SSML <say-as interpret-as="time"> to prevent Polly from saying "one thousand fifteen"
+ * Returns { hhmm: "10:30", ampm: "a.m.", spoken: "10:30 a.m." }
+ */
+export function toHhMm12SSML(iso: string, tz = AUST_TZ) {
+  const d = new Date(iso);
+  const h24 = parseInt(
+    d.toLocaleString(LOCALE, { timeZone: tz, hour: "2-digit", hour12: false }),
+    10
+  );
+  const m = pad(
+    parseInt(
+      d.toLocaleString(LOCALE, { timeZone: tz, minute: "2-digit", hour12: false }),
+      10
+    )
+  );
+  const h12 = ((h24 + 11) % 12) + 1;
+  const ampm = h24 < 12 ? "a.m." : "p.m.";
+  return { hhmm: `${pad(h12)}:${m}`, ampm, spoken: `${h12}:${m} ${ampm}` };
+}
+
+/**
+ * Generate SSML time string for Polly TTS
+ * Returns "<speak><say-as interpret-as="time" format="hms12">10:30 a.m.</say-as></speak>"
+ */
+export function ssmlTime(iso: string, tz = AUST_TZ): string {
+  const t = toHhMm12SSML(iso, tz);
+  return `<speak><say-as interpret-as="time" format="hms12">${t.hhmm} ${t.ampm}</say-as></speak>`;
+}
+
+/**
+ * Format slot time for TTS in natural Australian format (legacy, use ssmlTime for better pronunciation)
  * Returns "10:30 am" or "2:15 pm" - natural for Polly to read
  */
 export function formatSlotForTTS(dateISO: string, tz = AUST_TZ): string {

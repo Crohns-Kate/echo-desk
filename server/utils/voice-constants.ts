@@ -13,12 +13,26 @@ export function ttsClean(s: string | null | undefined) {
 }
 
 export function say(node: any, text: string) {
-  const cleaned = ttsClean(text);
-  if (!cleaned) return;
-  try {
-    node.say({ voice: VOICE_NAME }, cleaned);
-  } catch {
-    node.say({ voice: FALLBACK_VOICE }, cleaned);
+  // If text contains SSML tags (<speak>, <say-as>, etc.), pass it raw
+  const isSSML = text.includes("<speak>") || text.includes("<say-as");
+  
+  if (isSSML) {
+    // SSML mode - pass raw text with voice parameter
+    if (!text.trim()) return;
+    try {
+      node.say({ voice: VOICE_NAME }, text);
+    } catch {
+      node.say({ voice: FALLBACK_VOICE }, text);
+    }
+  } else {
+    // Plain text mode - clean and pass
+    const cleaned = ttsClean(text);
+    if (!cleaned) return;
+    try {
+      node.say({ voice: VOICE_NAME }, cleaned);
+    } catch {
+      node.say({ voice: FALLBACK_VOICE }, cleaned);
+    }
   }
 }
 
