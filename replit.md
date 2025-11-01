@@ -84,19 +84,29 @@ Preferred communication style: Simple, everyday language.
   - Full dialogue history for intent refinement
   - Supports: book, reschedule, cancel, human, hours intents
 - Identity capture wizard for first-time callers
-- **Real Slot Integration** - Complete appointment booking with actual Cliniko availability:
+- **Natural Time Formatting & Slot Integration** (`server/time.ts`):
+  - `formatSlotForTTS(utcIso, tz)` - Formats times for natural speech (e.g., "10:30 am" with colon and space)
+  - `nextWeekdayFromUtterance(day, tz)` - Accurately maps spoken weekdays to ISO dates in Australia/Brisbane timezone
+  - `isSameLocalDay(utcIso, targetIso, tz)` - Filters slots to exact local date matches
+  - `partOfDayFilter(slots, part, tz)` - Splits slots by morning/afternoon in local timezone
   - Fetches real available slots for specific days from Cliniko API
-  - Filters by morning (< 12pm) / afternoon (≥ 12pm) in Australia/Sydney timezone
-  - Speaks actual appointment times in Australian format (e.g., "10:00am Saturday 1 November")
+  - Filters by morning (< 12pm) / afternoon (≥ 12pm) in Australia/Brisbane timezone
+  - Speaks actual appointment times in Australian format (e.g., "10:30 am Saturday 2 November")
   - Intelligent fallback logic:
     - 0 slots requested time → offers opposite time if available, else asks for another day
-    - 1 slot available → yes/no confirmation ("I have 10:00am. Would you like to take that time?")
-    - 2+ slots → first/second choice ("Option one 10:00am or option two 2:30pm")
+    - 1 slot available → yes/no confirmation ("I have 10:30 am. Would you like to take that time?")
+    - 2+ slots → first/second choice ("Option one 10:30 am or option two 2:45 pm")
   - Context-aware preference flipping when user accepts fallback offer
   - Stores selected slots in conversation context for booking
+  - **Robust Option Parsing**: Explicit "option one/two" detection + fuzzy time matching fallback for ASR errors
+- **Appointment Persistence** (`appointments` table):
+  - Stores phone, patient_id, cliniko_appointment_id, starts_at for each booking
+  - Enables reschedule lookup by phone number without Cliniko API dependency
+  - Status tracking (scheduled/rescheduled/cancelled)
+  - Automatically persists appointments after successful booking/rescheduling
 - Complete appointment lifecycle management:
-  - New booking with real Cliniko slot selection
-  - Rescheduling with appointment retrieval and real slots
+  - New booking with real Cliniko slot selection and local persistence
+  - Rescheduling with database-first appointment lookup (Cliniko fallback)
   - Cancellation with confirmation
   - SMS confirmations with Australian timezone formatting for all operations
 
