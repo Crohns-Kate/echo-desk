@@ -30,12 +30,10 @@ import {
   formatAppointmentTimeAU
 } from '../utils/tz';
 import {
-  formatSlotForTTS,
   nextWeekdayFromUtterance,
   isSameLocalDay,
   partOfDayFilter,
   filterSlotsByPartOfDay,
-  ssmlTime,
   AUST_TZ,
   localDayWindow,
   speakableTime
@@ -746,12 +744,12 @@ export function registerVoice(app: Express) {
               });
             }
             
-            const timeSSML = ssmlTime(slotISO, AUST_TZ);
-            const timeInner = timeSSML.replace('<speak>', '').replace('</speak>', '');
+            const timeSpoken = speakableTime(slotISO, AUST_TZ);
             
             return twiml(res, (vr) => {
               const g = vr.gather({
-                input: ['speech'],
+                input: ['speech', 'dtmf'],
+                numDigits: 1,
                 language: 'en-AU',
                 timeout: 5,
                 speechTimeout: 'auto',
@@ -759,7 +757,7 @@ export function registerVoice(app: Express) {
                 action: abs(`/api/voice/handle?route=${route.replace('choose','confirm-yesno')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
                 method: 'POST'
               });
-              say(g, `<speak>Just to confirm, did you want ${timeInner}?</speak>`);
+              say(g, `Just to confirm, did you want ${timeSpoken}? Press 1 for yes, 2 for no. Or say yes or no.`);
               pause(g, 1);
             });
           }
@@ -869,19 +867,21 @@ export function registerVoice(app: Express) {
           });
         }
         
-        // Speak confirmation with SSML time
-        const confirmTimeSSML = ssmlTime(chosenSlotISO, AUST_TZ);
-        const confirmTimeInner = confirmTimeSSML.replace('<speak>', '').replace('</speak>', '');
+        // Speak confirmation with natural time
+        const confirmTimeSpoken = speakableTime(chosenSlotISO, AUST_TZ);
         
         return twiml(res, (vr) => {
-          say(vr, `<speak>All set. Your booking is confirmed for ${confirmTimeInner}. We will send a confirmation by message. Goodbye</speak>`);
+          say(vr, `All set. Your booking is confirmed for ${confirmTimeSpoken}. We will send a confirmation by message. Goodbye`);
         });
       }
       
       // Booking flow - confirm yes/no (for ambiguous choices)
       if (route === 'book-confirm-yesno' || route === 'reschedule-confirm-yesno') {
         const speech = (req.body.SpeechResult || '').toLowerCase();
+        const digits = req.body.Digits || '';
         const aptId = req.query.aptId as string | undefined;
+        
+        console.log(`[CONFIRM-YESNO] speech="${speech}" digits="${digits}"`);
         
         // Get conversation context
         const call = await storage.getCallByCallSid(callSid);
@@ -890,7 +890,13 @@ export function registerVoice(app: Express) {
         const pendingSlotISO = context.pendingSlotISO;
         const offeredSlotISOs = context.offeredSlotISOs || [];
         
-        if (/\b(yes|yeah|sure|ok|okay)\b/i.test(speech)) {
+        // DTMF priority: 1 = yes, 2 = no
+        const confirmedYes = digits === '1' || /\b(yes|yeah|sure|ok|okay)\b/i.test(speech);
+        const confirmedNo = digits === '2' || /\b(no|nope|nah)\b/i.test(speech);
+        
+        console.log(`[CONFIRM-YESNO] confirmedYes=${confirmedYes} confirmedNo=${confirmedNo}`);
+        
+        if (confirmedYes) {
           // User confirmed → set as chosen and redirect to book-choose
           if (conversation && pendingSlotISO) {
             await storage.updateConversation(conversation.id, {
@@ -902,11 +908,12 @@ export function registerVoice(app: Express) {
           return twiml(res, (vr) => {
             vr.redirect(abs(`/api/voice/handle?route=${route.replace('confirm-yesno','choose')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`));
           });
-        } else {
+        } else if (confirmedNo) {
           // User said no → ask again for option one or two
           return twiml(res, (vr) => {
             const g = vr.gather({
-              input: ['speech'],
+              input: ['speech', 'dtmf'],
+              numDigits: 1,
               language: 'en-AU',
               timeout: 5,
               speechTimeout: 'auto',
@@ -914,10 +921,27 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('confirm-yesno','choose')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
               method: 'POST'
             });
-            say(g, 'Okay. Would you like option one or option two');
+            say(g, 'Okay. Press 1 for option one, or press 2 for option two. You can also say your choice.');
             pause(g, 1);
           });
         }
+        
+        // Fallback: unclear response → re-ask
+        console.log(`[CONFIRM-YESNO] Unclear response - re-prompting`);
+        return twiml(res, (vr) => {
+          const g = vr.gather({
+            input: ['speech', 'dtmf'],
+            numDigits: 1,
+            language: 'en-AU',
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+            method: 'POST'
+          });
+          say(g, 'Sorry, I didn\'t catch that. Press 1 for yes, 2 for no. Or say yes or no.');
+          pause(g, 1);
+        });
       }
 
       // Lookup appointment for rescheduling (use our database first)

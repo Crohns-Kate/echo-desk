@@ -140,6 +140,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // TTS demo endpoint - test natural time pronunciation
+  app.get('/__tts/demo', async (req, res) => {
+    try {
+      const { speakableTime, AUST_TZ } = await import('./time');
+      const iso = (req.query.iso as string) || new Date().toISOString();
+      
+      const spoken = speakableTime(iso, AUST_TZ);
+      
+      res.json({
+        iso,
+        speak: spoken,
+        timezone: AUST_TZ
+      });
+    } catch (err: any) {
+      res.json({ ok: false, error: err.message });
+    }
+  });
+
   // Self-test endpoint - runs both checks
   app.get('/__selftest', async (_req, res) => {
     const results: any = {

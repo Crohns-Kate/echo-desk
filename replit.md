@@ -18,6 +18,15 @@ The frontend uses React 18 with TypeScript and Vite. Navigation is handled by Wo
 
 The backend is built with Express.js and TypeScript on Node.js. It features RESTful APIs under `/api` and Twilio webhook endpoints under `/api/voice`. Voice call processing leverages TwiML generation, Amazon Polly for Australian English text-to-speech, and a robust intent detection system. This system primarily uses GPT-4o-mini with confidence scoring and multi-turn context, falling back to regex matching. It includes an identity capture wizard and sophisticated natural time formatting and slot integration for Cliniko appointments, handling local timezones, speakable time formats, and slot freezing to prevent race conditions. TwiML hardening measures eliminate common Twilio errors. Appointment persistence is managed in a local database to facilitate rescheduling and cancellation workflows, and SMS confirmations are automated for all appointment actions.
 
+**Recent Improvements (Nov 2025):**
+- **SSML Removal:** Eliminated all SSML time formatting (`<say-as interpret-as="time">`) that caused garbled pronunciation ("12 0", "115 m"). Times now use plain natural language via `speakableTime()` helper.
+- **Natural Time Pronunciation:** Times spoken as "nine thirty A M Sunday 2 November" instead of SSML-formatted strings for clear, natural speech.
+- **Slot Freezing Pattern:** Availability slots are fetched once in `book-part`, stored in context as `offeredSlotISOs`, and never re-fetched during selection to prevent race conditions.
+- **Enhanced DTMF Support:** All booking flows accept both speech AND keypad input (1/2) with DTMF having priority for reliability. Prompts explicitly mention "Press 1 or 2" options.
+- **Timezone-Aware Availability:** `localDayWindow()` calculates exact 24-hour periods in Australia/Brisbane timezone, preventing "no slots available" errors from UTC/local drift.
+- **Diagnostic Endpoints:** `/__tts/demo?iso=...` tests natural time pronunciation, `/__tz/now` shows current clinic time, `/__cliniko/avail?day=X&part=Y` tests availability queries.
+- **Enhanced Logging:** [AVAIL], [OFFER], [CHOOSE], [BOOK], [CONFIRM-YESNO] events for debugging booking flow.
+
 ### Data Storage & Schema
 
 PostgreSQL, accessed via Neon serverless driver and Drizzle ORM, serves as the database. Core tables include `tenants` for multi-clinic configurations, `phoneMap` for caller identity, `leads` for phone number tracking and opt-out management, `conversations` for multi-turn interaction state with JSONB context, `callLogs` for comprehensive call history, and `alerts` for real-time receptionist notifications. The schema emphasizes serial primary keys, timestamps, JSONB for flexible data, and foreign key relationships.

@@ -1,0 +1,111 @@
+You’re hearing “12 0” (and earlier “115 m”) because the prompt is using SSML time formatting (<say-as interpret-as="time">09:30 a.m.</say-as>) which Polly/Twilio often reads literally or weirdly. Fix = don’t use <say-as> for times. Speak times in plain words and freeze the options so we never re-compute after the offer.
+
+Here’s a copy-paste prompt for Replit AI to implement now:
+
+
+---
+
+Replit AI – Fix time readouts + stable selection
+
+Make these changes:
+
+1. Remove SSML <say-as> for time.
+
+Create a helper speakableTime(iso: string, tz = process.env.CLINIC_TZ || 'Australia/Brisbane') that returns times as words:
+
+09:00 → "nine o clock A M"
+
+09:30 → "nine thirty A M"
+
+11:15 → "eleven fifteen A M"
+
+12:00 → "twelve o clock P M"
+
+12:30 → "twelve thirty P M"
+
+17:00 → "five o clock P M"
+
+
+No dots (“a.m.”) and no SSML. Use simple text like "A M" / "P M".
+
+
+
+2. Use speakable strings everywhere we announce a time:
+
+When offering choices:
+
+const opt1Speak = speakableTime(option1Iso);
+const opt2Speak = speakableTime(option2Iso);
+say(`I have two options. Press 1 for ${opt1Speak}. Press 2 for ${opt2Speak}. You can also say “option one” or “option two”.`);
+
+When confirming the booking:
+
+const confirmSpeak = speakableTime(selectedIso);
+say(`All set. Your booking is confirmed for ${confirmSpeak}. We will send a confirmation by message. Goodbye`);
+
+
+
+3. Freeze choices; don’t re-fetch on choose.
+
+When generating options, store in session/context:
+
+context.offer = {
+  option1Iso, option2Iso,
+  option1Speak: speakableTime(option1Iso),
+  option2Speak: speakableTime(option2Iso)
+};
+
+In the “choose” handler, do not call availability again. Only map the response to the frozen ISO:
+
+const saidOne = dtmf==='1' || said('option one') || said('one') || said('first');
+const saidTwo = dtmf==='2' || said('option two') || said('two') || said('second');
+const selectedIso = saidOne ? context.offer.option1Iso : saidTwo ? context.offer.option2Iso : null;
+
+If selectedIso is null, reprompt: “Please press 1 or 2, or say ‘option one’ or ‘option two’.”
+
+
+
+4. Gather with DTMF + speech to reduce ASR mistakes:
+
+<Gather input="speech dtmf" numDigits="1" language="en-AU" timeout="5" speechTimeout="auto" actionOnEmptyResult="true" bargeIn="true" ...>
+
+Accept both DTMF and the phrases above.
+
+
+5. Never 500 on errors. If Cliniko booking fails, say:
+“Sorry, I couldn’t complete the booking just then. I can text you available times or transfer you to reception.”
+
+
+6. Add a quick diagnostics route to verify what the bot will say:
+
+GET /__tts/demo?iso=YYYY-MM-DDTHH:mm:ssZ → { speak: "nine thirty A M" }
+
+
+
+
+Add logs:
+
+When offering: [OFFER] opt1=<iso> (<speak>) opt2=<iso> (<speak>)
+
+When choosing: [CHOOSE] speech="<raw>" digits=<dtmf> selected=<iso>
+
+When booking: [BOOK] chosenIso=<iso>
+
+
+Do not change au4 or current env names. Keep Polly neural voices.
+
+End task.
+
+
+---
+
+What this fixes immediately
+
+No more “12 0” or “115 m” misreads — times are spoken as plain words.
+
+The system books exactly the slot the caller chose (since options are frozen).
+
+DTMF gives callers a robust fallback when speech is misheard.
+
+
+If you want, I can also give you a quick “spoken time” check string for a few example ISOs so you can sanity-test by eye before you call.
