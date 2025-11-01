@@ -91,9 +91,12 @@ export function registerVoice(app: Express) {
   app.post('/api/voice/incoming', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
       const params = (req as any).twilioParams;
-      const callSid = params.CallSid;
-      const from = params.From;
-      const to = params.To;
+      const callSid = params?.CallSid || req.body?.CallSid || `test-${Date.now()}`;
+      const from = params?.From || req.body?.From;
+      const to = params?.To || req.body?.To;
+      
+      console.log('[VOICE][INCOMING]', { callSid, from, to, hasParams: !!params, bodyKeys: Object.keys(req.body || {}) });
+      
       const tenant = await storage.getTenant('default');
 
       if (!tenant) {
@@ -189,14 +192,22 @@ export function registerVoice(app: Express) {
   app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
       const vr = new twilio.twiml.VoiceResponse();
-      const p = (req as any).twilioParams;
+      const p = (req as any).twilioParams || {};
       const route = (req.query.route as string) || 'start';
-      const speech = (p.SpeechResult || '').trim();
-      const from = p.From;
-      const callSid = p.CallSid || (req.query.callSid as string);
-      const confidence = p.Confidence;
+      const speech = (p.SpeechResult || req.body?.SpeechResult || '').trim();
+      const from = p.From || req.body?.From;
+      const callSid = p.CallSid || req.body?.CallSid || (req.query.callSid as string);
+      const confidence = p.Confidence || req.body?.Confidence;
       
-      console.log('[VOICE][HANDLE IN]', { route, callSid, speech, confidence });
+      console.log('[VOICE][HANDLE IN]', { 
+        route, 
+        callSid, 
+        speech, 
+        confidence,
+        hasParams: !!((req as any).twilioParams),
+        bodyKeys: Object.keys(req.body || {}),
+        queryKeys: Object.keys(req.query || {})
+      });
       
       const tenant = await storage.getTenant('default');
 
