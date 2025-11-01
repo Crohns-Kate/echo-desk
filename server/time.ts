@@ -196,3 +196,99 @@ function getOrdinalSuffix(n: number): string {
   const v = n % 100;
   return s[(v - 20) % 10] || s[v] || s[0];
 }
+
+/**
+ * Calculate local day window for Cliniko availability queries
+ * Returns { fromDate: 'YYYY-MM-DD', toDate: 'YYYY-MM-DD' } for the same day in local timezone
+ * Cliniko's available_times endpoint accepts date-only strings (no time component)
+ */
+export function localDayWindow(dayNameOrDate: string, tz = AUST_TZ): { fromDate: string; toDate: string } {
+  // Try to parse utterance to get target date
+  let targetDate = nextWeekdayFromUtterance(dayNameOrDate, new Date(), tz);
+  
+  if (!targetDate) {
+    // Fallback to tomorrow if utterance not recognized
+    targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + 1);
+  }
+  
+  // Format as YYYY-MM-DD in local timezone
+  const formatter = new Intl.DateTimeFormat(LOCALE, {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  
+  const parts = formatter.formatToParts(targetDate);
+  const year = parts.find(p => p.type === 'year')?.value || '';
+  const month = parts.find(p => p.type === 'month')?.value || '';
+  const day = parts.find(p => p.type === 'day')?.value || '';
+  
+  const dateStr = `${year}-${month}-${day}`;
+  
+  return {
+    fromDate: dateStr,
+    toDate: dateStr  // Same day for Cliniko query
+  };
+}
+
+/**
+ * Format time in natural speakable format for voice prompts
+ * Returns "eleven fifteen A M Tuesday five November"
+ * Note: Uses "A M" and "P M" with spaces for clearer TTS pronunciation
+ */
+export function speakableTime(iso: string, tz = AUST_TZ): string {
+  const d = new Date(iso);
+  
+  // Get hour in 12-hour format
+  const h24 = parseInt(
+    d.toLocaleString(LOCALE, { timeZone: tz, hour: "2-digit", hour12: false }),
+    10
+  );
+  const h12 = ((h24 + 11) % 12) + 1;
+  const ampm = h24 < 12 ? "A M" : "P M";
+  
+  // Get minutes
+  const m = parseInt(
+    d.toLocaleString(LOCALE, { timeZone: tz, minute: "2-digit", hour12: false }),
+    10
+  );
+  
+  // Convert hour to words
+  const hourWords = numberToWords(h12);
+  const minWords = m === 0 ? "" : numberToWords(m);
+  
+  // Get day name and date
+  const dayName = d.toLocaleString(LOCALE, { timeZone: tz, weekday: "long" });
+  const dayNum = parseInt(
+    d.toLocaleString(LOCALE, { timeZone: tz, day: "numeric" }),
+    10
+  );
+  const monthName = d.toLocaleString(LOCALE, { timeZone: tz, month: "long" });
+  
+  // Build speakable string
+  const timePart = minWords 
+    ? `${hourWords} ${minWords} ${ampm}` 
+    : `${hourWords} ${ampm}`;
+  
+  return `${timePart} ${dayName} ${dayNum} ${monthName}`;
+}
+
+/**
+ * Convert number to words for TTS (1-59 range for time)
+ */
+function numberToWords(n: number): string {
+  const ones = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+                "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+                "seventeen", "eighteen", "nineteen"];
+  const tens = ["", "", "twenty", "thirty", "forty", "fifty"];
+  
+  if (n < 20) return ones[n];
+  if (n < 60) {
+    const t = Math.floor(n / 10);
+    const o = n % 10;
+    return tens[t] + (o > 0 ? " " + ones[o] : "");
+  }
+  return n.toString(); // Fallback for out of range
+}

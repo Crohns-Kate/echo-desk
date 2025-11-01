@@ -138,14 +138,17 @@ export async function getOrCreatePatient(params: {
 export { sanitizeEmail, sanitizePhoneE164AU };
 
 export async function getAvailability(opts?: {
-  dayIso?: string;
+  fromDate?: string;  // YYYY-MM-DD format
+  toDate?: string;    // YYYY-MM-DD format
   part?: 'early' | 'late' | 'morning' | 'afternoon';
+  timezone?: string;
 }): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string; businessId: string; duration: number }>> {
   try {
     // Use configured IDs from environment
     const businessId = env.CLINIKO_BUSINESS_ID;
     const practitionerId = env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = env.CLINIKO_APPT_TYPE_ID;
+    const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
     
     // Fetch appointment type details for duration
     const appointmentTypes = await getAppointmentTypes(practitionerId);
@@ -155,47 +158,41 @@ export async function getAvailability(opts?: {
       throw new Error('No appointment types found for practitioner');
     }
     
-    // CRITICAL FIX: Clamp date window to ≤6 days and ensure future dates
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    // Use provided date range or default to tomorrow
+    const from = opts?.fromDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const to = opts?.toDate || from;  // Same day query by default
     
-    const startDate = opts?.dayIso ? new Date(opts.dayIso) : tomorrow;
-    
-    // Ensure start date is in the future
-    if (startDate <= now) {
-      startDate.setTime(tomorrow.getTime());
-    }
-    
-    // Clamp to max 5 days from start (6-day window total)
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 5);
-    
-    // Use YYYY-MM-DD format (safer than full ISO for Cliniko)
-    const from = startDate.toISOString().split('T')[0];
-    const to = endDate.toISOString().split('T')[0];
+    console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'}`);
     
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=20`
+      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=50`
     );
     
     const times = data.available_times || [];
     
+    // Filter by part of day in LOCAL timezone (not UTC!)
     let filtered = times;
     if (opts?.part) {
       filtered = times.filter(t => {
-        const hour = new Date(t.appointment_start).getHours();
+        const d = new Date(t.appointment_start);
+        const localHour = parseInt(
+          d.toLocaleString('en-AU', { timeZone: tz, hour: "2-digit", hour12: false }),
+          10
+        );
+        
         if (opts.part === 'morning' || opts.part === 'early') {
-          return hour < 12;
+          return localHour >= 8 && localHour < 12;
         }
         if (opts.part === 'afternoon' || opts.part === 'late') {
-          return hour >= 12;
+          return localHour >= 12 && localHour <= 17;
         }
         return true;
       });
     }
     
-    return filtered.slice(0, 5).map(t => ({
+    console.log(`[Cliniko] Found ${times.length} total slots, ${filtered.length} after ${opts?.part || 'no'} filter`);
+    
+    return filtered.slice(0, 50).map(t => ({
       startIso: t.appointment_start,
       practitionerId,
       appointmentTypeId,
@@ -204,14 +201,7 @@ export async function getAvailability(opts?: {
     }));
   } catch (e) {
     console.error('[Cliniko] getAvailability error', e);
-    const now = new Date();
-    const in1h = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-    const in2h = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
-    
-    return [
-      { startIso: in1h, practitionerId: '1', appointmentTypeId: '1', businessId: '1', duration: 30 },
-      { startIso: in2h, practitionerId: '1', appointmentTypeId: '1', businessId: '1', duration: 30 },
-    ];
+    throw e;  // Don't return fake data - let caller handle the error
   }
 }
 

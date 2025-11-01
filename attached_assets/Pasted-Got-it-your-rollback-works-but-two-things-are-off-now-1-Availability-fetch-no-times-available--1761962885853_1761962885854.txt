@@ -1,0 +1,231 @@
+Got it—your rollback works but two things are off now:
+
+1. Availability fetch → “no times available” loop
+
+
+2. Time readout/selection → “1115 m” + booking a different time than spoken
+
+
+
+Below is a tight, do-this-now set of fixes and a single copy-paste prompt for Replit AI to implement them.
+
+
+---
+
+What’s happening & the fixes
+
+A) “No times available” even when there are
+
+Why it happens
+
+The code is likely calculating the from/to window wrong (e.g., using “next 5 days” starting from tomorrow even when user said “Monday”), or it’s filtering morning/afternoon before converting to local time, so perfectly valid slots get dropped.
+
+Also, some builds used Cliniko q[...] filters (invalid) instead of the filterable params (?email= and ?phone_number=). That broke find-patient and sometimes short-circuits the flow.
+
+
+Fix
+
+Compute the exact local day requested (Mon/Tue/etc.) in the clinic’s timezone, then build:
+
+from = startOfDay(localDay) → to UTC
+
+to = endOfDay(localDay).add(1 minute) → to UTC (Cliniko needs from/to in range and not too wide)
+
+
+Fetch avail once for that exact day:
+/businesses/{biz}/practitioners/{prac}/appointment_types/{type}/available_times?from=YYYY-MM-DD&to=YYYY-MM-DD&per_page=20
+
+Convert returned ISO slots → local time → filter morning/afternoon in local clock.
+
+If zero slots: expand: check the next business day automatically (say up to +3 days) and tell the caller what you’re doing: “No morning times Monday; I can check Tuesday morning if you like.”
+
+
+B) “Option one 1030am / option two 1115am” but ASR hears “115 m”, and booking doesn’t match
+
+Why it happens
+
+ASR often mishears “eleven fifteen” → “one fifteen” or “115”.
+
+The code might re-run availability when the user answers, reshuffling slots and booking a different one than the prompt.
+
+
+Fix
+
+When you offer options, freeze them in session/context:
+
+option1Iso = slots[i1], option2Iso = slots[i2]
+
+
+In the next turn, only map the user’s answer to {1→option1Iso, 2→option2Iso} (do not refetch).
+
+Offer DTMF and speech:
+
+<Gather input="speech dtmf" numDigits="1" ...>
+
+Prompt: “Press 1 for eleven fifteen A M. Press 2 for ten thirty A M. You can also say ‘option one’ or ‘option two’.”
+
+
+Add speech synonyms: "1" | "one" | "option one" | "first" and "2" | "two" | "option two" | "second".
+
+
+C) Cliniko patient lookup (to make reschedule reliable later)
+
+Replace any q[...] search with:
+
+/v1/patients?email={urlencoded}
+
+/v1/patients?phone_number={e164}
+Normalize phone to E.164 before search. If both present, try phone first, then email.
+
+
+
+---
+
+Copy-paste prompt for Replit AI (will modify code)
+
+> Replit AI Task – Fix availability day window, freeze slot choices, add DTMF, and correct Cliniko filters
+
+Make the following changes across the voice booking handlers:
+
+1. Timezone & date window
+
+Add CLINIC_TZ env (default "Australia/Brisbane").
+
+Create helper localDayWindow(dayNameOrDate: string) that returns:
+
+{ fromDate: 'YYYY-MM-DD', toDate: 'YYYY-MM-DD' }
+
+where both strings are the same day in CLINIC_TZ for Cliniko query. Do not include time; Cliniko endpoint accepts dates for from/to.
+
+Parse utterances like “Monday”, “tomorrow”, “next Tuesday”, or explicit dates. Fallback to “tomorrow” if ambiguous.
+
+
+
+2. Fetch availability exactly once per day/part
+
+After we have day and part (morning/afternoon), call:
+
+GET /businesses/{biz}/practitioners/{prac}/appointment_types/{type}/available_times
+   ?from={fromDate}&to={toDate}&per_page=50
+
+Convert each ISO to local time (CLINIC_TZ) and filter:
+
+morning = 08:00–11:59
+
+afternoon = 12:00–17:30
+
+
+Pick the next two soonest matching times for the chosen part. If 0, check the next business day (up to +3 days) and tell the caller what you’re doing.
+
+
+
+3. Freeze options for the next turn
+
+Store the proposed choices in session/context:
+
+context.offer = {
+  option1Iso, option2Iso,
+  // Also store their local display strings:
+  option1Speak: 'eleven fifteen A M Tuesday five November',
+  option2Speak: 'ten thirty A M Tuesday five November'
+}
+
+Do not re-fetch availability when the user chooses. Only map:
+
+if (dtmf==='1' || said('option one') || said('one') || said('first')) selectedIso = option1Iso;
+if (dtmf==='2' || said('option two') || said('two') || said('second')) selectedIso = option2Iso;
+
+
+
+4. DTMF + ASR prompt
+
+Use <Gather input="speech dtmf" numDigits="1" language="en-AU" timeout="5" speechTimeout="auto" actionOnEmptyResult="true" bargeIn="true">.
+
+Prompt e.g.:
+
+“I have two options. Press 1 for ${option1Speak}. Press 2 for ${option2Speak}.
+ You can also say ‘option one’ or ‘option two’.”
+
+Use A M / P M phrasing (“eleven fifteen A M”) to disambiguate.
+
+
+
+5. Book the exact ISO
+
+When booking, pass the selectedIso directly to Cliniko.
+
+Confirm back using the same ISO formatted locally (e.g., EEEE d MMM h:mma).
+
+
+
+6. Fix Cliniko patient searches
+
+Replace any usage of q[...] with filterable params:
+
+/v1/patients?phone_number=${e164}
+
+/v1/patients?email=${encodeURIComponent(email)}
+
+
+Normalize caller phone to E.164 and try phone first, then email.
+
+
+
+7. Add diagnostics endpoints (no auth)
+
+GET /__cliniko/avail?day=Monday&part=morning → returns the two frozen choices the IVR would offer right now (local display + ISO array).
+
+GET /__tz/now → returns server time, clinic local time, timezone.
+
+
+
+8. Do not change region (au4) or current env names.
+
+Keep voices as Polly.*-Neural and existing TwiML structure.
+
+
+
+9. Unit-style sanity function
+
+Add a small internal function speakableTime(iso, tz) → “eleven fifteen A M Tuesday five November”. Use this for prompts.
+
+
+
+
+After changes, print logs:
+
+When offering slots: [OFFER] day=..., part=..., opt1=..., opt2=...
+
+When booking: [BOOK] chosenIso=...
+
+
+Ensure all handlers never 500; always return valid TwiML even on Cliniko errors.
+
+End task.
+
+
+
+
+---
+
+Quick manual tests (no code edit needed)
+
+1. Open
+https://echo-desk-mbjltd70.replit.app/__tz/now
+→ Check server vs clinic local time.
+
+
+2. Open
+https://echo-desk-mbjltd70.replit.app/__cliniko/avail?day=Monday&part=morning
+→ You should see two options (ISO + speakable text).
+
+
+3. Call and say: “Book Monday morning.”
+→ It should read those exact two and accept 1/2 or “option one/two”.
+
+
+
+
+---
+
+If you’d rather keep today moving and not wrangle Replit right now, tell me which day + part you want me to sanity-check and I’ll translate that into the exact Cliniko request and expected speakable choices, so you can compare with what the bot offers.

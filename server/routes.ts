@@ -56,73 +56,86 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Availability check endpoint
-  app.get('/__cliniko/avail', async (_req, res) => {
-    const region = process.env.CLINIKO_REGION || 'au4';
-    const apiKey = process.env.CLINIKO_API_KEY;
-    const businessId = process.env.CLINIKO_BUSINESS_ID;
-    const practitionerId = process.env.CLINIKO_PRACTITIONER_ID;
-    const appointmentTypeId = process.env.CLINIKO_APPT_TYPE_ID;
+  // Timezone diagnostic endpoint
+  app.get('/__tz/now', async (_req, res) => {
+    const { AUST_TZ } = await import('./time');
+    const now = new Date();
+    
+    const serverTime = now.toISOString();
+    const clinicTime = now.toLocaleString('en-AU', { 
+      timeZone: AUST_TZ,
+      dateStyle: 'full',
+      timeStyle: 'long'
+    });
+    
+    res.json({
+      serverTime,
+      clinicTime,
+      timezone: AUST_TZ,
+      serverOffset: -now.getTimezoneOffset() / 60
+    });
+  });
 
+  // Availability check endpoint with day/part params
+  app.get('/__cliniko/avail', async (req, res) => {
     try {
-      if (!apiKey || !businessId || !practitionerId || !appointmentTypeId) {
-        return res.json({
-          ok: false,
-          reason: 'Missing required CLINIKO_* environment variables',
-          slots: []
-        });
-      }
-
-      // Compute 6-day window: tomorrow to tomorrow+5 (more conservative to avoid timezone issues)
-      const now = new Date();
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      const { localDayWindow, speakableTime, AUST_TZ } = await import('./time');
+      const { getAvailability } = await import('./services/cliniko');
       
-      const endDate = new Date(tomorrow);
-      endDate.setDate(endDate.getDate() + 5);
+      const day = (req.query.day as string) || 'tomorrow';
+      const part = (req.query.part as string) as 'morning' | 'afternoon' | undefined;
       
-      const from = tomorrow.toISOString().split('T')[0];
-      const to = endDate.toISOString().split('T')[0];
-
-      const base = `https://api.${region}.cliniko.com/v1`;
-      const url = `${base}/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=20`;
+      // Calculate exact day window
+      const { fromDate, toDate } = localDayWindow(day, AUST_TZ);
       
-      console.log('[Cliniko Debug] Availability URL:', url);
-
-      const apiRes = await fetch(url, {
-        headers: {
-          'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
-          'Accept': 'application/json'
-        }
+      console.log(`[Diagnostic] Fetching avail for day="${day}" part="${part}" → from=${fromDate} to=${toDate}`);
+      
+      // Fetch slots
+      const slots = await getAvailability({ 
+        fromDate, 
+        toDate, 
+        part, 
+        timezone: AUST_TZ 
       });
-
-      if (!apiRes.ok) {
-        const text = await apiRes.text();
-        return res.json({
-          ok: false,
-          reason: `Cliniko API ${apiRes.status}: ${text}`,
-          url,
-          slots: []
-        });
-      }
-
-      const data = await apiRes.json();
-      const times = data.available_times || [];
-      const slots = times.slice(0, 10).map((t: any) => t.appointment_start);
-
-      res.json({
+      
+      // Pick top 2 for IVR offer
+      const option1 = slots[0];
+      const option2 = slots[1];
+      
+      const response: any = {
         ok: true,
-        url,
-        from,
-        to,
-        totalSlots: times.length,
-        slots
-      });
+        day,
+        part: part || 'any',
+        fromDate,
+        toDate,
+        totalSlots: slots.length,
+        options: []
+      };
+      
+      if (option1) {
+        response.options.push({
+          iso: option1.startIso,
+          speakable: speakableTime(option1.startIso, AUST_TZ)
+        });
+      }
+      
+      if (option2) {
+        response.options.push({
+          iso: option2.startIso,
+          speakable: speakableTime(option2.startIso, AUST_TZ)
+        });
+      }
+      
+      if (slots.length === 0) {
+        response.message = `No ${part || ''} slots available for ${day} (${fromDate})`;
+      }
+      
+      res.json(response);
     } catch (err: any) {
       res.json({
         ok: false,
         reason: err.message || String(err),
-        slots: []
+        stack: err.stack
       });
     }
   });
