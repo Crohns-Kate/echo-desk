@@ -3,28 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { registerVoice } from "./routes/voice";
 import { registerApp } from "./routes/app";
-import { registerMigrateAdmin } from "./routes/migrate-admin";
 import { initializeWebSocket } from "./services/websocket";
-import { runMigrations } from "./migrations";
-import { pool } from "./db";
-import { env } from "./utils/env";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Run migrations if enabled
-  if (env.RUN_MIGRATIONS_ON_BOOT) {
-    console.log('[BOOT] RUN_MIGRATIONS_ON_BOOT=true, running migrations...');
-    try {
-      await runMigrations({ client: pool });
-      console.log('[BOOT] Migrations completed successfully');
-    } catch (error) {
-      console.error('[BOOT] Migration failed:', error);
-      throw error;
-    }
-  } else {
-    console.log('[BOOT] Migrations skipped (RUN_MIGRATIONS_ON_BOOT=false)');
-    console.log('[BOOT] To run migrations, use: POST /__admin/migrate?token=YOUR_ADMIN_TOKEN');
-  }
-
   // Initialize database
   await storage.seed();
 
@@ -203,9 +184,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       samples: results
     });
   });
-
-  // Register admin migration routes
-  registerMigrateAdmin(app, pool);
 
   // Register Twilio voice webhook routes
   registerVoice(app);
