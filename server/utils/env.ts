@@ -24,6 +24,8 @@ export const env = {
   PRIMARY_VOICE: process.env.PRIMARY_VOICE || 'Polly.Nicole-Neural',
   CALL_RECORDING_ENABLED: (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true',
   TRANSCRIPTION_ENABLED: (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true',
+  RUN_MIGRATIONS_ON_BOOT: process.env.RUN_MIGRATIONS_ON_BOOT === 'true',
+  ADMIN_TOKEN: process.env.ADMIN_TOKEN || '',
 };
 
 const required = [

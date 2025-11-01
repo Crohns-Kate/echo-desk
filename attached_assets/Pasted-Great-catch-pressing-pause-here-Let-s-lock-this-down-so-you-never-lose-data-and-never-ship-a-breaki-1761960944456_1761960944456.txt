@@ -1,0 +1,250 @@
+Great catch pressing pause here. Let’s lock this down so you never lose data and never ship a breaking migration again.
+
+What to do right now (safe + fast)
+
+1. Freeze auto-migrations
+
+
+
+In Replit → Secrets, add
+RUN_MIGRATIONS_ON_BOOT=false
+(or whatever flag your app checks; if none exists yet, use the prompt below to add it).
+
+Republish. This stops any surprise schema changes on deploy.
+
+
+2. Backup production before touching schema
+
+
+
+You’re on Neon (from your logs). In the Neon console:
+
+Create a branch from production (instant snapshot). Name it like prod-backup-YYYYMMDD.
+
+(Optional) Also export a SQL dump from the branch for belt-and-braces.
+
+
+
+3. Switch to additive, idempotent migrations
+
+
+
+From now on: only ADD (tables/columns/indexes) with IF NOT EXISTS and never remove/rename in the same release.
+
+Make migrations transactional and re-runnable (safe to run twice).
+
+
+4. Two-phase deploy process (always)
+
+
+
+Phase A: Ship app code that tolerates old & new schema; migrations disabled.
+
+Phase B: Run a manual admin migration endpoint that applies idempotent DDL to prod.
+
+Verify → then flip any feature flags that depend on the new schema.
+
+
+
+---
+
+Paste this into Replit AI (it will add everything you need)
+
+Prompt for Replit AI — “Add safe migration framework + admin endpoint (Neon/Postgres)”
+
+Goal:
+
+Introduce a small migration framework that is idempotent, transactional, and manual by default.
+
+Protect production with a feature flag (RUN_MIGRATIONS_ON_BOOT=false).
+
+Provide an admin route /__admin/migrate that runs migrations only when invoked.
+
+Include a health route /__admin/migrate/dry-run that prints what would run.
+
+
+Changes to implement:
+
+1. Env flags
+
+Read these from process.env with sensible defaults:
+
+RUN_MIGRATIONS_ON_BOOT (default "false")
+
+DATABASE_URL (already present)
+
+NODE_ENV
+
+ADMIN_TOKEN (random string; require this on admin endpoints)
+
+
+
+
+2. Create server/migrations.ts
+
+Export runMigrations({ client, logger, dryRun=false }).
+
+Maintain a table schema_migrations:
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id text PRIMARY KEY,
+  executed_at timestamptz NOT NULL DEFAULT now()
+);
+
+Define an ordered list of migration steps. Each step has:
+
+id (e.g. 2025-11-01-add-phone-map)
+
+sql (array of DDL strings)
+
+
+When running:
+
+Begin transaction
+
+For each step not present in schema_migrations, execute its SQL (unless dryRun)
+
+Insert the step id into schema_migrations
+
+Commit
+
+
+All DDL must be idempotent using IF NOT EXISTS and compatible types.
+
+
+
+3. Starter migrations (adjust names/types to your app)
+
+2025-11-01-create-phone-map
+
+CREATE TABLE IF NOT EXISTS phone_map (
+  phone text PRIMARY KEY,
+  full_name text,
+  email text,
+  patient_id text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_phone_map_email ON phone_map (email);
+
+2025-11-01-create-calls
+
+CREATE TABLE IF NOT EXISTS calls (
+  id bigserial PRIMARY KEY,
+  call_sid text UNIQUE,
+  from_e164 text,
+  to_e164 text,
+  intent text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_calls_created_at ON calls (created_at);
+
+2025-11-01-create-conversations
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id bigserial PRIMARY KEY,
+  call_sid text,
+  context jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_call_sid ON conversations (call_sid);
+
+If you already have these, keep them as no-ops thanks to IF NOT EXISTS.
+
+
+
+4. Create server/migrate-admin.ts routes
+
+GET /__admin/migrate/dry-run?token=...
+→ returns which steps would execute.
+
+POST /__admin/migrate?token=...
+→ executes pending steps. Return a JSON report (steps executed, timings).
+
+Validate token equals process.env.ADMIN_TOKEN; otherwise 401.
+
+
+
+5. Wire into boot
+
+On startup, if RUN_MIGRATIONS_ON_BOOT === 'true', call runMigrations({dryRun:false}) and log results. Otherwise, log that migrations are skipped (show how to trigger admin endpoint).
+
+
+
+6. Docs block (README snippet)
+
+Show the two-phase deploy steps:
+
+1. Set RUN_MIGRATIONS_ON_BOOT=false, publish.
+
+
+2. Hit /__admin/migrate/dry-run?token=... and review.
+
+
+3. Hit POST /__admin/migrate?token=....
+
+
+4. Verify app.
+
+
+5. Optionally enable features that depend on the new schema.
+
+
+
+
+
+7. Safety
+
+All migration SQL must be transactional (BEGIN…COMMIT) in the runner.
+
+Use IF NOT EXISTS for CREATE TABLE/INDEX and ALTER TABLE … ADD COLUMN IF NOT EXISTS.
+
+No destructive ops (drop/rename) in these migrations. If you need removals later, create a separate maintenance script after verifying data.
+
+
+
+
+Please implement exactly as above, keep logs concise, and do not run migrations automatically unless the env flag is true.
+
+
+---
+
+How you’ll use this each time
+
+1. Publish with RUN_MIGRATIONS_ON_BOOT=false.
+
+
+2. Open:
+
+
+
+GET  /__admin/migrate/dry-run?token=YOUR_TOKEN → confirm the steps.
+
+POST /__admin/migrate?token=YOUR_TOKEN → apply.
+
+
+3. Refresh your app; verify UI and calls.
+
+
+4. Only then enable new features that require the new columns/tables.
+
+
+
+
+---
+
+Why this solves your pain
+
+No more surprise data loss: we never mutate or drop in a live deploy.
+
+No more broken publish: app ships first, migrations run only when you say so.
+
+Re-runnable: if Replit restarts during migration, you can safely run again.
+
+Auditable: schema_migrations records exactly what ran and when.
+
+Rollbackable: you already created a Neon branch snapshot before changes.
+
+
+If you want, I can also give you an SQL-only migration pack for your current tables (phone_map, calls, conversations, alerts), but the framework above is the durable fix.
