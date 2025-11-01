@@ -1110,12 +1110,14 @@ export function registerVoice(app: Express) {
     }
   });
 
-  // Test route for TwiML validation
-  app.post('/api/voice/ping', (req: Request, res: Response) => {
+  // Test route for TwiML validation (support both GET and POST)
+  const pingHandler = (req: Request, res: Response) => {
     return twiml(res, (vr) => {
       say(vr, 'Voice system test successful');
     });
-  });
+  };
+  app.get('/api/voice/ping', pingHandler);
+  app.post('/api/voice/ping', pingHandler);
 
   // Test echo route for interactive TwiML validation
   app.post('/api/voice/test-echo', (req: Request, res: Response) => {
