@@ -134,6 +134,26 @@ export function registerVoice(app: Express) {
       console.log('[VOICE][INCOMING TwiML]', xml);
       res.type('text/xml').send(xml);
 
+      // Start call recording asynchronously via REST API (non-blocking)
+      if (env.CALL_RECORDING_ENABLED) {
+        setImmediate(async () => {
+          try {
+            const twilioClient = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+            const recordingCallbackUrl = abs('/api/voice/recording');
+            
+            await twilioClient.calls(callSid).recordings.create({
+              recordingStatusCallback: recordingCallbackUrl,
+              recordingStatusCallbackMethod: 'POST',
+              recordingChannels: 'dual',
+            });
+            
+            console.log('[RECORDING] Started via REST API for CallSid:', callSid);
+          } catch (err) {
+            console.error('[RECORDING] Failed to start recording:', err);
+          }
+        });
+      }
+
       // Create conversation for context tracking
       const conversation = await storage.createConversation(tenant.id, undefined, true);
       
@@ -772,15 +792,123 @@ export function registerVoice(app: Express) {
           }
         }
         
-        // Fetch slot details from Cliniko to get appointment metadata
-        const allSlots = await getAvailability();
-        const slotData = allSlots.find(s => s.startIso === chosenSlotISO);
+        // Re-validate slot availability (prevent race conditions)
+        const slotDate = new Date(chosenSlotISO);
+        const dateStr = slotDate.toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        console.log(`[REVALIDATE] Checking if slot ${chosenSlotISO} is still available on ${dateStr}`);
+        
+        // Re-fetch availability for the specific day
+        let freshSlots;
+        try {
+          freshSlots = await getAvailability({
+            fromDate: dateStr,
+            toDate: dateStr,
+          });
+          console.log(`[REVALIDATE] Found ${freshSlots.length} fresh slots for ${dateStr}`);
+        } catch (err) {
+          console.error(`[REVALIDATE] Failed to fetch availability:`, err);
+          // If re-validation fails, try fetching all availability as fallback
+          try {
+            console.log(`[REVALIDATE] Trying to fetch all availability as fallback`);
+            freshSlots = await getAvailability();
+            console.log(`[REVALIDATE] Fallback: Found ${freshSlots.length} total slots`);
+          } catch (fallbackErr) {
+            console.error(`[REVALIDATE] Fallback also failed:`, fallbackErr);
+            // Complete failure - inform caller
+            return twiml(res, (vr) => {
+              say(vr, 'Sorry, there was a technical problem checking availability. Please try calling back in a few minutes. Goodbye.');
+            });
+          }
+        }
+        
+        // Check if chosen slot is still available
+        const slotData = freshSlots.find(s => s.startIso === chosenSlotISO);
         
         if (!slotData) {
-          return twiml(res, (vr) => {
-            say(vr, 'Sorry that time slot is no longer available. Please call back to rebook');
-          });
+          console.log(`[REVALIDATE] Slot ${chosenSlotISO} is GONE - offering alternatives`);
+          
+          // Slot is taken - offer next available slots
+          if (freshSlots.length >= 2) {
+            // Offer next 2 slots
+            const alt1 = freshSlots[0];
+            const alt2 = freshSlots[1];
+            
+            const time1 = speakableTime(alt1.startIso, AUST_TZ);
+            const time2 = speakableTime(alt2.startIso, AUST_TZ);
+            
+            // Update context with new offered slots
+            if (conversation) {
+              await storage.updateConversation(conversation.id, {
+                context: { ...context, offeredSlotISOs: [alt1.startIso, alt2.startIso], chosenSlotISO: undefined, pendingSlotISO: undefined }
+              });
+            }
+            
+            console.log(`[REVALIDATE] Offering 2 alternatives: ${time1}, ${time2}`);
+            
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech', 'dtmf'],
+                numDigits: 1,
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+                method: 'POST'
+              });
+              say(g, `Sorry, that time was just taken. I have ${time1} or ${time2}. Press 1 or 2, or say your choice.`);
+              pause(g, 1);
+            });
+          } else if (freshSlots.length === 1) {
+            // Only 1 slot left - offer it
+            const alt1 = freshSlots[0];
+            const time1 = speakableTime(alt1.startIso, AUST_TZ);
+            
+            if (conversation) {
+              await storage.updateConversation(conversation.id, {
+                context: { ...context, offeredSlotISOs: [alt1.startIso], chosenSlotISO: undefined, pendingSlotISO: undefined }
+              });
+            }
+            
+            console.log(`[REVALIDATE] Offering 1 alternative: ${time1}`);
+            
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech', 'dtmf'],
+                numDigits: 1,
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
+                method: 'POST'
+              });
+              say(g, `Sorry, that time was just taken. I only have ${time1} available. Press 1 to book it, or 2 to try another day.`);
+              pause(g, 1);
+            });
+          } else {
+            // No slots available - offer to take message
+            console.log(`[REVALIDATE] No slots available on ${dateStr}`);
+            
+            return twiml(res, (vr) => {
+              const g = vr.gather({
+                input: ['speech', 'dtmf'],
+                numDigits: 1,
+                language: 'en-AU',
+                timeout: 5,
+                speechTimeout: 'auto',
+                actionOnEmptyResult: true,
+                action: abs(`/api/voice/handle?route=book-part&callSid=${encodeURIComponent(callSid)}`),
+                method: 'POST'
+              });
+              say(g, 'Sorry, all times for that day are now taken. Would you like to try a different day? Press 1 for yes, or 2 to leave a message.');
+              pause(g, 1);
+            });
+          }
         }
+        
+        console.log(`[REVALIDATE] Slot ${chosenSlotISO} is STILL AVAILABLE - proceeding with booking`);
         
         // Get caller identity
         const phoneData = await storage.getPhoneMap(from);
