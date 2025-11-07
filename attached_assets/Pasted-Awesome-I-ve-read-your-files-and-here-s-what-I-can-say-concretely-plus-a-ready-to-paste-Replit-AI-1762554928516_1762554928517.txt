@@ -1,0 +1,69 @@
+Awesome — I’ve read your files and here’s what I can say concretely, plus a ready-to-paste Replit AI prompt that will do the fixes for you automatically.
+
+## What I can confirm from your files (plain English)
+
+* Your app is started with `tsx server/index.ts` in dev, and the build bundles `server/index.ts` for prod. That’s your true entrypoint. 
+* You have a `db:push` script (`drizzle-kit push`). If this is ever called on startup (directly or indirectly), it would cause the “surprise migrations” you’re worried about. We must ensure it’s **never** run by the server code. 
+* Your `index.ts` (server entry) wires routes via `registerRoutes(app)` and then listens on `PORT` (defaults to 5000). No migration calls appear here — that’s good; the auto-migration, if any, will be elsewhere.  
+* You’re already logging Cliniko config at boot (nice). We’ll keep that. 
+
+---
+
+## Copy–paste this into Replit AI (one message)
+
+> **Goal: Stabilize app without rebuild. Make minimal, safe edits across the repo.**
+>
+> **1) Stop automatic DB migrations on startup**
+>
+> * Search the entire codebase for any Drizzle/Prisma “push/migrate” calls triggered during server start (examples: `drizzle-kit push`, `push: true`, `migrate()`, `applyMigrations`, `prisma migrate`).
+> * Ensure **no migration** runs inside `server/index.ts` (or any file it imports at boot). Migrations must run only via CLI scripts, not on server start.
+> * If you find any such calls, remove them and leave a comment `// migrations run via CLI only`.
+> * Do **not** remove the NPM script `"db:push"` itself; just make sure nothing calls it at runtime.
+>
+> **2) Twilio Voice: start call recording automatically**
+>
+> * In the Voice webhook that returns TwiML, add `<Start><Record track="both"/></Start>` at the **top** of the first `<Response>`.
+> * Make sure we only add this once per call (avoid duplicate `<Start>` blocks on subsequent responses).
+> * Create a **Recording Status Callback** route (e.g., `POST /webhooks/twilio/recording-status`) that stores at least: `CallSid`, `RecordingSid`, `RecordingUrl`, `RecordingDuration` (or equivalent fields). If a DB layer exists for this, create a simple `recordings` table with columns: `id (pk)`, `call_session_id (nullable)`, `recording_sid`, `url`, `duration_sec`, `created_at`.
+> * Link a recording to a call session by `CallSid` if the sessions table exists; otherwise just persist the raw fields.
+>
+> **3) Twilio TTS robustness**
+>
+> * Default `<Say>` voice to `"alice"` unless `process.env.TWIML_VOICE` is set. Implement a small helper so we always use `process.env.TWIML_VOICE || "alice"`.
+>
+> **4) Appointment “slot unavailable” bug**
+>
+> * In the booking flow: when offering times, keep the **exact ISO timestamp** for each option in memory (or in a short-lived in-memory map / table row).
+> * When the caller chooses “option one/two/three”, **map directly to that exact ISO** (don’t re-parse from a human string).
+> * **Re-validate** that ISO against Cliniko *right before* booking (re-fetch for that day if cache older than ~20s). If the slot is gone, immediately offer the next two nearest options instead of ending the call.
+> * Keep internal storage in UTC but format speech as “9 a.m.” in the business timezone. Add a tiny util: `formatForSpeech(tz, iso)` that drops leading zeros and only says minutes if non-zero.
+>
+> **5) DB discipline (additive-only during dev)**
+>
+> * If you find destructive schema changes (drop/rename), convert them to **additive** changes for now (add new columns/tables and leave old ones).
+> * Create minimal tables if missing (names can be adapted to existing code):
+>
+>   * `call_sessions(id, twilio_call_sid, caller_phone, state, last_event_at, created_at)`
+>   * `recordings(id, call_session_id, recording_sid, url, duration_sec, created_at)`
+>   * `availability_cache(id, practitioner_id, appointment_type_id, date, slots_json, fetched_at, tz)`
+>
+> **6) Leave everything else as-is**
+>
+> * Don’t change URLs, ports, or vite/static behavior.
+> * Don’t rebuild architecture; just apply the safe fixes above.
+>
+> **Output:**
+>
+> * Make the code edits directly.
+> * Print a short summary of the files changed and what you changed (1–2 lines per file).
+
+---
+
+## After Replit AI finishes, do this quick check
+
+1. Run the app and call your dev number.
+2. Confirm the call **records** (you should see recording callbacks hitting your new route).
+3. Ask for a time, choose “option one,” and verify it **books or offers alternates** — not “please call back.”
+4. Confirm the voice still speaks (defaults to “alice” unless you set `TWIML_VOICE`).
+
+If you want, send me the **voice webhook file** next (the one that returns the `<Response>…</Response>`), and I’ll tailor that `<Start><Record…/></Start>` insertion and the ISO-time mapping exactly to your current code so it’s 100% drop-in.
