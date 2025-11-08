@@ -4,7 +4,7 @@ import { validateTwilioSignature } from '../middlewares/twilioAuth';
 import { env } from '../utils/env';
 import { storage } from '../storage';
 import { abs } from '../utils/url';
-import { say, pause } from '../utils/voice-constants';
+import { say, pause, saySafe, BUSINESS_TZ } from '../utils/voice-constants';
 import { detectIntent } from '../services/intent';
 import { 
   getAvailability, 
@@ -36,8 +36,12 @@ import {
   filterSlotsByPartOfDay,
   AUST_TZ,
   localDayWindow,
-  speakableTime
+  speakableTime,
+  businessDayRange,
+  isMorningLocal,
+  labelForSpeech
 } from '../time';
+import dayjs from 'dayjs';
 
 function twiml(res: Response, builder: (vr: twilio.twiml.VoiceResponse) => void) {
   const vr = new twilio.twiml.VoiceResponse();
@@ -665,10 +669,10 @@ export function registerVoice(app: Express) {
             });
           }
           
-          // Use natural time pronunciation
-          const time1Speakable = speakableTime(slot1.startIso, AUST_TZ);
+          // Use labelForSpeech for clean natural pronunciation
+          const time1Label = labelForSpeech(slot1.startIso, AUST_TZ);
           
-          console.log(`[OFFER] 1 option: ${slot1.startIso} → "${time1Speakable}"`);
+          console.log(`[OFFER] 1 option: ${slot1.startIso} → "${time1Label}"`);
           
           return twiml(res, (vr) => {
             const g = vr.gather({
@@ -680,7 +684,7 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `I have one option available: ${time1Speakable}. Would you like to take that time`);
+            saySafe(g, `I have one option available. ${time1Label}. Press 1 or say your choice.`);
             pause(g, 1);
           });
         } else {
@@ -695,11 +699,11 @@ export function registerVoice(app: Express) {
             });
           }
           
-          // Use natural time pronunciation
-          const time1Speakable = speakableTime(slot1.startIso, AUST_TZ);
-          const time2Speakable = speakableTime(slot2.startIso, AUST_TZ);
+          // Use labelForSpeech for clean natural pronunciation
+          const time1Label = labelForSpeech(slot1.startIso, AUST_TZ);
+          const time2Label = labelForSpeech(slot2.startIso, AUST_TZ);
           
-          console.log(`[OFFER] 2 options: 1="${time1Speakable}" (${slot1.startIso}), 2="${time2Speakable}" (${slot2.startIso})`);
+          console.log(`[OFFER] 2 options: 1="${time1Label}" (${slot1.startIso}), 2="${time2Label}" (${slot2.startIso})`);
           
           return twiml(res, (vr) => {
             const g = vr.gather({
@@ -711,7 +715,7 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=${route.replace('part','choose')}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
               method: 'POST'
             });
-            say(g, `I have two options. Option one, ${time1Speakable}. Or option two, ${time2Speakable}. Press 1 or 2, or say your choice.`);
+            saySafe(g, `I have two options. Option one, ${time1Label}. Or option two, ${time2Label}. Press 1 or 2, or say your choice.`);
             pause(g, 1);
           });
         }
@@ -765,7 +769,7 @@ export function registerVoice(app: Express) {
               });
             }
             
-            const timeSpoken = speakableTime(slotISO, AUST_TZ);
+            const timeLabel = labelForSpeech(slotISO, AUST_TZ);
             
             return twiml(res, (vr) => {
               const g = vr.gather({
@@ -778,7 +782,7 @@ export function registerVoice(app: Express) {
                 action: abs(`/api/voice/handle?route=${route.replace('choose','confirm-yesno')}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
                 method: 'POST'
               });
-              say(g, `Just to confirm, did you want ${timeSpoken}? Press 1 for yes, 2 for no. Or say yes or no.`);
+              saySafe(g, `Just to confirm, did you want ${timeLabel}? Press 1 for yes, 2 for no. Or say yes or no.`);
               pause(g, 1);
             });
           }
@@ -794,19 +798,19 @@ export function registerVoice(app: Express) {
         }
         
         // Re-validate slot availability (prevent race conditions)
-        const slotDate = new Date(chosenSlotISO);
-        const dateStr = slotDate.toISOString().split('T')[0]; // YYYY-MM-DD
+        // Use businessDayRange to get exact same business day window
+        const { fromLocalISO, toLocalISO } = businessDayRange(chosenSlotISO, AUST_TZ);
         
-        console.log(`[REVALIDATE] Checking if slot ${chosenSlotISO} is still available on ${dateStr}`);
+        console.log(`[REVALIDATE] Checking if slot ${chosenSlotISO} is still available (business day: ${fromLocalISO})`);
         
-        // Re-fetch availability for the specific day
+        // Re-fetch availability for the specific business day
         let freshSlots;
         try {
           freshSlots = await getAvailability({
-            fromDate: dateStr,
-            toDate: dateStr,
+            fromDate: fromLocalISO,
+            toDate: toLocalISO,
           });
-          console.log(`[REVALIDATE] Found ${freshSlots.length} fresh slots for ${dateStr}`);
+          console.log(`[REVALIDATE] Found ${freshSlots.length} fresh slots for business day ${fromLocalISO}`);
         } catch (err) {
           console.error(`[REVALIDATE] Failed to fetch availability:`, err);
           // If re-validation fails, try fetching all availability as fallback
@@ -818,7 +822,7 @@ export function registerVoice(app: Express) {
             console.error(`[REVALIDATE] Fallback also failed:`, fallbackErr);
             // Complete failure - inform caller
             return twiml(res, (vr) => {
-              say(vr, 'Sorry, there was a technical problem checking availability. Please try calling back in a few minutes. Goodbye.');
+              saySafe(vr, 'Sorry, there was a technical problem checking availability. Please try calling back in a few minutes. Goodbye.');
             });
           }
         }
@@ -827,16 +831,21 @@ export function registerVoice(app: Express) {
         const slotData = freshSlots.find(s => s.startIso === chosenSlotISO);
         
         if (!slotData) {
-          console.log(`[REVALIDATE] Slot ${chosenSlotISO} is GONE - offering alternatives`);
+          console.log(`[REVALIDATE] Slot ${chosenSlotISO} is GONE - offering nearest alternatives on same business day`);
+          
+          // Find nearest alternatives by time distance on same day
+          const sorted = freshSlots
+            .map(s => ({ ...s, timeDiff: Math.abs(dayjs(s.startIso).valueOf() - dayjs(chosenSlotISO).valueOf()) }))
+            .sort((a, b) => a.timeDiff - b.timeDiff);
           
           // Slot is taken - offer next available slots
-          if (freshSlots.length >= 2) {
-            // Offer next 2 slots
-            const alt1 = freshSlots[0];
-            const alt2 = freshSlots[1];
+          if (sorted.length >= 2) {
+            // Offer nearest 2 slots
+            const alt1 = sorted[0];
+            const alt2 = sorted[1];
             
-            const time1 = speakableTime(alt1.startIso, AUST_TZ);
-            const time2 = speakableTime(alt2.startIso, AUST_TZ);
+            const time1Label = labelForSpeech(alt1.startIso, AUST_TZ);
+            const time2Label = labelForSpeech(alt2.startIso, AUST_TZ);
             
             // Update context with new offered slots
             if (conversation) {
@@ -845,12 +854,11 @@ export function registerVoice(app: Express) {
               });
             }
             
-            console.log(`[REVALIDATE] Offering 2 alternatives: ${time1}, ${time2}`);
+            console.log(`[REVALIDATE] Offering 2 nearest alternatives: ${time1Label}, ${time2Label}`);
             
             return twiml(res, (vr) => {
               const g = vr.gather({
                 input: ['speech', 'dtmf'],
-                numDigits: 1,
                 language: 'en-AU',
                 timeout: 5,
                 speechTimeout: 'auto',
@@ -858,13 +866,13 @@ export function registerVoice(app: Express) {
                 action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
                 method: 'POST'
               });
-              say(g, `Sorry, that time was just taken. I have ${time1} or ${time2}. Press 1 or 2, or say your choice.`);
+              saySafe(g, `Sorry, that time was just taken. The nearest times are option one, ${time1Label}. Or option two, ${time2Label}. Press 1 or 2, or say your choice.`);
               pause(g, 1);
             });
-          } else if (freshSlots.length === 1) {
+          } else if (sorted.length === 1) {
             // Only 1 slot left - offer it
-            const alt1 = freshSlots[0];
-            const time1 = speakableTime(alt1.startIso, AUST_TZ);
+            const alt1 = sorted[0];
+            const time1Label = labelForSpeech(alt1.startIso, AUST_TZ);
             
             if (conversation) {
               await storage.updateConversation(conversation.id, {
@@ -872,12 +880,11 @@ export function registerVoice(app: Express) {
               });
             }
             
-            console.log(`[REVALIDATE] Offering 1 alternative: ${time1}`);
+            console.log(`[REVALIDATE] Offering 1 alternative: ${time1Label}`);
             
             return twiml(res, (vr) => {
               const g = vr.gather({
                 input: ['speech', 'dtmf'],
-                numDigits: 1,
                 language: 'en-AU',
                 timeout: 5,
                 speechTimeout: 'auto',
@@ -885,17 +892,16 @@ export function registerVoice(app: Express) {
                 action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptId ? `&aptId=${aptId}` : ''}`),
                 method: 'POST'
               });
-              say(g, `Sorry, that time was just taken. I only have ${time1} available. Press 1 to book it, or 2 to try another day.`);
+              saySafe(g, `Sorry, that time was just taken. I only have ${time1Label} available. Press 1 to book it, or 2 to try another day.`);
               pause(g, 1);
             });
           } else {
             // No slots available - offer to take message
-            console.log(`[REVALIDATE] No slots available on ${dateStr}`);
+            console.log(`[REVALIDATE] No slots available on business day ${fromLocalISO}`);
             
             return twiml(res, (vr) => {
               const g = vr.gather({
                 input: ['speech', 'dtmf'],
-                numDigits: 1,
                 language: 'en-AU',
                 timeout: 5,
                 speechTimeout: 'auto',
@@ -903,7 +909,7 @@ export function registerVoice(app: Express) {
                 action: abs(`/api/voice/handle?route=book-part&callSid=${encodeURIComponent(callSid)}`),
                 method: 'POST'
               });
-              say(g, 'Sorry, all times for that day are now taken. Would you like to try a different day? Press 1 for yes, or 2 to leave a message.');
+              saySafe(g, 'Sorry, all times for that day are now taken. Would you like to try a different day? Press 1 for yes, or 2 to leave a message.');
               pause(g, 1);
             });
           }
@@ -996,11 +1002,11 @@ export function registerVoice(app: Express) {
           });
         }
         
-        // Speak confirmation with natural time
-        const confirmTimeSpoken = speakableTime(chosenSlotISO, AUST_TZ);
+        // Speak confirmation with labelForSpeech for natural pronunciation
+        const confirmTimeLabel = labelForSpeech(chosenSlotISO, AUST_TZ);
         
         return twiml(res, (vr) => {
-          say(vr, `All set. Your booking is confirmed for ${confirmTimeSpoken}. We will send a confirmation by message. Goodbye`);
+          saySafe(vr, `All set. Your booking is confirmed for ${confirmTimeLabel}. We will send a confirmation by message. Goodbye`);
         });
       }
       
