@@ -178,7 +178,7 @@ export function registerVoice(app: Express) {
     } catch (err: any) {
       console.error('[VOICE][INCOMING ERROR]', err?.stack || err);
       const fail = new twilio.twiml.VoiceResponse();
-      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      saySafe(fail, 'Sorry there was a problem Please try again later Goodbye');
       const xml = fail.toString();
       console.log('[VOICE][INCOMING OUT][FAIL]', xml);
       res.type('text/xml').send(xml);
@@ -1263,7 +1263,7 @@ export function registerVoice(app: Express) {
     } catch (err: any) {
       console.error('[VOICE][HANDLE ERROR]', err?.stack || err);
       const fail = new twilio.twiml.VoiceResponse();
-      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      saySafe(fail, 'Sorry there was a problem Please try again later Goodbye');
       const xml = fail.toString();
       console.log('[VOICE][HANDLE OUT][FAIL]', xml);
       return res.type('text/xml').send(xml);
@@ -1388,7 +1388,7 @@ export function registerVoice(app: Express) {
     } catch (err: any) {
       console.error('[VOICE][WIZARD ERROR]', err?.stack || err);
       const fail = new twilio.twiml.VoiceResponse();
-      say(fail, 'Sorry there was a problem Please try again later Goodbye');
+      saySafe(fail, 'Sorry there was a problem Please try again later Goodbye');
       const xml = fail.toString();
       console.log('[VOICE][WIZARD OUT][FAIL]', xml);
       return res.type('text/xml').send(xml);
@@ -1423,7 +1423,7 @@ export function registerVoice(app: Express) {
     } catch (err: any) {
       console.error('[VOICE][TEST-ECHO ERROR]', err?.stack || err);
       const fail = new twilio.twiml.VoiceResponse();
-      say(fail, 'Test echo error');
+      saySafe(fail, 'Test echo error');
       const xml = fail.toString();
       console.log('[VOICE][TEST-ECHO OUT][FAIL]', xml);
       return res.type('text/xml').send(xml);
