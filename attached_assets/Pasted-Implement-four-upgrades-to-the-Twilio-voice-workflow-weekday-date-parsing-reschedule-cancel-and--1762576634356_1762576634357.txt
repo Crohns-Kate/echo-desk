@@ -1,0 +1,78 @@
+Implement four upgrades to the Twilio voice workflow: weekday date parsing, reschedule, cancel, and new-client capture. Keep changes minimal and additive.
+
+Context:
+- Handlers live in /api/voice/handle (Express).
+- We already use BUSINESS_TZ = "Australia/Brisbane", saySafe(), offeredOptions store, and dayjs with utc/timezone plugins loaded.
+- We have working booking flow ("book-offer" and "book-choose").
+
+Tasks:
+
+A) Weekday parsing (fix “Monday books Sunday”):
+1) Add helper in a shared util (or top of handler file):
+   const WEEKDAYS = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
+   function resolveWeekdayToLocalStart(speech: string) {
+     const s = (speech || "").toLowerCase();
+     const idx = WEEKDAYS.findIndex(w => s.includes(w));
+     let target = dayjs().tz(BUSINESS_TZ).startOf("day");
+     if (idx === -1) return target;
+     // advance to next occurrence of that weekday (including today if matches)
+     while (target.day() !== idx) target = target.add(1, "day");
+     return target.startOf("day");
+   }
+   function dayRangeLocalISO(dLocal) {
+     return {
+       fromLocalISO: dLocal.format("YYYY-MM-DD"),
+       toLocalISO: dLocal.endOf("day").format("YYYY-MM-DD"),
+     };
+   }
+
+2) In the booking “offer” route, detect if caller mentioned a weekday (monday...sunday). If yes, compute:
+   const localStart = resolveWeekdayToLocalStart(speechRaw || "");
+   const { fromLocalISO, toLocalISO } = dayRangeLocalISO(localStart);
+   Use those for Cliniko available_times (from=to=the same local date). Filter “morning” as before using BUSINESS_TZ hours.
+
+B) Reschedule flow:
+3) Add routes:
+   - reschedule-start: fetch caller’s next future appointment (by From phone). If none → saySafe("I couldn't find a booking under this number.") and redirect to book-offer.
+   - reschedule-offer: like book-offer but for the same practitionerId + appointmentTypeId of that appointment, same clinic date logic as above (use weekday if present, else default to next available day).
+   - reschedule-choose: map choice using offeredOptions; re-validate exact ISO; then UPDATE the existing Cliniko appointment instead of creating a new one. On success: saySafe("You're rescheduled for {label}. Goodbye.").
+
+C) Cancel flow:
+4) Add routes:
+   - cancel-start: fetch caller’s next future appointment; if missing → saySafe("I couldn't find a booking under this number."); end call.
+   - cancel-confirm: confirm with a Gather ("You have an appointment on {label}. Say yes to cancel or no to keep it.")
+   - cancel-final: if yes → DELETE the appointment; saySafe("Your appointment has been cancelled."); end. If no → saySafe("No changes were made."); end.
+
+D) New-client capture flow:
+5) Before booking, when we look up or build booking context, attempt a Cliniko client lookup by phone:
+   - If not found, go to capture-name → capture-email → POST /clients to Cliniko with { first_name, last_name (split naive by last space if any), email, phone }.
+   - Store created clientId in memory keyed by callSid for the current session. Then continue to book-offer.
+
+6) Routes to add:
+   - capture-name: Gather speech; store req.session/call map: { tempName }.
+   - capture-email: Gather speech; simple clean-up of " at " -> "@", " dot " -> ".", remove spaces; validate minimal "@". Then create the client in Cliniko. On success, save clientId and proceed to book-offer.
+
+E) Intent detection:
+7) At the top of the 'start' route, detect intent from speechRaw:
+   - if includes "resched" or "change" → redirect to reschedule-start
+   - else if includes "cancel" or "delete" → redirect to cancel-start
+   - else if includes "book" or "make" or "appointment" or "see" → redirect to book-offer
+   - else → redirect to help (say a brief help and then book-offer)
+
+F) TwiML robustness:
+8) All new routes must:
+   - Use saySafe for <Say>.
+   - Wrap in try/catch and always send TwiML on error (no JSON).
+   - Log "[VOICE][TwiML OUT]" with the XML each time.
+
+G) Cliniko API helpers (use existing patterns; if missing, add simple wrappers):
+   - getNextFutureAppointmentByPhone(phone: string) -> returns one appointment or null (filters on start_time >= now(BUSINESS_TZ)).
+   - getAvailableTimes(practitionerId, appointmentTypeId, fromLocalISO, toLocalISO) -> returns array of { isoUtc }.
+   - updateAppointment(appointmentId, start_at_isoUtc) (Cliniko PUT).
+   - deleteAppointment(appointmentId) (Cliniko DELETE).
+   - findClientByPhone(phone) (GET clients?query=phone).
+   - createClient({ first_name, last_name, email, phone }) (POST /clients).
+
+H) Do not modify existing webhook URLs or environment names. Keep migrations additive-only. No destructive DB changes.
+
+Return a summary of files changed and the new routes added.
