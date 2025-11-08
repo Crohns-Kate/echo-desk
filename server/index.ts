@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import bodyParser from "body-parser";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
@@ -7,22 +8,12 @@ const app = express();
 // Trust proxy for correct protocol/host behind Replit
 app.set("trust proxy", 1);
 
-declare module 'http' {
-  interface IncomingMessage {
-    rawBody: unknown
-  }
-}
-app.use(express.json({
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
-  }
-}));
-app.use(express.urlencoded({ 
-  extended: false,
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
-  }
-}));
+// Parse raw body first for Twilio signature validation
+app.use(bodyParser.raw({ type: "application/x-www-form-urlencoded" }));
+
+// After Twilio signature middleware runs, restore normal parsers
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 
 app.use((req, res, next) => {
   const start = Date.now();

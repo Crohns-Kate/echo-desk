@@ -1,0 +1,128 @@
+Fix the Twilio 11200 "application error" that occurs when Twilio POSTs to /api/voice/handle.
+
+Goals:
+1. Stop any 500s — always return valid TwiML even on error.
+2. Ensure validateTwilioSignature never throws because of body parsing or missing envs.
+3. Enable clean logging and optional bypass in APP_MODE=TEST.
+4. Verify that express app handles Twilio’s form POST correctly.
+
+Make these exact edits:
+
+------------------------------------------------------------
+A) Express setup (server bootstrap file)
+------------------------------------------------------------
+1. Import body-parser at top:
+   import bodyParser from "body-parser";
+
+2. Set trust proxy:
+   app.set("trust proxy", 1);
+
+3. Insert the Twilio-friendly body parsing order BEFORE other middleware:
+   // Parse raw body first for Twilio signature
+   app.use(bodyParser.raw({ type: "application/x-www-form-urlencoded" }));
+   // After Twilio signature middleware runs, restore normal parsers
+   app.use(express.urlencoded({ extended: false }));
+   app.use(express.json());
+
+4. Add a simple health check route (if missing):
+   app.get("/health", (req,res)=>res.json({ ok:true }));
+
+------------------------------------------------------------
+B) validateTwilioSignature middleware
+------------------------------------------------------------
+Rewrite validateTwilioSignature as follows:
+
+import twilio from "twilio";
+
+export function validateTwilioSignature(req, res, next) {
+  try {
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const signature = req.headers["x-twilio-signature"];
+    const fullUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+    const rawBody = req.body instanceof Buffer ? req.body.toString("utf8") : "";
+
+    if (process.env.APP_MODE === "TEST") {
+      console.log("[SIGCHK][TEST MODE] skipped validation", { fullUrl });
+      return next();
+    }
+
+    const valid = twilio.validateRequest(token, signature, fullUrl, rawBody);
+    console.log("[SIGCHK]", { fullUrl, valid });
+
+    if (!valid) {
+      const vr = new twilio.twiml.VoiceResponse();
+      vr.say("Sorry, we could not verify this call. Please try again later.");
+      return res.type("text/xml").send(vr.toString());
+    }
+
+    next();
+  } catch (err) {
+    console.error("[SIGCHK][ERROR]", err);
+    const vr = new twilio.twiml.VoiceResponse();
+    vr.say("Sorry, there was a problem verifying your call.");
+    res.type("text/xml").send(vr.toString());
+  }
+}
+
+------------------------------------------------------------
+C) /api/voice/handle route
+------------------------------------------------------------
+1. At the very top of the route, create a guaranteed fail-safe wrapper:
+
+app.post("/api/voice/handle", validateTwilioSignature, async (req, res) => {
+  const tw = require("twilio");
+  const vr = new tw.twiml.VoiceResponse();
+
+  try {
+    const p = req.body || {};
+    const speech = (p.SpeechResult || "").trim();
+    const callSid = p.CallSid;
+    const route = req.query.route || "start";
+    console.log("[VOICE][HANDLE IN]", { route, callSid, speech });
+
+    // === your existing logic here ===
+    // e.g. switch(route) { ... }
+
+    const xml = vr.toString();
+    console.log("[VOICE][TwiML OUT]", xml);
+    res.type("text/xml").send(xml);
+
+  } catch (err) {
+    console.error("[VOICE][HANDLE ERROR]", err);
+    vr.say("Sorry, there was a problem. Please try again later.");
+    res.type("text/xml").send(vr.toString());
+  }
+});
+
+------------------------------------------------------------
+D) Environment variables required
+------------------------------------------------------------
+In Replit “Publishing → Manage → Secrets”, ensure these exist:
+
+TWILIO_ACCOUNT_SID
+TWILIO_AUTH_TOKEN
+PUBLIC_BASE_URL = https://echo-desk-mbjltd70.replit.app
+DATABASE_URL
+BUSINESS_TZ = Australia/Brisbane
+APP_MODE = TEST
+
+------------------------------------------------------------
+E) Logging confirmation
+------------------------------------------------------------
+After deployment, call your Twilio number.
+Logs should show in order:
+  [SIGCHK] { fullUrl: ".../api/voice/handle...", valid: true }
+  [VOICE][HANDLE IN] ...
+  [VOICE][TwiML OUT] <Response>...</Response>
+
+If valid:false but call continues, that's fine in TEST mode.
+When ready for production, set APP_MODE=PROD and ensure Twilio webhook URL and PUBLIC_BASE_URL match exactly (https).
+
+------------------------------------------------------------
+F) Never again return 500
+------------------------------------------------------------
+Every path in /api/voice/handle and validateTwilioSignature must respond with TwiML using vr.say() — no plain text or JSON.
+
+------------------------------------------------------------
+
+Return a summary of changed files and confirmation that /api/voice/handle now always sends TwiML, never HTTP 500.

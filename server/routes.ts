@@ -9,6 +9,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Initialize database
   await storage.seed();
 
+  // Simple health check for Twilio and monitoring
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true });
+  });
+
   // Enhanced health check endpoint with live API verification
   app.get('/__cliniko/health', async (_req, res) => {
     const region = process.env.CLINIKO_REGION || 'au4';

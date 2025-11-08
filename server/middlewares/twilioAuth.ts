@@ -1,67 +1,44 @@
 import { Request, Response, NextFunction } from 'express';
 import twilio from 'twilio';
-import { env } from '../utils/env';
-import { saySafe } from '../utils/voice-constants';
-
-declare module 'express-serve-static-core' {
-  interface Request {
-    twilioValid?: boolean;
-  }
-}
 
 export function validateTwilioSignature(req: Request, res: Response, next: NextFunction) {
-  const signature = req.headers['x-twilio-signature'] as string;
-  
-  // Compute full URL as Twilio sees it (trust proxy must be enabled)
-  const fullUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-  
-  // Get raw body for signature validation (set by express verify callbacks)
-  const rawBody = (req as any).rawBody;
-  const params = req.body || {};
-  
-  // Validate signature
-  let valid = false;
-  if (signature && env.TWILIO_AUTH_TOKEN) {
-    try {
-      // Use validateRequest with parsed params (Twilio lib handles this correctly)
-      valid = twilio.validateRequest(
-        env.TWILIO_AUTH_TOKEN,
-        signature,
-        fullUrl,
-        params
-      );
-    } catch (err) {
-      console.error('[SIGCHK] Error validating signature:', err);
-      valid = false;
-    }
-  }
-  
-  // Log signature check result
-  console.log('[SIGCHK]', { 
-    fullUrl, 
-    valid, 
-    hasSignature: !!signature,
-    hasRawBody: !!rawBody,
-    appMode: process.env.APP_MODE || 'TEST'
-  });
-  
-  req.twilioValid = valid;
-  
-  // Handle invalid signatures based on APP_MODE
-  const appMode = (process.env.APP_MODE || 'TEST').toUpperCase();
-  
-  if (!valid) {
-    if (appMode === 'PROD') {
-      // In PROD mode, respond with valid TwiML apology using saySafe
-      console.warn('[SIGCHK] PROD mode: Invalid signature, returning TwiML apology');
-      const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, 'Sorry, there was a problem. Please try again.');
-      return res.type('text/xml').send(vr.toString());
+  try {
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const signature = req.headers["x-twilio-signature"] as string;
+    const fullUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+    
+    // Get body - either raw buffer or parsed params
+    let params: Record<string, any> = {};
+    if (req.body instanceof Buffer) {
+      // Parse raw body into params for signature validation
+      const rawBody = req.body.toString("utf8");
+      const urlParams = new URLSearchParams(rawBody);
+      urlParams.forEach((value, key) => {
+        params[key] = value;
+      });
     } else {
-      // In TEST mode, log warning and continue
-      console.warn('[SIGCHK] TEST mode: Invalid signature, continuing anyway for', fullUrl);
+      params = req.body || {};
     }
+
+    if (process.env.APP_MODE === "TEST") {
+      console.log("[SIGCHK][TEST MODE] skipped validation", { fullUrl });
+      return next();
+    }
+
+    const valid = twilio.validateRequest(token || "", signature || "", fullUrl, params);
+    console.log("[SIGCHK]", { fullUrl, valid });
+
+    if (!valid) {
+      const vr = new twilio.twiml.VoiceResponse();
+      vr.say("Sorry, we could not verify this call. Please try again later.");
+      return res.type("text/xml").send(vr.toString());
+    }
+
+    next();
+  } catch (err) {
+    console.error("[SIGCHK][ERROR]", err);
+    const vr = new twilio.twiml.VoiceResponse();
+    vr.say("Sorry, there was a problem verifying your call.");
+    res.type("text/xml").send(vr.toString());
   }
-  
-  next();
 }
