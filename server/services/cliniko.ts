@@ -6,6 +6,12 @@ import {
   sanitizeEmail,
   sanitizePhoneE164AU
 } from '../integrations/cliniko';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc.js';
+import timezone from 'dayjs/plugin/timezone.js';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const base = env.CLINIKO_BASE_URL;
 const headers = {
@@ -277,11 +283,17 @@ export async function getPatientAppointments(phone: string): Promise<ClinikoAppo
       return [];
     }
     
-    const data = await clinikoGet<{ individual_appointments: ClinikoAppointment[] }>(
-      `/individual_appointments?q[patient_id]=${patient.id}&per_page=50`
+    // Use /appointments endpoint with from parameter (new Cliniko API)
+    const BUSINESS_TZ = env.TZ || 'Australia/Brisbane';
+    const todayLocalISO = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
+    
+    console.log(`[Cliniko] Fetching appointments for patient ${patient.id} from ${todayLocalISO}`);
+    
+    const data = await clinikoGet<{ appointments: ClinikoAppointment[] }>(
+      `/appointments?patient_id=${patient.id}&from=${todayLocalISO}&per_page=50`
     );
     
-    const appointments = data.individual_appointments || [];
+    const appointments = data.appointments || [];
     return appointments.filter(a => !a.cancelled_at && new Date(a.starts_at) > new Date());
   } catch (e) {
     console.error('[Cliniko] getPatientAppointments error', e);
