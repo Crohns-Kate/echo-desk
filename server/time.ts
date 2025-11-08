@@ -319,6 +319,63 @@ export function businessDayRange(isoUtcLike: string, tz = AUST_TZ) {
 }
 
 /**
+ * Resolve weekday from speech to Cliniko date range in business timezone
+ * Prevents Monday → Sunday bugs by using dayjs.tz throughout
+ * Returns { fromLocalISO: 'YYYY-MM-DD', toLocalISO: 'YYYY-MM-DD' } for the next occurrence of the specified weekday
+ */
+export function resolveWeekdayToClinikoRange(speech: string, tz = AUST_TZ): { fromLocalISO: string; toLocalISO: string } {
+  const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const s = (speech || "").toLowerCase();
+  
+  // Handle "today" and "tomorrow" explicitly
+  if (s.includes("today")) {
+    const today = dayjs().tz(tz).startOf("day");
+    return {
+      fromLocalISO: today.format("YYYY-MM-DD"),
+      toLocalISO: today.format("YYYY-MM-DD")
+    };
+  }
+  
+  if (s.includes("tomorrow")) {
+    const tomorrow = dayjs().tz(tz).add(1, "day").startOf("day");
+    return {
+      fromLocalISO: tomorrow.format("YYYY-MM-DD"),
+      toLocalISO: tomorrow.format("YYYY-MM-DD")
+    };
+  }
+  
+  // Find weekday name in speech
+  const idx = WEEKDAYS.findIndex(w => s.includes(w));
+  
+  // Default to tomorrow if no weekday found
+  if (idx === -1) {
+    const tomorrow = dayjs().tz(tz).add(1, "day").startOf("day");
+    return {
+      fromLocalISO: tomorrow.format("YYYY-MM-DD"),
+      toLocalISO: tomorrow.format("YYYY-MM-DD")
+    };
+  }
+  
+  // Advance to next occurrence of that weekday (including today if it matches)
+  let target = dayjs().tz(tz).startOf("day");
+  
+  // If today is the target weekday, advance to next week
+  if (target.day() === idx) {
+    target = target.add(7, "day");
+  } else {
+    // Advance until we hit the target weekday
+    while (target.day() !== idx) {
+      target = target.add(1, "day");
+    }
+  }
+  
+  return {
+    fromLocalISO: target.format("YYYY-MM-DD"),
+    toLocalISO: target.format("YYYY-MM-DD")
+  };
+}
+
+/**
  * Check if a UTC time is in the morning (9am-12pm) in business timezone
  */
 export function isMorningLocal(isoUtc: string, tz = AUST_TZ): boolean {
