@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { registerVoice } from "./routes/voice";
@@ -313,6 +313,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   });
+
+  // Apply URL-encoded parser specifically for Twilio voice webhooks
+  // This prevents "stream is not readable" errors by parsing only once
+  app.use('/api/voice', express.urlencoded({ extended: false }));
 
   // Register Twilio voice webhook routes
   registerVoice(app);

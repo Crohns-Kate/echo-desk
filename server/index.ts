@@ -1,5 +1,4 @@
 import express, { type Request, Response, NextFunction } from "express";
-import bodyParser from "body-parser";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
@@ -8,12 +7,11 @@ const app = express();
 // Trust proxy for correct protocol/host behind Replit
 app.set("trust proxy", 1);
 
-// Parse raw body first for Twilio signature validation
-app.use(bodyParser.raw({ type: "application/x-www-form-urlencoded" }));
-
-// After Twilio signature middleware runs, restore normal parsers
-app.use(express.urlencoded({ extended: false }));
+// Normal JSON parser for general endpoints
 app.use(express.json());
+
+// URL-encoded parser ONLY for /api/voice routes (applied in routes.ts)
+// This prevents "stream is not readable" errors
 
 app.use((req, res, next) => {
   const start = Date.now();
