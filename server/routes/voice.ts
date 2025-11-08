@@ -814,6 +814,11 @@ export function registerVoice(app: Express) {
         const reschedPractitionerId = route === 'reschedule-choose' ? context.practitionerId : undefined;
         const reschedAppointmentTypeId = route === 'reschedule-choose' ? context.appointmentTypeId : undefined;
         
+        // Guard: log warning if reschedule context is missing
+        if (route === 'reschedule-choose' && (!reschedPractitionerId || !reschedAppointmentTypeId)) {
+          console.warn(`[REVALIDATE][GUARD] Missing reschedule context! practitioner=${reschedPractitionerId}, appointmentType=${reschedAppointmentTypeId}. Falling back to env defaults.`);
+        }
+        
         // Re-fetch availability for the specific business day
         let freshSlots;
         try {
