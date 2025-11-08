@@ -116,6 +116,9 @@ export function registerVoice(app: Express) {
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
+      // Log action URL for diagnostics
+      console.log('[ACTION URL]', handleUrl);
+
       // Gather for speech with Australian English
       const g = vr.gather({
         input: ['speech'],
@@ -221,6 +224,12 @@ export function registerVoice(app: Express) {
   // Handle conversation flow
   app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
     try {
+      // Diagnostic logging at the very top
+      console.log('[VOICE][HANDLE HIT]', { 
+        route: req.query.route, 
+        callSid: req.query.callSid || req.body?.CallSid 
+      });
+
       const vr = new twilio.twiml.VoiceResponse();
       const p = (req as any).twilioParams || {};
       const route = (req.query.route as string) || 'start';
