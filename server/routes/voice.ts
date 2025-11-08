@@ -178,13 +178,14 @@ export function registerVoice(app: Express) {
     }
   });
 
-  // Recording callback - save recording URL
+  // Recording callback - save recording URL and SID
   app.post('/api/voice/recording', async (req: Request, res: Response) => {
-    const { CallSid, RecordingUrl, RecordingDuration } = req.body;
-    console.log('[RECORDING]', { CallSid, RecordingUrl, RecordingDuration });
+    const { CallSid, RecordingSid, RecordingUrl, RecordingDuration } = req.body;
+    console.log('[RECORDING]', { CallSid, RecordingSid, RecordingUrl, RecordingDuration });
     
     if (CallSid && RecordingUrl) {
       const updatedCall = await storage.updateCall(CallSid, { 
+        recordingSid: RecordingSid,
         recordingUrl: RecordingUrl,
         duration: parseInt(RecordingDuration || '0')
       });

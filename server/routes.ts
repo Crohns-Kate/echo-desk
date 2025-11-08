@@ -216,6 +216,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
+  // Recording proxy endpoints for authenticated playback and download
+  app.get('/api/recordings/:sid/stream', async (req, res) => {
+    try {
+      const { sid } = req.params;
+      const fetch = (await import('node-fetch')).default;
+      const env = (await import('./utils/env')).env;
+      
+      // Build Twilio recording URL
+      const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
+      
+      // Fetch from Twilio with Basic Auth
+      const auth = Buffer.from(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`).toString('base64');
+      const twilioRes = await fetch(recordingUrl, {
+        headers: {
+          'Authorization': `Basic ${auth}`
+        }
+      });
+      
+      if (!twilioRes.ok) {
+        if (twilioRes.status === 404) {
+          return res.status(404).json({ error: 'Recording not found' });
+        }
+        throw new Error(`Twilio API error: ${twilioRes.status}`);
+      }
+      
+      // Stream to client
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Accept-Ranges', 'bytes');
+      twilioRes.body?.pipe(res);
+    } catch (err: any) {
+      console.error('[RECORDING STREAM ERROR]', err);
+      res.status(500).json({ error: err.message || 'Failed to stream recording' });
+    }
+  });
+
+  app.get('/api/recordings/:sid/download', async (req, res) => {
+    try {
+      const { sid } = req.params;
+      const fetch = (await import('node-fetch')).default;
+      const env = (await import('./utils/env')).env;
+      
+      // Build Twilio recording URL
+      const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
+      
+      // Fetch from Twilio with Basic Auth
+      const auth = Buffer.from(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`).toString('base64');
+      const twilioRes = await fetch(recordingUrl, {
+        headers: {
+          'Authorization': `Basic ${auth}`
+        }
+      });
+      
+      if (!twilioRes.ok) {
+        if (twilioRes.status === 404) {
+          return res.status(404).json({ error: 'Recording not found' });
+        }
+        throw new Error(`Twilio API error: ${twilioRes.status}`);
+      }
+      
+      // Download to client
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${sid}.mp3"`);
+      twilioRes.body?.pipe(res);
+    } catch (err: any) {
+      console.error('[RECORDING DOWNLOAD ERROR]', err);
+      res.status(500).json({ error: err.message || 'Failed to download recording' });
+    }
+  });
+
   // Register Twilio voice webhook routes
   registerVoice(app);
 

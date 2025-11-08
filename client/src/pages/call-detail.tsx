@@ -110,35 +110,36 @@ export default function CallDetail() {
             </Card>
 
             {/* Recording Player */}
-            {call.recordingUrl && (
+            {call.recordingSid && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center justify-between gap-2">
                     <span>Recording</span>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-download-recording">
-                      <Download className="h-4 w-4" />
-                    </Button>
+                    <a 
+                      href={`/api/recordings/${call.recordingSid}/download`}
+                      download
+                    >
+                      <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-download-recording">
+                        <Download className="h-4 w-4" />
+                      </Button>
+                    </a>
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
+                    {call.duration && (
+                      <div className="text-xs text-muted-foreground font-mono" data-testid="text-recording-duration">
+                        Duration: {Math.floor(call.duration / 60).toString().padStart(2, '0')}:{(call.duration % 60).toString().padStart(2, '0')}
+                      </div>
+                    )}
                     <audio 
                       controls 
                       className="w-full" 
                       data-testid="audio-player"
-                      src={call.recordingUrl}
+                      src={`/api/recordings/${call.recordingSid}/stream`}
                     >
                       Your browser does not support the audio element.
                     </audio>
-                    <a 
-                      href={call.recordingUrl} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-xs text-primary hover:underline"
-                      data-testid="link-recording-url"
-                    >
-                      Open in new tab
-                    </a>
                   </div>
                 </CardContent>
               </Card>

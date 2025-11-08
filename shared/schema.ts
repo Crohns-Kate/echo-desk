@@ -54,6 +54,7 @@ export const callLogs = pgTable("call_logs", {
   toNumber: text("to_number"),
   intent: text("intent"),
   summary: text("summary"),
+  recordingSid: text("recording_sid"),
   recordingUrl: text("recording_url"),
   transcript: text("transcript"),
   duration: integer("duration"), // in seconds

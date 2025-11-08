@@ -1,0 +1,34 @@
+Please implement authenticated recording playback and download via server-side proxy so the dashboard audio widget works.
+
+Requirements:
+1) Add two Express routes:
+   - GET /api/recordings/:sid/stream
+   - GET /api/recordings/:sid/download
+   Each route should:
+     a) Look up the recording by RecordingSid (:sid). If we store RecordingUrl in DB, use it; otherwise build it as:
+        const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
+     b) Fetch the bytes from Twilio using HTTP Basic Auth with TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.
+     c) For /stream: set Content-Type to audio/mpeg (or audio/wav if mp3 fails) and pipe to res.
+     d) For /download: set Content-Type to application/octet-stream AND
+        Content-Disposition: attachment; filename="${sid}.mp3" (or .wav), then pipe to res.
+     e) On 404 from Twilio, return 404 JSON { error: "Recording not found" }.
+
+2) Choose the simplest HTTP client we already have (node-fetch/axios). If none, add 'node-fetch' as a dependency.
+
+3) Update the dashboard:
+   - Wherever we render the call/recording widget, make the HTML5 <audio> tag src point to /api/recordings/${recordingSid}/stream
+   - Add a “Download” button/link pointing to /api/recordings/${recordingSid}/download
+   - If recording duration exists, display it in mm:ss.
+
+4) Verify our recording webhook handler stores these fields for each call session (create columns if missing, additive-only migration):
+   - recording_sid (string, unique)
+   - recording_url (string, optional)
+   - duration_sec (int)
+   - call_sid (string) to relate to the session
+   If the table is named 'recordings', upsert by recording_sid when the RecordingStatusCallback fires.
+
+5) Ensure TwiML starts recording at the top of the first response:
+   <Start><Record track="both"/></Start>
+   Do not change other call logic.
+
+6) Do not change any existing URLs or webhook paths. Keep changes minimal, and no destructive DB migrations.
