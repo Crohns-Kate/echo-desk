@@ -577,12 +577,22 @@ export function registerVoice(app: Express) {
         
         console.log(`[AVAIL] Fetching ${wantMorning ? 'morning' : 'afternoon'} slots for ${fromLocalISO} (from=${fromLocalISO} to=${toLocalISO})`);
         
+        // For reschedule, use stored practitioner and appointment type from context
+        const practitionerId = route === 'reschedule-part' ? context.practitionerId : undefined;
+        const appointmentTypeId = route === 'reschedule-part' ? context.appointmentTypeId : undefined;
+        
+        if (route === 'reschedule-part') {
+          console.log(`[RESCH][PART] Using context: practitioner=${practitionerId}, appointmentType=${appointmentTypeId}`);
+        }
+        
         // Fetch slots for exact day with part-of-day filtering in Cliniko service
         const filteredSlots = await getAvailability({
           fromDate: fromLocalISO,
           toDate: toLocalISO,
           part: wantMorning ? 'morning' : 'afternoon',
-          timezone: AUST_TZ
+          timezone: AUST_TZ,
+          practitionerId,
+          appointmentTypeId
         });
         
         console.log(`[AVAIL] Found ${filteredSlots.length} ${wantMorning ? 'morning' : 'afternoon'} slots on ${fromLocalISO}`);
@@ -613,7 +623,9 @@ export function registerVoice(app: Express) {
             fromDate: fromLocalISO,
             toDate: toLocalISO,
             part: oppositePart,
-            timezone: AUST_TZ
+            timezone: AUST_TZ,
+            practitionerId,
+            appointmentTypeId
           });
           
           console.log(`[AVAIL] Found ${oppositeSlots.length} ${oppositePart} slots as fallback`);
@@ -798,12 +810,18 @@ export function registerVoice(app: Express) {
         
         console.log(`[REVALIDATE] Checking if slot ${chosenSlotISO} is still available (business day: ${fromLocalISO})`);
         
+        // For reschedule, use stored practitioner and appointment type from context
+        const reschedPractitionerId = route === 'reschedule-choose' ? context.practitionerId : undefined;
+        const reschedAppointmentTypeId = route === 'reschedule-choose' ? context.appointmentTypeId : undefined;
+        
         // Re-fetch availability for the specific business day
         let freshSlots;
         try {
           freshSlots = await getAvailability({
             fromDate: fromLocalISO,
             toDate: toLocalISO,
+            practitionerId: reschedPractitionerId,
+            appointmentTypeId: reschedAppointmentTypeId
           });
           console.log(`[REVALIDATE] Found ${freshSlots.length} fresh slots for business day ${fromLocalISO}`);
         } catch (err) {
@@ -811,7 +829,10 @@ export function registerVoice(app: Express) {
           // If re-validation fails, try fetching all availability as fallback
           try {
             console.log(`[REVALIDATE] Trying to fetch all availability as fallback`);
-            freshSlots = await getAvailability();
+            freshSlots = await getAvailability({
+              practitionerId: reschedPractitionerId,
+              appointmentTypeId: reschedAppointmentTypeId
+            });
             console.log(`[REVALIDATE] Fallback: Found ${freshSlots.length} total slots`);
           } catch (fallbackErr) {
             console.error(`[REVALIDATE] Fallback also failed:`, fallbackErr);

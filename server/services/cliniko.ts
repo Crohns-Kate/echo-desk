@@ -148,12 +148,15 @@ export async function getAvailability(opts?: {
   toDate?: string;    // YYYY-MM-DD format
   part?: 'early' | 'late' | 'morning' | 'afternoon';
   timezone?: string;
+  practitionerId?: string;
+  appointmentTypeId?: string;
+  businessId?: string;
 }): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string; businessId: string; duration: number }>> {
   try {
-    // Use configured IDs from environment
-    const businessId = env.CLINIKO_BUSINESS_ID;
-    const practitionerId = env.CLINIKO_PRACTITIONER_ID;
-    const appointmentTypeId = env.CLINIKO_APPT_TYPE_ID;
+    // Use provided IDs or fallback to environment defaults
+    const businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
+    const practitionerId = opts?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
+    const appointmentTypeId = opts?.appointmentTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
     
     // Fetch appointment type details for duration
