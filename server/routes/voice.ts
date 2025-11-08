@@ -39,7 +39,8 @@ import {
   speakableTime,
   businessDayRange,
   isMorningLocal,
-  labelForSpeech
+  labelForSpeech,
+  resolveWeekdayToClinikoRange
 } from '../time';
 import dayjs from 'dayjs';
 
@@ -470,34 +471,19 @@ export function registerVoice(app: Express) {
         const call = await storage.getCallByCallSid(callSid);
         const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
         
-        // Use new time utility to parse weekday/today/tomorrow
-        const when = nextWeekdayFromUtterance(speech);
-        if (!when) {
-          return twiml(res, (vr) => {
-            const g = vr.gather({
-              input: ['speech'],
-              language: 'en-AU',
-              timeout: 5,
-              speechTimeout: 'auto',
-              actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=${route}&callSid=${encodeURIComponent(callSid)}${aptIdParam}`),
-              method: 'POST'
-            });
-            say(g, 'Which day suits you? For example Monday or Tuesday');
-            pause(g, 1);
-          });
-        }
+        // Use new Cliniko range helper to get from/to dates in business timezone
+        const { fromLocalISO, toLocalISO } = resolveWeekdayToClinikoRange(speech, AUST_TZ);
         
-        // Store the exact ISO date for accurate filtering later
-        const requestedDayISO = when.toISOString();
+        console.log(`[BOOK-DAY] speech="${speech}" → fromLocalISO=${fromLocalISO}, toLocalISO=${toLocalISO}`);
         
-        // Store the chosen date in conversation context
+        // Store the chosen date range in conversation context
         if (conversation) {
           const existingContext = conversation.context as any || {};
           await storage.updateConversation(conversation.id, {
             context: {
               ...existingContext,
-              requestedDayISO,
+              fromLocalISO,
+              toLocalISO,
               isReschedule: route.startsWith('reschedule')
             }
           });
@@ -524,13 +510,14 @@ export function registerVoice(app: Express) {
         const aptId = req.query.aptId as string | undefined;
         const aptIdParam = aptId ? `&aptId=${aptId}` : '';
         
-        // Get conversation to retrieve stored booking date
+        // Get conversation to retrieve stored booking date range
         const call = await storage.getCallByCallSid(callSid);
         const conversation = call?.conversationId ? await storage.getConversation(call.conversationId) : null;
         const context = conversation?.context as any || {};
-        const requestedDayISO = context.requestedDayISO;
+        const fromLocalISO = context.fromLocalISO;
+        const toLocalISO = context.toLocalISO;
         
-        if (!requestedDayISO) {
+        if (!fromLocalISO || !toLocalISO) {
           // Redirect back to day selection if no date stored
           return twiml(res, (vr) => {
             const g = vr.gather({
@@ -586,20 +573,17 @@ export function registerVoice(app: Express) {
           });
         }
         
-        // Calculate exact day window in Australia/Brisbane timezone
-        const { fromDate, toDate } = localDayWindow(requestedDayISO, AUST_TZ);
-        
-        console.log(`[AVAIL] Fetching ${wantMorning ? 'morning' : 'afternoon'} slots for ${requestedDayISO} (from=${fromDate} to=${toDate})`);
+        console.log(`[AVAIL] Fetching ${wantMorning ? 'morning' : 'afternoon'} slots for ${fromLocalISO} (from=${fromLocalISO} to=${toLocalISO})`);
         
         // Fetch slots for exact day with part-of-day filtering in Cliniko service
         const filteredSlots = await getAvailability({
-          fromDate,
-          toDate,
+          fromDate: fromLocalISO,
+          toDate: toLocalISO,
           part: wantMorning ? 'morning' : 'afternoon',
           timezone: AUST_TZ
         });
         
-        console.log(`[AVAIL] Found ${filteredSlots.length} ${wantMorning ? 'morning' : 'afternoon'} slots on ${requestedDayISO}`);
+        console.log(`[AVAIL] Found ${filteredSlots.length} ${wantMorning ? 'morning' : 'afternoon'} slots on ${fromLocalISO}`);
         
         // Take first two slots
         const twoSlots = filteredSlots.slice(0, 2);
@@ -624,8 +608,8 @@ export function registerVoice(app: Express) {
           console.log(`[AVAIL] No ${wantMorning ? 'morning' : 'afternoon'} slots. Checking ${oppositePart}...`);
           
           const oppositeSlots = await getAvailability({
-            fromDate,
-            toDate,
+            fromDate: fromLocalISO,
+            toDate: toLocalISO,
             part: oppositePart,
             timezone: AUST_TZ
           });
