@@ -221,7 +221,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { sid } = req.params;
       const fetch = (await import('node-fetch')).default;
+      const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
+      
+      if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
+        return res.status(500).json({ error: 'Twilio credentials not configured' });
+      }
       
       // Build Twilio recording URL
       const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
@@ -241,13 +246,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error(`Twilio API error: ${twilioRes.status}`);
       }
       
-      // Stream to client
+      // Stream to client - convert Web ReadableStream to Node stream
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Accept-Ranges', 'bytes');
-      twilioRes.body?.pipe(res);
+      
+      if (twilioRes.body) {
+        Readable.fromWeb(twilioRes.body as any).pipe(res);
+      } else {
+        throw new Error('No response body from Twilio');
+      }
     } catch (err: any) {
       console.error('[RECORDING STREAM ERROR]', err);
-      res.status(500).json({ error: err.message || 'Failed to stream recording' });
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'Failed to stream recording' });
+      }
     }
   });
 
@@ -255,7 +267,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { sid } = req.params;
       const fetch = (await import('node-fetch')).default;
+      const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
+      
+      if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
+        return res.status(500).json({ error: 'Twilio credentials not configured' });
+      }
       
       // Build Twilio recording URL
       const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
@@ -275,13 +292,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error(`Twilio API error: ${twilioRes.status}`);
       }
       
-      // Download to client
+      // Download to client - convert Web ReadableStream to Node stream
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${sid}.mp3"`);
-      twilioRes.body?.pipe(res);
+      
+      if (twilioRes.body) {
+        Readable.fromWeb(twilioRes.body as any).pipe(res);
+      } else {
+        throw new Error('No response body from Twilio');
+      }
     } catch (err: any) {
       console.error('[RECORDING DOWNLOAD ERROR]', err);
-      res.status(500).json({ error: err.message || 'Failed to download recording' });
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'Failed to download recording' });
+      }
     }
   });
 
