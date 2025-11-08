@@ -276,6 +276,73 @@ export async function createAppointmentForPatient(phone: string, payload: {
   }
 }
 
+export async function findPatientByPhoneRobust(e164Phone: string): Promise<{ id: string; first_name: string; last_name: string } | null> {
+  try {
+    // First try the standard phone lookup (uses phone_number= query param)
+    const patient = await findPatientByPhone(e164Phone);
+    if (patient) {
+      return { id: patient.id, first_name: patient.first_name, last_name: patient.last_name };
+    }
+    
+    // If not found, try q= search with digits only
+    const digitsOnly = e164Phone.replace(/\D/g, '');
+    console.log(`[Cliniko] Trying q= search with digits: ${digitsOnly}`);
+    
+    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(`/patients?q=${digitsOnly}&per_page=50`);
+    const patients = data.patients || [];
+    
+    // Find the patient whose phone numbers match the end of the E.164
+    for (const p of patients) {
+      const phoneNumbers = p.phone_numbers || [];
+      for (const pn of phoneNumbers) {
+        const normalized = pn.number.replace(/\D/g, '');
+        if (digitsOnly.endsWith(normalized) || normalized.endsWith(digitsOnly.slice(-9))) {
+          console.log(`[Cliniko] Found patient via q= search: ${p.id}`);
+          return { id: p.id, first_name: p.first_name, last_name: p.last_name };
+        }
+      }
+    }
+    
+    return null;
+  } catch (e) {
+    console.error('[Cliniko] findPatientByPhoneRobust error', e);
+    return null;
+  }
+}
+
+export async function getNextUpcomingAppointment(patientId: string): Promise<{ id: string; practitioner_id: string; appointment_type_id: string; starts_at: string } | null> {
+  try {
+    const BUSINESS_TZ = env.TZ || 'Australia/Brisbane';
+    const fromLocal = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
+    
+    console.log(`[Cliniko] Fetching upcoming appointments for patient ${patientId} from ${fromLocal}`);
+    
+    const data = await clinikoGet<{ individual_appointments: ClinikoAppointment[] }>(
+      `/individual_appointments?patient_id=${patientId}&from=${fromLocal}&per_page=50`
+    );
+    
+    const appointments = data.individual_appointments || [];
+    const now = dayjs().tz(BUSINESS_TZ);
+    
+    // Find first appointment that starts in the future and is not cancelled
+    for (const appt of appointments) {
+      if (!appt.cancelled_at && dayjs(appt.starts_at).isAfter(now)) {
+        return {
+          id: appt.id,
+          practitioner_id: appt.practitioner_id,
+          appointment_type_id: appt.appointment_type_id,
+          starts_at: appt.starts_at
+        };
+      }
+    }
+    
+    return null;
+  } catch (e) {
+    console.error('[Cliniko] getNextUpcomingAppointment error', e);
+    return null;
+  }
+}
+
 export async function getPatientAppointments(phone: string): Promise<ClinikoAppointment[]> {
   try {
     const patient = await findPatientByPhone(phone);

@@ -1,0 +1,59 @@
+Implement a working reschedule flow and robust patient lookup by phone.
+
+Context:
+- We already have /api/voice/handle with routes like start, book-day, book-part, book-choose, book-confirm-yesno.
+- BUSINESS_TZ = "Australia/Brisbane".
+- We use dayjs with utc/timezone (ESM imports include .js).
+- We have safeSay() and TwiML try/catch in place.
+
+Tasks:
+
+1) Patient lookup by phone:
+   Add a util findPatientByPhone(e164Phone: string) that:
+     - First tries GET /patients?phone=<e164>
+     - If that returns 400/404/empty, tries GET /patients?q=<digitsOnlyPhone>
+     - From the q-results, pick the one whose phone numbers (normalized digits) match the end of the E.164 (to handle country codes).
+     - Return { id, first_name, last_name } or null.
+   Normalize: digitsOnly = phone.replace(/\D/g,"").
+
+2) Next upcoming appointment:
+   Add getNextUpcomingAppointment(patientId: string):
+     - const fromLocal = dayjs().tz(BUSINESS_TZ).format("YYYY-MM-DD")
+     - GET /individual_appointments?patient_id=<id>&from=<fromLocal>&per_page=50
+     - From the list, select the first with starts_at >= now(BUSINESS_TZ) and status not cancelled.
+     - Return { id, practitioner_id, appointment_type_id, starts_at } or null.
+
+3) Reschedule routes in /api/voice/handle:
+   - reschedule-lookup:
+       * Resolve caller phone from req.body.From.
+       * patient = await findPatientByPhone(phone)
+       * If !patient => saySafe("I couldn't find a booking under this number. Let's make a new booking."); redirect to book-day.
+       * appt = await getNextUpcomingAppointment(patient.id)
+       * If !appt => saySafe("You don't have any upcoming appointments under this number."); redirect to book-day.
+       * Save in session/memory by callSid: { mode: 'reschedule', apptId, practitionerId, appointmentTypeId }
+       * saySafe("Okay, let's find a new time for your appointment."); redirect to reschedule-offer.
+
+   - reschedule-offer:
+       * Use same availability code as book-offer, but force practitionerId + appointmentTypeId from session.
+       * Use weekday resolution if caller said "Monday/Tuesday…" previously; otherwise default to next available day.
+       * Offer 2 options and store offeredOptions keyed by callSid.
+
+   - reschedule-choose:
+       * Resolve selection → isoUtc
+       * Revalidate slot availability for that day (same code as book revalidation).
+       * If available:
+           - Try PUT /individual_appointments/{apptId} with { starts_at: isoUtc }. If 405/unsupported, fallback:
+             - DELETE /individual_appointments/{apptId}
+             - POST /individual_appointments with { patient_id, practitioner_id, appointment_type_id, starts_at: isoUtc }
+           - On success: saySafe("You're rescheduled for {label}. Goodbye.") and end.
+         Else:
+           - saySafe("Sorry, that time just went. Let me try a different time."); redirect to reschedule-offer.
+
+4) Ensure error handling:
+   - All new routes must be in try/catch with TwiML responses, using saySafe.
+   - Log key steps: [RESCH][LOOKUP], [RESCH][OFFER], [RESCH][CHOOSE], plus payloads needed to debug.
+
+5) Keep booking flow unchanged except where re-used helpers are extracted.
+   Do not change webhook URLs or env names.
+
+Return a summary of files changed, new functions added, and exact routes registered.
