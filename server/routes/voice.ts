@@ -1,8 +1,8 @@
 import { Express, Request, Response } from "express";
 import twilio from "twilio";
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
 import { storage } from "../storage";
 import { getAvailability, findPatientByPhoneRobust, getNextUpcomingAppointment, rescheduleAppointment, createAppointmentForPatient } from "../services/cliniko";
 import { saySafe } from "../utils/voice-constants";
