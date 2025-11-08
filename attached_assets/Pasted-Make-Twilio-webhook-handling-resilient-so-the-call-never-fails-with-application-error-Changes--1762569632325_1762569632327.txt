@@ -1,0 +1,59 @@
+Make Twilio webhook handling resilient so the call never fails with "application error".
+
+Changes:
+
+1) Express trust proxy:
+   In the server bootstrap (where the Express app is created), add:
+     app.set("trust proxy", 1);
+
+2) Raw body for Twilio signature validation:
+   Create a rawBody middleware before any body parsers:
+     import bodyParser from "body-parser";
+     app.use(bodyParser.raw({ type: "*/*" })); // FIRST for signature validation
+   Then, AFTER our Twilio signature middleware runs, re-enable the regular parsers:
+     app.use(express.urlencoded({ extended: false }));
+     app.use(express.json());
+   Ensure the validateTwilioSignature middleware reads req.headers["x-twilio-signature"] and the raw body buffer.
+
+3) Harden validateTwilioSignature:
+   - Compute the exact full URL as Twilio saw it:
+       const fullUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+     (Make sure trust proxy is on so protocol/host are correct behind Replit.)
+   - Use twilio.validateRequest(TWILIO_AUTH_TOKEN, signature, fullUrl, rawBody) to check.
+   - If validation FAILS:
+       - If process.env.APP_MODE === "TEST" (default), LOG a warning and CONTINUE to the route (do NOT throw/403). Set req.twilioValid = false.
+       - If APP_MODE === "PROD", respond with a valid TwiML apology instead of JSON/403:
+           const vr = new twilio.twiml.VoiceResponse();
+           vr.say("Sorry, there was a problem. Please try again.");
+           return res.type("text/xml").send(vr.toString());
+   - If validation passes, set req.twilioValid = true and next().
+
+   Also log:
+     console.log("[SIGCHK]", { fullUrl, valid: req.twilioValid });
+
+4) Wrap /api/voice/handle in a fail-safe:
+   - Keep the existing try/catch, but ensure that on ANY error we respond with valid TwiML (not JSON), e.g.:
+       const fail = new twilio.twiml.VoiceResponse();
+       fail.say("Sorry, there was a problem. Please try again.");
+       return res.type("text/xml").send(fail.toString());
+   - Log the exact TwiML sent:
+       console.log("[VOICE][TwiML OUT]", xml);
+
+5) Ensure PUBLIC_BASE_URL is not used inside signature logic. Signature must use the actual request URL (req.protocol + host + originalUrl), not an env.
+
+6) Deployment secrets:
+   Verify that in the Deployment/Secrets we have:
+     TWILIO_ACCOUNT_SID
+     TWILIO_AUTH_TOKEN
+     DATABASE_URL
+     PUBLIC_BASE_URL = https://<the deployment domain shown by Replit>
+     APP_MODE = TEST
+   (We use APP_MODE only to allow signature bypass in TEST.)
+
+7) Quick diagnostics:
+   - In the /api/voice/incoming response, log the action URL printed in the Gather so we can compare:
+       console.log("[ACTION URL]", actionUrl);
+   - At the top of /api/voice/handle, before doing anything, log:
+       console.log("[VOICE][HANDLE HIT]", { route: req.query.route, callSid: req.query.callSid || req.body?.CallSid });
+
+Return the list of files changed and the added lines.
