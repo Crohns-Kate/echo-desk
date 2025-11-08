@@ -377,15 +377,61 @@ export async function cancelAppointment(appointmentId: string): Promise<void> {
   }
 }
 
-export async function rescheduleAppointment(appointmentId: string, newStartsAt: string): Promise<ClinikoAppointment> {
+export async function rescheduleAppointment(appointmentId: string, newStartsAt: string, patientId?: string, practitionerId?: string, appointmentTypeId?: string): Promise<ClinikoAppointment> {
   try {
+    // Try PATCH first (standard reschedule endpoint)
+    console.log(`[Cliniko] Attempting PATCH reschedule for ${appointmentId} to ${newStartsAt}`);
     const appointment = await clinikoPatch<ClinikoAppointment>(
       `/individual_appointments/${appointmentId}`,
       { starts_at: newStartsAt }
     );
+    console.log(`[Cliniko] PATCH reschedule successful`);
     return appointment;
-  } catch (e) {
-    console.error('[Cliniko] rescheduleAppointment error', e);
+  } catch (e: any) {
+    const status = e.message?.match(/(\d{3})/)?.[1];
+    console.error(`[Cliniko] rescheduleAppointment PATCH error (status: ${status || 'unknown'}):`, e);
+    
+    // If PATCH fails with 405 or similar, try DELETE + POST fallback
+    if (status === '405' || status === '404' || status === '501') {
+      console.log(`[Cliniko] PATCH unsupported (${status}), trying DELETE + POST fallback`);
+      
+      try {
+        // First get the original appointment details if we don't have them
+        if (!patientId || !practitionerId || !appointmentTypeId) {
+          const originalAppt = await clinikoGet<ClinikoAppointment>(`/individual_appointments/${appointmentId}`);
+          patientId = patientId || originalAppt.patient_id;
+          practitionerId = practitionerId || originalAppt.practitioner_id;
+          appointmentTypeId = appointmentTypeId || originalAppt.appointment_type_id;
+        }
+        
+        // Cancel the old appointment
+        console.log(`[Cliniko] Cancelling original appointment ${appointmentId}`);
+        await clinikoPatch(`/individual_appointments/${appointmentId}/cancel`, {});
+        
+        // Create new appointment at the new time
+        console.log(`[Cliniko] Creating new appointment at ${newStartsAt}`);
+        const businessId = env.CLINIKO_BUSINESS_ID;
+        const duration = 30; // Default duration, could be parameterized
+        const endsAt = dayjs(newStartsAt).add(duration, 'minute');
+        
+        const newAppt = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
+          business_id: businessId,
+          patient_id: patientId,
+          practitioner_id: practitionerId,
+          appointment_type_id: appointmentTypeId,
+          starts_at: newStartsAt,
+          ends_at: endsAt.toISOString()
+        });
+        
+        console.log(`[Cliniko] DELETE + POST fallback successful: ${newAppt.id}`);
+        return newAppt;
+      } catch (fallbackErr) {
+        console.error('[Cliniko] DELETE + POST fallback also failed:', fallbackErr);
+        throw fallbackErr;
+      }
+    }
+    
+    // For other errors, just throw
     throw e;
   }
 }

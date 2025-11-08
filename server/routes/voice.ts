@@ -12,7 +12,9 @@ import {
   getPatientAppointments,
   cancelAppointment,
   rescheduleAppointment,
-  sanitizeEmail
+  sanitizeEmail,
+  findPatientByPhoneRobust,
+  getNextUpcomingAppointment
 } from '../services/cliniko';
 import { 
   sendAppointmentConfirmation,
@@ -915,12 +917,20 @@ export function registerVoice(app: Express) {
         
         let apt;
         if (route === 'reschedule-choose' && aptId) {
-          console.log(`[BOOK] Rescheduling aptId=${aptId} → ${chosenSlotISO}`);
+          console.log(`[RESCH][CHOOSE] Rescheduling aptId=${aptId} → ${chosenSlotISO}`);
           
-          // Reschedule using exact chosen slot ISO
-          apt = await rescheduleAppointment(aptId, chosenSlotISO);
+          // Get reschedule context from conversation
+          const rescheduleContext = context as any;
+          const patientId = rescheduleContext?.patientId;
+          const practitionerId = rescheduleContext?.practitionerId;
+          const appointmentTypeId = rescheduleContext?.appointmentTypeId;
           
-          console.log(`[BOOK] Rescheduled successfully: ${apt?.id}`);
+          console.log(`[RESCH][CHOOSE] Context:`, { patientId, practitionerId, appointmentTypeId });
+          
+          // Reschedule using exact chosen slot ISO with fallback support
+          apt = await rescheduleAppointment(aptId, chosenSlotISO, patientId, practitionerId, appointmentTypeId);
+          
+          console.log(`[RESCH][CHOOSE] Rescheduled successfully: ${apt?.id}`);
           
           // Update appointment status in our database
           const existing = await storage.findUpcomingByPhone(from);
@@ -932,7 +942,7 @@ export function registerVoice(app: Express) {
           if (apt?.id) {
             await storage.saveAppointment({
               phone: from,
-              patientId: phoneData?.patientId || null,
+              patientId: phoneData?.patientId || patientId || null,
               clinikoAppointmentId: apt.id,
               startsAt: new Date(chosenSlotISO),
               status: 'scheduled'
@@ -1072,53 +1082,58 @@ export function registerVoice(app: Express) {
         });
       }
 
-      // Lookup appointment for rescheduling (use our database first)
+      // Lookup appointment for rescheduling (robust patient lookup + next upcoming)
       if (route === 'reschedule-lookup') {
-        // First try to find appointment in our database
-        const dbApt = await storage.findUpcomingByPhone(from);
+        console.log('[RESCH][LOOKUP] Starting patient lookup for', from);
         
-        if (dbApt) {
-          const aptDate = formatAppointmentTimeAU(dbApt.startsAt.toISOString());
+        // Use robust patient lookup with q= fallback
+        const patient = await findPatientByPhoneRobust(from);
+        
+        if (!patient) {
+          console.log('[RESCH][LOOKUP] Patient not found');
+          return twiml(res, (vr) => {
+            saySafe(vr, 'I could not find a booking under this number. Let\'s make a new booking instead.');
+            vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
+          });
+        }
+        
+        console.log('[RESCH][LOOKUP] Found patient', patient.id);
+        
+        // Get next upcoming appointment
+        const appt = await getNextUpcomingAppointment(patient.id);
+        
+        if (!appt) {
+          console.log('[RESCH][LOOKUP] No upcoming appointments');
+          return twiml(res, (vr) => {
+            saySafe(vr, 'You don\'t have any upcoming appointments under this number. Let\'s make a new booking instead.');
+            vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
+          });
+        }
+        
+        console.log('[RESCH][LOOKUP] Found appointment', { id: appt.id, starts_at: appt.starts_at });
+        
+        // Store reschedule context in conversation
+        const call = callSid ? await storage.getCallByCallSid(callSid) : null;
+        if (call?.conversationId) {
+          const conversation = await storage.getConversation(call.conversationId);
+          const context = (conversation?.context as any) || {};
           
-          return twiml(res, (vr) => {
-            const g = vr.gather({
-              input: ['speech'],
-              language: 'en-AU',
-              timeout: 5,
-              speechTimeout: 'auto',
-              actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${dbApt.clinikoAppointmentId}`),
-              method: 'POST'
-            });
-            say(g, `I found your appointment on ${aptDate}. Would you like to reschedule it`);
-            pause(g, 1);
+          await storage.updateConversation(call.conversationId, {
+            context: {
+              ...context,
+              mode: 'reschedule',
+              apptId: appt.id,
+              practitionerId: appt.practitioner_id,
+              appointmentTypeId: appt.appointment_type_id,
+              patientId: patient.id
+            }
           });
         }
         
-        // Fallback to Cliniko API if not in our database
-        const clinikoApts = await getPatientAppointments(from);
-        const apt = clinikoApts[0];
-        
-        if (!apt) {
-          return twiml(res, (vr) => {
-            say(vr, 'I could not find an upcoming booking under this number. Would you like to make a new appointment');
-          });
-        }
-        
-        const aptDate = formatAppointmentTimeAU(apt.starts_at);
-        
+        // Go directly to reschedule-day to pick new day
         return twiml(res, (vr) => {
-          const g = vr.gather({
-            input: ['speech'],
-            language: 'en-AU',
-            timeout: 5,
-            speechTimeout: 'auto',
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&aptId=${apt.id}`),
-            method: 'POST'
-          });
-          say(g, `I found your appointment on ${aptDate}. Would you like to reschedule it`);
-          pause(g, 1);
+          saySafe(vr, 'Okay let\'s find a new time for your appointment.');
+          vr.redirect({ method: 'POST' }, abs(`/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(callSid)}&aptId=${appt.id}`));
         });
       }
       
