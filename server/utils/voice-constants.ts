@@ -1,5 +1,15 @@
 export const VOICE_NAME = process.env.VOICE_NAME || "Polly.Olivia-Neural";
 export const FALLBACK_VOICE = "alice";
+export const BUSINESS_TZ = process.env.BUSINESS_TZ || "Australia/Brisbane";
+
+export function sanitizeForSay(text?: string): string {
+  if (!text) return "";
+  return String(text)
+    .replace(/[^\x20-\x7E]/g, " ")  // ASCII only
+    .replace(/[""'']/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 export function ttsClean(s: string | null | undefined) {
   if (!s) return "";
@@ -10,6 +20,17 @@ export function ttsClean(s: string | null | undefined) {
     .replace(/[?!,:;()]/g, "")      // keep it simple
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function saySafe(node: any, text?: string, voice?: string) {
+  const t = sanitizeForSay(text);
+  if (!t) return;
+  const primary = voice || VOICE_NAME;
+  try {
+    node.say({ voice: primary }, t);
+  } catch {
+    node.say({ voice: FALLBACK_VOICE }, t);
+  }
 }
 
 export function say(node: any, text: string) {

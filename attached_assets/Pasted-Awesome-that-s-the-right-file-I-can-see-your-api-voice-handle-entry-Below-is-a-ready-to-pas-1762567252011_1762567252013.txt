@@ -1,0 +1,314 @@
+Awesome — that’s the right file. I can see your `/api/voice/handle` entry. Below is a **ready-to-paste prompt for Replit AI** that (1) hardens this handler, (2) fixes the “option one / wrong day” bug by storing and re-using the **exact ISO** you offered, (3) adds safe `<Say>` so you never hit “Invalid text”, and (4) gives clean TwiML fallbacks.
+
+Paste this into Replit AI (Ask → paste → run). It will modify only what’s needed.
+
+---
+
+### Replit AI Prompt — “Fix voice handler: stable timezone + stored options + safe TwiML”
+
+**Context:** We’re editing the file that contains:
+
+```ts
+app.post('/api/voice/handle', validateTwilioSignature, async (req, res) => {
+  const vr = new twilio.twiml.VoiceResponse();
+  const route = (req.query.route as string) || 'start';
+  const speech = (p.SpeechResult || req.body?.SpeechResult || '').trim();
+  const callSid = p.CallSid || req.body?.CallSid || (req.query.callSid as string);
+  ...
+```
+
+**Goals:**
+
+1. Use a single clinic timezone everywhere: `BUSINESS_TZ = "Australia/Brisbane"` (defaultable via env).
+2. When we **offer** time options, store the **exact ISO UTC** we will book, keyed by `callSid` and `index`.
+3. On **choose**, map “option one/1” to that stored ISO (no recompute), **re-validate** same-day availability, then book; if conflict, offer the next two on the same BUSINESS_TZ date.
+4. Add a `saySafe` helper to prevent `<Say>` “Invalid text” errors.
+5. Always reply with valid TwiML even on errors; log the exact TwiML we send.
+6. Keep changes minimal; no destructive DB migrations; no URL changes.
+
+**Make these edits:**
+
+1. **Add a small voice utils module** (or inline at top of this file if easier):
+
+```ts
+// utils/voice.ts (or at top of the handler file)
+export const BUSINESS_TZ = process.env.BUSINESS_TZ || "Australia/Brisbane";
+
+export function sanitizeForSay(text?: string): string {
+  if (!text) return "";
+  return String(text)
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/[“”‘’]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function saySafe(node: any, text?: string, voice?: string) {
+  const t = sanitizeForSay(text);
+  if (!t) return;
+  const primary = process.env.TWIML_VOICE || "alice";
+  try {
+    node.say({ voice: voice || primary }, t);
+  } catch {
+    node.say({ voice: "alice" }, t);
+  }
+}
+```
+
+2. **Add a lightweight in-memory store for offered options** (top-level in the voice route file):
+
+```ts
+// Map<callSid, Array<{ isoUtc: string; practitionerId: string; appointmentTypeId: string; localLabel: string }>>
+const offeredOptions = new Map<string, Array<{ isoUtc: string; practitionerId: string; appointmentTypeId: string; localLabel: string }>>();
+```
+
+3. **Add a tiny timezone helper using dayjs** (install if not present):
+
+* If we don’t have dayjs yet, add:
+
+  * `npm i dayjs`
+  * `npm i --save dayjs-plugin-utc dayjs-plugin-timezone` (or use `dayjs/plugin/utc` and `dayjs/plugin/timezone` if already present)
+
+```ts
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import tz from "dayjs/plugin/timezone";
+dayjs.extend(utc);
+dayjs.extend(tz);
+
+function businessDayRange(isoUtcLike: string) {
+  const dLocal = dayjs(isoUtcLike).tz(BUSINESS_TZ);
+  const start = dLocal.startOf("day").tz(BUSINESS_TZ);
+  const end = dLocal.endOf("day").tz(BUSINESS_TZ);
+  return {
+    fromLocalISO: start.format("YYYY-MM-DD"),
+    toLocalISO: end.format("YYYY-MM-DD"),
+  };
+}
+
+function isMorningLocal(isoUtc: string) {
+  const h = dayjs(isoUtc).tz(BUSINESS_TZ).hour();
+  return h >= 9 && h < 12;
+}
+
+function labelForSpeech(isoUtc: string) {
+  const d = dayjs(isoUtc).tz(BUSINESS_TZ);
+  const hour = d.minute() === 0 ? d.format("h") : d.format("h:mm");
+  const ampm = d.format("a"); // am/pm
+  const dow = d.format("dddd"); // Sunday
+  const dayMonth = d.format("D MMMM"); // 9 November
+  return `${hour} ${ampm} ${dow} ${dayMonth}`;
+}
+```
+
+4. **Wrap the handler with safe TwiML and route switch. Replace your current handler with this version (keep your own Cliniko and booking calls inside the marked blocks):**
+
+```ts
+app.post('/api/voice/handle', validateTwilioSignature, async (req: Request, res: Response) => {
+  const tw = require('twilio');
+  const vr = new tw.twiml.VoiceResponse();
+
+  // Extract params safely
+  const p: any = (req as any).twilioParams || {};
+  const route = (req.query.route as string) || 'start';
+  const speechRaw = (p.SpeechResult || req.body?.SpeechResult || '').trim();
+  const digits = (p.Digits || req.body?.Digits || '').trim();
+  const from = p.From || req.body?.From;
+  const callSid = p.CallSid || req.body?.CallSid || (req.query.callSid as string);
+  const confidence = p.Confidence || req.body?.Confidence;
+
+  console.log('[VOICE][HANDLE IN]', {
+    route, callSid, speech: speechRaw, digits, confidence,
+    bodyKeys: Object.keys(req.body || {}), queryKeys: Object.keys(req.query || {})
+  });
+
+  // Small input normalizer for choosing options
+  const speech = speechRaw.toLowerCase();
+  const choice =
+    digits === '1' || /option\s*one|first|one\b/.test(speech) ? 1 :
+    digits === '2' || /option\s*two|second|two\b/.test(speech) ? 2 : 0;
+
+  // Helpers to send TwiML consistently
+  const send = () => {
+    const xml = vr.toString();
+    console.log('[VOICE][TwiML OUT]', xml);
+    res.type('text/xml').send(xml);
+  };
+  const fail = (msg = 'Sorry, there was a problem. Please try again.') => {
+    saySafe(vr, msg);
+    console.log('[VOICE][ERROR FALLBACK]', msg);
+    return send();
+  };
+
+  try {
+    switch (route) {
+      case 'start': {
+        // You likely set this earlier; keep as-is or greet here.
+        saySafe(vr, 'Welcome. Please hold while I find morning times.');
+        // Redirect to your “offer” stage (where you fetch slots and speak two options)
+        vr.redirect({ method: 'POST' }, `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-offer&callSid=${encodeURIComponent(callSid)}`);
+        return send();
+      }
+
+      case 'book-offer': {
+        // TODO: Replace this block with your actual Cliniko fetch
+        // 1) Fetch available_times for the BUSINESS_TZ "target day" (today or chosen date).
+        // 2) Filter morning slots by isMorningLocal(slot.isoUtc).
+        // 3) Pick top 2; build local labels; persist in offeredOptions.
+
+        // EXAMPLE (replace with your real slots array):
+        // slots: Array<{ isoUtc: string, practitionerId: string, appointmentTypeId: string }>
+        const slots = await getMorningSlotsFromClinikoSomehow(); // <--- your real function
+
+        const options = slots.slice(0, 2).map(s => ({
+          isoUtc: s.isoUtc,
+          practitionerId: s.practitionerId,
+          appointmentTypeId: s.appointmentTypeId,
+          localLabel: labelForSpeech(s.isoUtc)
+        }));
+
+        offeredOptions.set(callSid, options);
+
+        const g = vr.gather({
+          input: 'speech dtmf',
+          language: 'en-AU',
+          timeout: 5,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          action: `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`,
+          method: 'POST',
+        });
+
+        if (options.length === 0) {
+          saySafe(g, 'Sorry, there are no morning times left today. Please say another day, or hang up to call later.');
+        } else if (options.length === 1) {
+          saySafe(g, `I have one option. Option one ${options[0].localLabel}. Press 1 or say your choice.`);
+        } else {
+          saySafe(g, `I have two options. Option one ${options[0].localLabel}. Or option two ${options[1].localLabel}. Press 1 or 2 or say your choice.`);
+        }
+
+        return send();
+      }
+
+      case 'book-choose': {
+        const opts = offeredOptions.get(callSid) || [];
+        if (!opts.length) {
+          // No stored options → re-offer
+          saySafe(vr, 'Let me refresh times.');
+          vr.redirect({ method: 'POST' }, `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-offer&callSid=${encodeURIComponent(callSid)}`);
+          return send();
+        }
+
+        const index = choice === 1 ? 0 : choice === 2 ? 1 : -1;
+        if (index < 0) {
+          // Didn’t understand → repeat offer
+          saySafe(vr, 'Sorry, I did not catch that. Please say one or two.');
+          vr.redirect({ method: 'POST' }, `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-offer&callSid=${encodeURIComponent(callSid)}`);
+          return send();
+        }
+
+        const selected = opts[index]; // { isoUtc, practitionerId, appointmentTypeId, localLabel }
+
+        // Re-validate SAME BUSINESS_TZ day and exact ISO equality before booking
+        const { fromLocalISO, toLocalISO } = businessDayRange(selected.isoUtc);
+        const daySlots = await getClinikoAvailableTimesForDay(selected.practitionerId, selected.appointmentTypeId, fromLocalISO, toLocalISO); // your real function
+        const availableIsoSet = new Set(daySlots.map(s => s.isoUtc));
+        const stillOpen = availableIsoSet.has(selected.isoUtc);
+
+        if (!stillOpen) {
+          // Find next two nearest on SAME day
+          const sorted = daySlots
+            .map(s => ({ ...s, t: dayjs(s.isoUtc).valueOf() }))
+            .sort((a, b) => Math.abs(a.t - dayjs(selected.isoUtc).valueOf()) - Math.abs(b.t - dayjs(selected.isoUtc).valueOf()));
+          const alts = sorted.filter(s => s.isoUtc !== selected.isoUtc).slice(0, 2).map(s => ({
+            isoUtc: s.isoUtc,
+            practitionerId: s.practitionerId,
+            appointmentTypeId: s.appointmentTypeId,
+            localLabel: labelForSpeech(s.isoUtc),
+          }));
+          offeredOptions.set(callSid, alts);
+
+          const g = vr.gather({
+            input: 'speech dtmf',
+            language: 'en-AU',
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`,
+            method: 'POST',
+          });
+          if (alts.length === 0) {
+            saySafe(g, 'That time was just taken and there are no other times today. Please call again later.');
+          } else if (alts.length === 1) {
+            saySafe(g, `That time was just taken. The closest time is option one ${alts[0].localLabel}. Press 1 or say your choice.`);
+          } else {
+            saySafe(g, `That time was just taken. The closest times are option one ${alts[0].localLabel}, or option two ${alts[1].localLabel}. Press 1 or 2 or say your choice.`);
+          }
+          return send();
+        }
+
+        // Proceed to book the exact ISO we offered (no recompute)
+        try {
+          const appt = await bookClinikoAppointment(selected.practitionerId, selected.appointmentTypeId, selected.isoUtc); // your real function
+          saySafe(vr, `Great. You are booked for ${selected.localLabel}. A confirmation will be sent shortly. Goodbye.`);
+          // optional: clear stored options
+          offeredOptions.delete(callSid);
+          return send();
+        } catch (e: any) {
+          console.error('[BOOK][ERROR]', e?.response?.data || e);
+          // Offer nearest two again on same day
+          const { fromLocalISO, toLocalISO } = businessDayRange(selected.isoUtc);
+          const daySlots2 = await getClinikoAvailableTimesForDay(selected.practitionerId, selected.appointmentTypeId, fromLocalISO, toLocalISO);
+          const alts = daySlots2
+            .filter(s => s.isoUtc !== selected.isoUtc)
+            .slice(0, 2)
+            .map(s => ({ isoUtc: s.isoUtc, practitionerId: s.practitionerId, appointmentTypeId: s.appointmentTypeId, localLabel: labelForSpeech(s.isoUtc) }));
+          offeredOptions.set(callSid, alts);
+          const g = vr.gather({
+            input: 'speech dtmf',
+            language: 'en-AU',
+            timeout: 5,
+            speechTimeout: 'auto',
+            actionOnEmptyResult: true,
+            action: `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`,
+            method: 'POST',
+          });
+          if (alts.length === 0) {
+            saySafe(g, 'That time was unavailable and there are no other times today. Please call again later.');
+          } else if (alts.length === 1) {
+            saySafe(g, `That time was unavailable. The closest time is option one ${alts[0].localLabel}. Press 1 or say your choice.`);
+          } else {
+            saySafe(g, `That time was unavailable. The closest times are option one ${alts[0].localLabel}, or option two ${alts[1].localLabel}. Press 1 or 2 or say your choice.`);
+          }
+          return send();
+        }
+      }
+
+      default: {
+        // Unknown route → go back to start/offer
+        vr.redirect({ method: 'POST' }, `${process.env.PUBLIC_BASE_URL}/api/voice/handle?route=book-offer&callSid=${encodeURIComponent(callSid)}`);
+        return send();
+      }
+    }
+  } catch (err: any) {
+    console.error('[VOICE][HANDLE ERROR]', err?.stack || err);
+    return fail();
+  }
+});
+```
+
+5. **Ensure your “offer” stage uses BUSINESS_TZ day windows** for availability and filters **morning** via local time. Do not compute dates with plain `new Date()`; always convert to BUSINESS_TZ for day boundaries. (If you already have a service file for availability, apply the same helpers there.)
+
+6. **Logging:** Keep `console.log('[VOICE][TwiML OUT]', xml)` so Twilio Request Inspector and your logs always show exactly what we sent back.
+
+**Do not** change webhook URLs, env names, or add complicated guards. Keep everything additive and minimal.
+
+---
+
+### What you do next
+
+* Paste the prompt above into Replit AI and apply changes.
+* Call your number, take option 1 or 2.
+* You should hear correct local labels (e.g., “9 a.m. Sunday 9 November”), and booking should **not** claim “taken” unless it truly is. If it is taken, you’ll get two nearest alternatives **on the same day**.
+
+If you want, paste your availability/Cliniko function names (e.g., `getMorningSlotsFromClinikoSomehow`, `getClinikoAvailableTimesForDay`, `bookClinikoAppointment`) and I’ll tailor the prompt to your exact function signatures so Replit AI wires them perfectly.

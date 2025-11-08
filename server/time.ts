@@ -292,3 +292,50 @@ function numberToWords(n: number): string {
   }
   return n.toString(); // Fallback for out of range
 }
+
+/**
+ * Dayjs-based timezone helpers for voice handler
+ * These use dayjs for more reliable timezone conversions
+ */
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+/**
+ * Get business day range (start and end) in business timezone
+ * Returns local ISO date strings (YYYY-MM-DD) for the start and end of the day
+ */
+export function businessDayRange(isoUtcLike: string, tz = AUST_TZ) {
+  const dLocal = dayjs(isoUtcLike).tz(tz);
+  const start = dLocal.startOf("day");
+  const end = dLocal.endOf("day");
+  return {
+    fromLocalISO: start.format("YYYY-MM-DD"),
+    toLocalISO: end.format("YYYY-MM-DD"),
+  };
+}
+
+/**
+ * Check if a UTC time is in the morning (9am-12pm) in business timezone
+ */
+export function isMorningLocal(isoUtc: string, tz = AUST_TZ): boolean {
+  const h = dayjs(isoUtc).tz(tz).hour();
+  return h >= 9 && h < 12;
+}
+
+/**
+ * Format time for natural speech in voice calls
+ * Example: "9 a.m. Sunday 10 November"
+ * Designed for clean, natural pronunciation by Polly TTS
+ */
+export function labelForSpeech(isoUtc: string, tz = AUST_TZ): string {
+  const d = dayjs(isoUtc).tz(tz);
+  const hour = d.minute() === 0 ? d.format("h") : d.format("h:mm");
+  const ampm = d.format("a"); // am/pm
+  const dow = d.format("dddd"); // Sunday
+  const dayMonth = d.format("D MMMM"); // 10 November
+  return `${hour} ${ampm} ${dow} ${dayMonth}`;
+}
