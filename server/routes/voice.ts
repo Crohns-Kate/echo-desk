@@ -4,118 +4,124 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
 import { storage } from "../storage";
-import {
-  getAvailability,
-  findPatientByPhoneRobust,
-  getNextUpcomingAppointment,
-  rescheduleAppointment,
-  createAppointmentForPatient,
-} from "../services/cliniko";
+import { getAvailability, createAppointmentForPatient } from "../services/cliniko";
 import { saySafe } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 
-// --- Setup ---
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault("Australia/Brisbane");
 
 export function registerVoice(app: Express) {
-  //
-  // ─────────────── INCOMING CALL ───────────────
-  //
-  app.post(
-    "/api/voice/incoming",
-    twilio.webhook({ validate: true, protocol: "https" }),
-    async (req: Request, res: Response) => {
-      try {
-        const vr = new twilio.twiml.VoiceResponse();
-        vr.gather({
-          input: "speech",
+  app.post("/api/voice/handle", async (req: Request, res: Response) => {
+    const vr = new twilio.twiml.VoiceResponse();
+
+    try {
+      const callSid = (req.query.callSid as string) || (req.body?.CallSid as string) || "";
+      const route = (req.query.route as string) || "start";
+      const speechRaw = ((req.body?.SpeechResult as string) || "").trim().toLowerCase();
+      const digits = (req.body?.Digits as string) || "";
+      const from = (req.body?.From as string) || "";
+
+      console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
+
+      // ───────────────────────────────────────────────────────────
+      // 1) START
+      if (route === "start") {
+        const g = vr.gather({
+          input: ["speech"],
           language: "en-AU",
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=start&callSid=${req.body.CallSid}`),
-          method: "POST",
-        }).say(
-          { voice: "Polly.Olivia-Neural" },
-          "Hello and welcome to your clinic. How can I help you today?"
-        );
-        vr.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${req.body.CallSid}`));
-        res.type("text/xml").send(vr.toString());
-      } catch (err) {
-        console.error("[VOICE][ERROR incoming]", err);
-        const vr = new twilio.twiml.VoiceResponse();
-        vr.say("Sorry, there was a problem starting the call. Please try again later.");
-        res.type("text/xml").send(vr.toString());
+          action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`),
+        });
+        g.say({ voice: "Polly.Olivia-Neural" }, "System ready. Would you like to book an appointment?");
+        return res.type("text/xml").send(vr.toString());
       }
-    }
-  );
 
-  //
-  // ─────────────── HANDLE CALL ───────────────
-  //
-  app.post(
-    "/api/voice/handle",
-    twilio.webhook({ validate: true, protocol: "https" }),
-    async (req: Request, res: Response) => {
-      const vr = new twilio.twiml.VoiceResponse();
-      try {
-        const callSid = req.query.callSid || req.body.CallSid;
-        const route = req.query.route || "start";
-        const speechRaw = (req.body?.SpeechResult || req.query?.SpeechResult || "")
-          .trim()
-          .toLowerCase();
-        const digits = req.body?.Digits || "";
-        const from = req.body?.From || "";
-        const to = req.body?.To || "";
-
-        console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from, to });
-
-        // --- Press 9 → Reschedule shortcut ---
-        if (route === "start" && (digits || "").trim() === "9") {
-          const redirectUrl = abs(
-            `/api/voice/handle?route=reschedule-lookup&callSid=${encodeURIComponent(String(callSid || ""))}`
-          );
-          const vr9 = new twilio.twiml.VoiceResponse();
-          vr9.redirect({ method: "POST" }, redirectUrl);
-          return res.type("text/xml").send(vr9.toString());
+      // ───────────────────────────────────────────────────────────
+      // 2) BOOK-DAY
+      if (route === "book-day") {
+        if (!(speechRaw.includes("yes") || speechRaw.includes("book"))) {
+          saySafe(vr, "Okay, goodbye.");
+          return res.type("text/xml").send(vr.toString());
         }
 
-        const tenant = await storage.getTenant("default");
-        if (!tenant) throw new Error("No tenant configured");
-
-        // Temporary placeholder to confirm system works
-        vr.say({ voice: "Polly.Olivia-Neural" }, "System ready. You can now book or reschedule.");
-        res.type("text/xml").send(vr.toString());
-      } catch (err) {
-        console.error("[VOICE][ERROR handle]", err);
-        vr.say("Sorry, something went wrong. Please try again later.");
-        res.type("text/xml").send(vr.toString());
-      }
-    }
-  );
-
-  //
-  // ─────────────── RECORDING CALLBACK ───────────────
-  //
-  app.post(
-    "/api/voice/recording",
-    twilio.webhook({ validate: true, protocol: "https" }),
-    async (req: Request, res: Response) => {
-      try {
-        console.log("[RECORDING]", {
-          CallSid: req.body.CallSid,
-          RecordingSid: req.body.RecordingSid,
-          RecordingUrl: req.body.RecordingUrl,
-          RecordingDuration: req.body.RecordingDuration,
+        const g = vr.gather({
+          input: ["speech"],
+          language: "en-AU",
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=book-part&callSid=${encodeURIComponent(callSid)}`),
         });
-        res.sendStatus(204);
-      } catch (err) {
-        console.error("[VOICE][ERROR recording]", err);
-        res.sendStatus(204);
+        g.say({ voice: "Polly.Olivia-Neural" }, "Which day suits you best?");
+        return res.type("text/xml").send(vr.toString());
       }
+
+      // ───────────────────────────────────────────────────────────
+      // 3) BOOK-PART  (offer 1–2 slots)
+      if (route === "book-part") {
+        const slots = (await getAvailability()) || [];
+        const available = slots.slice(0, 2);
+
+        if (available.length === 0) {
+          saySafe(vr, "Sorry, there are no times available in the next few days.");
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const opt1 = dayjs(available[0].startIso).tz().format("h:mm A dddd D MMMM");
+        const opt2 = available[1] ? dayjs(available[1].startIso).tz().format("h:mm A dddd D MMMM") : "";
+
+        const g = vr.gather({
+          input: ["speech", "dtmf"],
+          language: "en-AU",
+          timeout: 5,
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`),
+        });
+
+        g.say(
+          { voice: "Polly.Olivia-Neural" },
+          available[1]
+            ? `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`
+            : `I have one option available: ${opt1}. Press 1 or say yes to book it.`
+        );
+
+        await storage.set(`call:${callSid}:slots`, available);
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // ───────────────────────────────────────────────────────────
+      // 4) BOOK-CHOOSE (confirm and create)
+      if (route === "book-choose") {
+        const slots: Array<{ startIso: string }> = (await storage.get(`call:${callSid}:slots`)) || [];
+        const choiceIdx = digits === "2" || speechRaw.includes("two") ? 1 : 0;
+        const slot = slots[choiceIdx];
+
+        if (!slot) {
+          saySafe(vr, "Sorry, that time is no longer available. Let's start again.");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        await createAppointmentForPatient(from, slot.startIso);
+        const spokenTime = dayjs(slot.startIso).tz().format("h:mm A dddd D MMMM");
+        saySafe(vr, `All set. Your appointment is confirmed for ${spokenTime}. Goodbye.`);
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // ───────────────────────────────────────────────────────────
+      // Fallback
+      saySafe(vr, "Sorry, I didn't understand that. Let's start again.");
+      vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
+      return res.type("text/xml").send(vr.toString());
+    } catch (err: any) {
+      console.error("[VOICE][ERROR]", err?.stack || err);
+      const fallback = new twilio.twiml.VoiceResponse();
+      saySafe(fallback, "Sorry, an error occurred. Please try again later.");
+      return res.type("text/xml").send(fallback.toString());
     }
-  );
+  });
 }
