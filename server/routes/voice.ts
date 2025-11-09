@@ -13,9 +13,8 @@ dayjs.extend(timezone);
 dayjs.tz.setDefault("Australia/Brisbane");
 
 export function registerVoice(app: Express) {
-  // ───────────────────────────────────────────────────────────
-  // Twilio hits this first. It just collects the first utterance
-  // and forwards into /handle?route=start
+  // ───────────────────────────────────────────────
+  // Incoming webhook from Twilio — start of every call
   app.post("/api/voice/incoming", (req: Request, res: Response) => {
     const callSid =
       (req.body?.CallSid as string) ||
@@ -39,13 +38,12 @@ export function registerVoice(app: Express) {
     g.say({ voice: "Polly.Olivia-Neural" }, "Hello and welcome to your clinic. How can I help you today?");
     g.pause({ length: 1 });
 
-    // If nothing said, push to timeout handler
     vr.redirect({ method: "POST" }, timeoutUrl);
 
     return res.type("text/xml").send(vr.toString());
   });
 
-  // ───────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────
   // Main state machine
   app.post("/api/voice/handle", async (req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
@@ -59,7 +57,7 @@ export function registerVoice(app: Express) {
 
       console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
 
-      // ───────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────
       if (route === "timeout") {
         const g = vr.gather({
           input: ["speech"],
@@ -74,10 +72,9 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────
       // 1) START
       if (route === "start") {
-        // (for now we only do booking; reschedule can be added later)
         const g = vr.gather({
           input: ["speech"],
           language: "en-AU",
@@ -90,7 +87,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────
       // 2) BOOK-DAY
       if (route === "book-day") {
         if (!(speechRaw.includes("yes") || speechRaw.includes("book"))) {
@@ -110,19 +107,32 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────
       // 3) BOOK-PART  (offer 1–2 slots)
       if (route === "book-part") {
-        const slots = (await getAvailability()) || [];
-        const available = slots.slice(0, 2);
+        const fromDate = dayjs().tz().format("YYYY-MM-DD");
+        const toDate = dayjs().tz().add(7, "day").format("YYYY-MM-DD");
 
+        let slots: Array<{ startIso?: string; start?: string }> = [];
+        try {
+          slots = (await getAvailability(fromDate, toDate, "any")) || [];
+        } catch (e) {
+          console.error("[BOOK-PART][getAvailability ERROR]", e);
+          saySafe(vr, "Sorry, I couldn’t load available times. Please try again later.");
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const available = slots.slice(0, 2);
         if (available.length === 0) {
           saySafe(vr, "Sorry, there are no times available in the next few days.");
           return res.type("text/xml").send(vr.toString());
         }
 
-        const opt1 = dayjs(available[0].startIso).tz().format("h:mm A dddd D MMMM");
-        const opt2 = available[1] ? dayjs(available[1].startIso).tz().format("h:mm A dddd D MMMM") : "";
+        const s1 = available[0].startIso || available[0].start!;
+        const s2 = available[1]?.startIso || available[1]?.start;
+
+        const opt1 = dayjs(s1).tz().format("h:mm A dddd D MMMM");
+        const opt2 = s2 ? dayjs(s2).tz().format("h:mm A dddd D MMMM") : "";
 
         const g = vr.gather({
           input: ["speech", "dtmf"],
@@ -134,7 +144,7 @@ export function registerVoice(app: Express) {
 
         g.say(
           { voice: "Polly.Olivia-Neural" },
-          available[1]
+          s2
             ? `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`
             : `I have one option available: ${opt1}. Press 1 or say yes to book it.`
         );
@@ -143,7 +153,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────
       // 4) BOOK-CHOOSE (confirm and create)
       if (route === "book-choose") {
         const slots: Array<{ startIso: string }> = (await storage.get(`call:${callSid}:slots`)) || [];
@@ -162,8 +172,8 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────
-      // Fallback
+      // ───────────────────────────────────────────────
+      // Default fallback
       saySafe(vr, "Sorry, I didn't understand that. Let's start again.");
       vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
       return res.type("text/xml").send(vr.toString());
