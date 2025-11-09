@@ -13,6 +13,40 @@ dayjs.extend(timezone);
 dayjs.tz.setDefault("Australia/Brisbane");
 
 export function registerVoice(app: Express) {
+  // ───────────────────────────────────────────────────────────
+  // Twilio hits this first. It just collects the first utterance
+  // and forwards into /handle?route=start
+  app.post("/api/voice/incoming", (req: Request, res: Response) => {
+    const callSid =
+      (req.body?.CallSid as string) ||
+      (req.query?.callSid as string) ||
+      "";
+
+    const vr = new twilio.twiml.VoiceResponse();
+    const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
+    const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
+
+    const g = vr.gather({
+      input: ["speech"],
+      language: "en-AU",
+      timeout: 5,
+      speechTimeout: "auto",
+      actionOnEmptyResult: true,
+      action: handleUrl,
+      method: "POST",
+    });
+
+    g.say({ voice: "Polly.Olivia-Neural" }, "Hello and welcome to your clinic. How can I help you today?");
+    g.pause({ length: 1 });
+
+    // If nothing said, push to timeout handler
+    vr.redirect({ method: "POST" }, timeoutUrl);
+
+    return res.type("text/xml").send(vr.toString());
+  });
+
+  // ───────────────────────────────────────────────────────────
+  // Main state machine
   app.post("/api/voice/handle", async (req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
 
@@ -25,9 +59,25 @@ export function registerVoice(app: Express) {
 
       console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
 
-      // ───────────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────────────
+      if (route === "timeout") {
+        const g = vr.gather({
+          input: ["speech"],
+          language: "en-AU",
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        g.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I didn’t catch that. Please say book, reschedule, or cancel.");
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // ───────────────────────────────────────────────────────
       // 1) START
       if (route === "start") {
+        // (for now we only do booking; reschedule can be added later)
         const g = vr.gather({
           input: ["speech"],
           language: "en-AU",
@@ -40,7 +90,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────────────
       // 2) BOOK-DAY
       if (route === "book-day") {
         if (!(speechRaw.includes("yes") || speechRaw.includes("book"))) {
@@ -60,7 +110,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────────────
       // 3) BOOK-PART  (offer 1–2 slots)
       if (route === "book-part") {
         const slots = (await getAvailability()) || [];
@@ -93,7 +143,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────────────
       // 4) BOOK-CHOOSE (confirm and create)
       if (route === "book-choose") {
         const slots: Array<{ startIso: string }> = (await storage.get(`call:${callSid}:slots`)) || [];
@@ -112,7 +162,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────────────────
+      // ───────────────────────────────────────────────────────
       // Fallback
       saySafe(vr, "Sorry, I didn't understand that. Let's start again.");
       vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
