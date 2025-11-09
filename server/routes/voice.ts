@@ -3,7 +3,6 @@ import twilio from "twilio";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
-import { storage } from "../storage";
 import { getAvailability, createAppointmentForPatient } from "../services/cliniko";
 import { saySafe } from "../utils/voice-constants";
 import { abs } from "../utils/url";
@@ -14,7 +13,7 @@ dayjs.tz.setDefault("Australia/Brisbane");
 
 export function registerVoice(app: Express) {
   // ───────────────────────────────────────────────
-  // Incoming webhook from Twilio — start of every call
+  // Entry point for each call
   app.post("/api/voice/incoming", (req: Request, res: Response) => {
     const callSid =
       (req.body?.CallSid as string) ||
@@ -44,7 +43,7 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
-  // Main state machine
+  // State machine
   app.post("/api/voice/handle", async (req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
 
@@ -57,7 +56,7 @@ export function registerVoice(app: Express) {
 
       console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
 
-      // ───────────────────────────────────────────────
+      // Timeout fallback
       if (route === "timeout") {
         const g = vr.gather({
           input: ["speech"],
@@ -72,8 +71,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────
-      // 1) START
+      // 1) START → ask to book
       if (route === "start") {
         const g = vr.gather({
           input: ["speech"],
@@ -87,14 +85,12 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────
-      // 2) BOOK-DAY
+      // 2) BOOK-DAY → confirm intent then ask which day
       if (route === "book-day") {
-        if (!(speechRaw.includes("yes") || speechRaw.includes("book"))) {
+        if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
           saySafe(vr, "Okay, goodbye.");
           return res.type("text/xml").send(vr.toString());
         }
-
         const g = vr.gather({
           input: ["speech"],
           language: "en-AU",
@@ -107,14 +103,28 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────
-      // 3) BOOK-PART  (offer 1–2 slots)
+      // 3) BOOK-PART → fetch next available 1–2 slots; encode them in the next URL (no storage)
       if (route === "book-part") {
-        const fromDate = dayjs().tz().format("YYYY-MM-DD");
-        const toDate = dayjs().tz().add(7, "day").format("YYYY-MM-DD");
+        // If caller said a weekday like "monday", narrow search to that date; else 7-day window
+        const tzNow = dayjs().tz();
+        let fromDate = tzNow.format("YYYY-MM-DD");
+        let toDate = tzNow.add(7, "day").format("YYYY-MM-DD");
+
+        const weekdays = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
+        const saidWeekdayIdx = weekdays.findIndex(w => speechRaw.includes(w));
+        if (saidWeekdayIdx >= 0) {
+          // Find the next occurrence of that weekday (including today)
+          let d = tzNow;
+          for (let i = 0; i < 7 && d.day() !== saidWeekdayIdx; i++) d = d.add(1, "day");
+          fromDate = d.format("YYYY-MM-DD");
+          toDate = d.format("YYYY-MM-DD");
+        }
+
+        console.log("[BOOK][LOOKUP]", { fromDate, toDate });
 
         let slots: Array<{ startIso?: string; start?: string }> = [];
         try {
+          // part="any" keeps simple; your Cliniko service maps this appropriately
           slots = (await getAvailability(fromDate, toDate, "any")) || [];
         } catch (e) {
           console.error("[BOOK-PART][getAvailability ERROR]", e);
@@ -124,7 +134,7 @@ export function registerVoice(app: Express) {
 
         const available = slots.slice(0, 2);
         if (available.length === 0) {
-          saySafe(vr, "Sorry, there are no times available in the next few days.");
+          saySafe(vr, "Sorry, there are no times available for that day.");
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -134,12 +144,16 @@ export function registerVoice(app: Express) {
         const opt1 = dayjs(s1).tz().format("h:mm A dddd D MMMM");
         const opt2 = s2 ? dayjs(s2).tz().format("h:mm A dddd D MMMM") : "";
 
+        const nextUrl = abs(
+          `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${s2 ? `&s2=${encodeURIComponent(s2)}` : ""}`
+        );
+
         const g = vr.gather({
           input: ["speech", "dtmf"],
           language: "en-AU",
           timeout: 5,
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`),
+          action: nextUrl,
         });
 
         g.say(
@@ -149,31 +163,36 @@ export function registerVoice(app: Express) {
             : `I have one option available: ${opt1}. Press 1 or say yes to book it.`
         );
 
-        await storage.set(`call:${callSid}:slots`, available);
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────
-      // 4) BOOK-CHOOSE (confirm and create)
+      // 4) BOOK-CHOOSE → pick s1/s2 from query string and book
       if (route === "book-choose") {
-        const slots: Array<{ startIso: string }> = (await storage.get(`call:${callSid}:slots`)) || [];
-        const choiceIdx = digits === "2" || speechRaw.includes("two") ? 1 : 0;
-        const slot = slots[choiceIdx];
+        const s1 = (req.query.s1 as string) || "";
+        const s2 = (req.query.s2 as string) || "";
+        const choiceIdx = (digits === "2" || speechRaw.includes("two")) && s2 ? 1 : 0;
+        const chosen = choiceIdx === 1 ? s2 : s1;
 
-        if (!slot) {
-          saySafe(vr, "Sorry, that time is no longer available. Let's start again.");
+        if (!chosen) {
+          saySafe(vr, "Sorry, that option is no longer available. Let's start again.");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
           return res.type("text/xml").send(vr.toString());
         }
 
-        await createAppointmentForPatient(from, slot.startIso);
-        const spokenTime = dayjs(slot.startIso).tz().format("h:mm A dddd D MMMM");
+        try {
+          await createAppointmentForPatient(from, chosen);
+        } catch (e) {
+          console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
+          saySafe(vr, "Sorry, I couldn’t complete the booking. Please try again later.");
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const spokenTime = dayjs(chosen).tz().format("h:mm A dddd D MMMM");
         saySafe(vr, `All set. Your appointment is confirmed for ${spokenTime}. Goodbye.`);
         return res.type("text/xml").send(vr.toString());
       }
 
-      // ───────────────────────────────────────────────
-      // Default fallback
+      // Fallback
       saySafe(vr, "Sorry, I didn't understand that. Let's start again.");
       vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
       return res.type("text/xml").send(vr.toString());
