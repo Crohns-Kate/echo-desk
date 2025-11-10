@@ -1,22 +1,21 @@
 // server/index.ts
-// NOTE: No dotenv needed - Replit Deployments automatically inject environment variables
-// In dev mode, create a .env file and the tsx runtime will load it automatically
+// NOTE: No dotenv needed on Replit Deployments (envs injected).
 import express from "express";
 import cors from "cors";
-
-// Your local modules
 import { registerVoice } from "./routes/voice";
-// DEV MODE: Comment out storage import to run minimal server without DB
-// import { storage } from "./storage";
 
-// --- App setup ---
 const app = express();
 
-// Use Express’ built-in parsers (avoids body-parser CJS dynamic require issues)
+/**
+ * 🛑 IMPORTANT: Mount Twilio routes BEFORE any body parsers.
+ * Twilio’s HMAC validation requires the raw request body.
+ */
+registerVoice(app);
+
+// Parsers and other middleware for the rest of your app
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
-// CORS (adjust origin as needed)
 app.use(
   cors({
     origin: "*",
@@ -24,22 +23,13 @@ app.use(
   })
 );
 
-// Simple health check
+// Health check
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true, env: process.env.NODE_ENV || "development" });
 });
 
-// Register routes (Twilio voice etc.)
-registerVoice(app);
-
-// --- Robust startup, no top-level await ---
 (async () => {
   try {
-    // DEV MODE: Skip storage initialization in minimal mode
-    // if (typeof (storage as any)?.init === "function") {
-    //   await (storage as any).init();
-    // }
-
     const port = Number(process.env.PORT) || 5000;
     app.listen(port, () => {
       console.log(`[express] serving on port ${port}`);
@@ -50,7 +40,6 @@ registerVoice(app);
   }
 })();
 
-// Helpful safety logs
 process.on("unhandledRejection", (reason) => {
   console.error("[unhandledRejection]", reason);
 });
