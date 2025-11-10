@@ -1,0 +1,313 @@
+Perfect. Here’s a **single, copy-paste Replit AI prompt** that will add **Reschedule** and **Cancel** to your Twilio voice flow, including all routes and minimal Cliniko helpers. Paste the whole thing into Replit’s AI “Explain & Edit” box and run it.
+
+---
+
+## Replit AI Super-Prompt — Add Reschedule + Cancel Voice Flow
+
+**Goal:** Update `server/routes/voice.ts` to support **Reschedule** and **Cancel** flows, keeping your existing **Book** flow. Create a tiny helper file for Cliniko lookups if needed.
+
+### Do the following edits:
+
+1. **Open or create** `server/routes/voice.ts`.
+
+* If the file exists, **modify** it.
+* If it doesn’t exist, **create** it and export `registerVoice(app: import("express").Express)`.
+
+2. In `server/routes/voice.ts`, make these changes:
+
+* Ensure we have:
+
+  * `import dayjs from "dayjs"; import utc from "dayjs/plugin/utc"; import tz from "dayjs/plugin/timezone";`
+  * `dayjs.extend(utc); dayjs.extend(tz);`
+  * `const APP_TZ = process.env.APP_TZ || "Australia/Brisbane";`
+  * Utilities: `fmtHuman`, `abs`, `resolveSpokenDayToRange` (reuse your existing resolver or inline a simple one), and TwiML helpers.
+  * Keep your existing **book** routes working (start → book-day → book-part → book-choose).
+
+* **Add these helpers** near the top (keep if already present):
+
+```ts
+type MinimalAppt = { id: string; startsAt: string; patientId: string };
+
+const fmtHuman = (iso: string) =>
+  dayjs(iso).tz(APP_TZ).format("h:mm A dddd D MMMM");
+```
+
+* **In the “start” route**, detect **reschedule** or **cancel** before falling back to book:
+
+```ts
+case "start": {
+  const s = (speechRaw || "").toLowerCase();
+
+  if (s.includes("reschedule") || s.includes("re schedule")) {
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=res-list&callSid=${callSid}`));
+    break;
+  }
+
+  if (s.includes("cancel")) {
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-list&callSid=${callSid}`));
+    break;
+  }
+
+  // existing book flow…
+  const g = vr.gather({
+    input: ["speech"],
+    language: "en-AU",
+    timeout: 5,
+    speechTimeout: "auto",
+    actionOnEmptyResult: true,
+    action: abs(`/api/voice/handle?route=book-day&callSid=${callSid}`),
+  });
+  g.say({ voice: "Polly.Olivia-Neural" }, "System ready. Would you like to book an appointment?");
+  break;
+}
+```
+
+* **Add RESCHEDULE routes** (copy exactly):
+
+```ts
+// ROUTE: res-list — list up to 2 upcoming appts on caller's number (today → +30d)
+case "res-list": {
+  try {
+    const fromIso = dayjs().tz(APP_TZ).startOf("day").utc().toISOString();
+    const toIso   = dayjs().tz(APP_TZ).add(30, "day").endOf("day").utc().toISOString();
+
+    const appts: MinimalAppt[] = await findUpcomingAppointmentsByPhone(from, fromIso, toIso);
+
+    if (!appts?.length) {
+      vr.say({ voice: "Polly.Olivia-Neural" }, "I couldn’t find any upcoming bookings on your number.");
+      vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${callSid}`));
+      break;
+    }
+
+    const [a1, a2] = appts.slice(0, 2);
+    const g = vr.gather({
+      input: ["speech", "dtmf"],
+      language: "en-AU",
+      timeout: 5,
+      actionOnEmptyResult: true,
+      action: abs(`/api/voice/handle?route=res-pick-day&callSid=${callSid}`) +
+              `&aid1=${encodeURIComponent(a1.id)}` +
+              (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+    });
+
+    if (a2) {
+      g.say({ voice: "Polly.Olivia-Neural" },
+        `You have two bookings. Option one, ${fmtHuman(a1.startsAt)}. Option two, ${fmtHuman(a2.startsAt)}. Press 1 or 2, or say your choice.`);
+    } else {
+      g.say({ voice: "Polly.Olivia-Neural" },
+        `Your upcoming booking is ${fmtHuman(a1.startsAt)}. Press 1 or say yes to reschedule this appointment.`);
+    }
+  } catch (err) {
+    console.error("[RES][LIST][ERROR]", err);
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I couldn’t load your bookings.");
+  }
+  break;
+}
+
+// ROUTE: res-pick-day — choose which appt (1/2), then ask for new day
+case "res-pick-day": {
+  const aid1 = String(req.query.aid1 || "");
+  const aid2 = String(req.query.aid2 || "");
+  const isTwoChoice = digits === "2" || (speechRaw || "").toLowerCase().includes("two") || (speechRaw || "").trim() === "2";
+  const apptId = (isTwoChoice && aid2) ? aid2 : aid1;
+
+  if (!apptId) {
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I didn’t catch that. Let’s start again.");
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=res-list&callSid=${callSid}`));
+    break;
+  }
+
+  const g = vr.gather({
+    input: ["speech"],
+    language: "en-AU",
+    timeout: 5,
+    speechTimeout: "auto",
+    actionOnEmptyResult: true,
+    action: abs(`/api/voice/handle?route=res-day&callSid=${callSid}&aid=${encodeURIComponent(apptId)}`),
+  });
+  g.say({ voice: "Polly.Olivia-Neural" }, "Which day would you like to move it to?");
+  break;
+}
+
+// ROUTE: res-day — get availability for the new day, present 1–2 options
+case "res-day": {
+  const aid = String(req.query.aid || "");
+  const { fromLocal, toLocal } = resolveSpokenDayToRange(speechRaw); // reuse your day parser
+
+  const startDate = dayjs.tz(fromLocal, APP_TZ).format("YYYY-MM-DD");
+  const endDate   = dayjs.tz(toLocal,   APP_TZ).format("YYYY-MM-DD");
+
+  const slots = await getAvailability(startDate, endDate); // [{ startIso }]
+  const [c1, c2] = (slots || []).slice(0, 2);
+
+  if (!c1) {
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, there are no times available that day.");
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=res-pick-day&callSid=${callSid}&aid=${encodeURIComponent(aid)}`));
+    break;
+  }
+
+  const g = vr.gather({
+    input: ["speech", "dtmf"],
+    language: "en-AU",
+    timeout: 5,
+    actionOnEmptyResult: true,
+    action: abs(`/api/voice/handle?route=res-choose&callSid=${callSid}&aid=${encodeURIComponent(aid)}`) +
+            `&s1=${encodeURIComponent(c1.startIso)}` +
+            (c2 ? `&s2=${encodeURIComponent(c2.startIso)}` : ""),
+  });
+
+  g.say({ voice: "Polly.Olivia-Neural" },
+    c2
+      ? `I have two options. Option one, ${fmtHuman(c1.startIso)}. Or option two, ${fmtHuman(c2.startIso)}. Press 1 or 2, or say your choice.`
+      : `I have one option: ${fmtHuman(c1.startIso)}. Press 1 or say yes to move it here.`);
+  break;
+}
+
+// ROUTE: res-choose — book new, cancel old
+case "res-choose": {
+  const aid = String(req.query.aid || "");
+  const s1  = String(req.query.s1  || "");
+  const s2  = String(req.query.s2  || "");
+  const two = digits === "2" || (speechRaw || "").toLowerCase().includes("two") || (speechRaw || "").trim() === "2";
+  const picked = (two && s2) ? s2 : s1;
+
+  if (!aid || !picked) {
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I couldn’t complete that. Let’s start again.");
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=res-list&callSid=${callSid}`));
+    break;
+  }
+
+  try {
+    const booked = await createAppointmentForPatient({
+      phoneE164: from,
+      startIso: picked,
+    });
+    await cancelAppointmentById(aid);
+
+    vr.say({ voice: "Polly.Olivia-Neural" }, `Done. I’ve moved your booking to ${fmtHuman(picked)}. You’ll receive a confirmation shortly. Goodbye.`);
+  } catch (err) {
+    console.error("[RES-CHOOSE][ERROR]", err);
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I couldn't complete the reschedule.");
+  }
+  break;
+}
+```
+
+* **Add CANCEL routes** (copy exactly):
+
+```ts
+// ROUTE: cancel-list — list up to 2 upcoming appts
+case "cancel-list": {
+  try {
+    const fromIso = dayjs().tz(APP_TZ).startOf("day").utc().toISOString();
+    const toIso   = dayjs().tz(APP_TZ).add(30, "day").endOf("day").utc().toISOString();
+    const appts: MinimalAppt[] = await findUpcomingAppointmentsByPhone(from, fromIso, toIso);
+
+    if (!appts?.length) {
+      vr.say({ voice: "Polly.Olivia-Neural" }, "I couldn’t find any upcoming bookings on your number.");
+      vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${callSid}`));
+      break;
+    }
+
+    const [a1, a2] = appts.slice(0, 2);
+    const g = vr.gather({
+      input: ["speech", "dtmf"],
+      language: "en-AU",
+      timeout: 5,
+      actionOnEmptyResult: true,
+      action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${callSid}`) +
+              `&aid1=${encodeURIComponent(a1.id)}` +
+              (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+    });
+
+    if (a2) {
+      g.say({ voice: "Polly.Olivia-Neural" },
+        `You have two bookings. Option one, ${fmtHuman(a1.startsAt)}. Option two, ${fmtHuman(a2.startsAt)}. Press 1 or 2, or say your choice to cancel.`);
+    } else {
+      g.say({ voice: "Polly.Olivia-Neural" },
+        `Your upcoming booking is ${fmtHuman(a1.startsAt)}. Press 1 or say yes to cancel this appointment.`);
+    }
+  } catch (err) {
+    console.error("[CANCEL][LIST][ERROR]", err);
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I couldn’t load your bookings.");
+  }
+  break;
+}
+
+// ROUTE: cancel-confirm — perform cancellation
+case "cancel-confirm": {
+  const aid1 = String(req.query.aid1 || "");
+  const aid2 = String(req.query.aid2 || "");
+  const isTwo = digits === "2" || (speechRaw || "").toLowerCase().includes("two") || (speechRaw || "").trim() === "2";
+  const apptId = (isTwo && aid2) ? aid2 : aid1;
+
+  if (!apptId) {
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I didn’t catch that.");
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-list&callSid=${callSid}`));
+    break;
+  }
+
+  try {
+    await cancelAppointmentById(apptId);
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Your appointment has been cancelled. If you’d like to book another time, just say book an appointment.");
+  } catch (err) {
+    console.error("[CANCEL][CONFIRM][ERROR]", err);
+    vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I couldn’t cancel that.");
+  }
+  break;
+}
+```
+
+3. **Create or update** `server/services/cliniko-helpers.ts` (or add to your Cliniko service if you already have it). Add:
+
+```ts
+export async function findUpcomingAppointmentsByPhone(
+  phoneE164: string,
+  fromIso: string,
+  toIso: string
+): Promise<{ id: string; startsAt: string; patientId: string }[]> {
+  const patient = await findPatientByPhoneRobust(phoneE164); // you already have/used similar logic
+  if (!patient) return [];
+
+  const appts = await clinikoListAppointments({
+    patientId: String(patient.id),
+    fromIso,
+    toIso,
+  });
+
+  return (appts || []).map(a => ({
+    id: String(a.id),
+    startsAt: a.starts_at,   // ensure this is UTC ISO as Cliniko returns
+    patientId: String(patient.id),
+  }));
+}
+
+export async function cancelAppointmentById(appointmentId: string) {
+  // Implement with Cliniko API (DELETE or PATCH depending on Cliniko rules)
+  return clinikoCancelAppointment(appointmentId);
+}
+```
+
+> If your Cliniko client functions use different names, adapt imports/usages accordingly. The shape expected here is minimal: `id`, `starts_at`.
+
+4. **Make sure these are imported** at the top of `server/routes/voice.ts`:
+
+```ts
+import { findUpcomingAppointmentsByPhone, cancelAppointmentById } from "../services/cliniko-helpers";
+import { createAppointmentForPatient, getAvailability } from "../services/cliniko"; // or your actual modules
+```
+
+5. **Keep everything UTC inside the code**, and only speak human-friendly times via `fmtHuman()`.
+
+6. **Rebuild & run**:
+
+```
+npm run build && npm start
+```
+
+7. **Test with Twilio**:
+
+* “I’d like to reschedule.” → choose booking → “Tuesday” → choose time → hear confirmation.
+* “Cancel my appointment.” → choose booking → hear cancellation confirmation.
+
+**Done.** This preserves your working booking flow and adds robust reschedule/cancel without introducing DB/storage changes.
