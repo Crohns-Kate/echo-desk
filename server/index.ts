@@ -1,5 +1,8 @@
 // server/index.ts
-import "dotenv/config";
+// Only load dotenv in development - Replit Deployments inject env vars automatically
+if (process.env.NODE_ENV !== "production") {
+  await import("dotenv/config");
+}
 import express from "express";
 import cors from "cors";
 
