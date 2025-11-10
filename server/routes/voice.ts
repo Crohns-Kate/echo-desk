@@ -17,12 +17,16 @@ import {
 import { saySafe } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 
-// Important: use Twilio’s webhook middleware to avoid "stream is not readable"
-// DEV MODE: Disable validation to avoid 11200 errors during local testing
+// ─────────────────────────────────────────────────────────────────────────────
+// Twilio webhook middleware
+// - Do NOT force protocol/host; it can break signature checks behind proxies.
+// - You can temporarily disable validation with DISABLE_TWILIO_VALIDATION=true
+//   while testing webhooks from non-Twilio origins.
+// ─────────────────────────────────────────────────────────────────────────────
 const isDev = process.env.NODE_ENV !== "production";
-// For production testing: set DISABLE_TWILIO_VALIDATION=true to test without real Twilio
-const skipValidation = isDev || process.env.DISABLE_TWILIO_VALIDATION === "true";
-const twilioWebhook = twilio.webhook({ validate: !skipValidation, protocol: "https" });
+const skipValidation =
+  isDev || process.env.DISABLE_TWILIO_VALIDATION === "true";
+const twilioWebhook = twilio.webhook({ validate: !skipValidation });
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -32,20 +36,30 @@ const TZ = "Australia/Brisbane";
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Map “monday/tuesday/…” (or “today/tomorrow”) to a single-day range */
-function nextWeekdayFromSpeech(speechRaw: string): { day: string; fromIso: string; toIso: string } {
+/** Map “monday/tuesday/…” (or “today/tomorrow”) to a single-day range in clinic TZ */
+function nextWeekdayFromSpeech(
+  speechRaw: string
+): { day: string; fromIso: string; toIso: string } {
   const map: Record<string, number> = {
-    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-    today: -1, tomorrow: -2,
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+    today: -1,
+    tomorrow: -2,
   };
-  const words = speechRaw.toLowerCase();
+  const words = (speechRaw || "").toLowerCase();
   let targetDow: number | null = null;
 
   if (words.includes("today")) targetDow = -1;
   else if (words.includes("tomorrow")) targetDow = -2;
   else {
     for (const k of Object.keys(map)) {
-      if (words.includes(k) && k !== "today" && k !== "tomorrow") {
+      if (k === "today" || k === "tomorrow") continue;
+      if (words.includes(k)) {
         targetDow = map[k];
         break;
       }
@@ -61,21 +75,38 @@ function nextWeekdayFromSpeech(speechRaw: string): { day: string; fromIso: strin
     const todayDow = base.day(); // 0..6
     let delta = targetDow - todayDow;
     if (delta < 0) delta += 7;
-    if (delta === 0) {
-      // same weekday today -> treat as next occurrence only if "today" wasn't said
-      // leave as today; if caller literally said Monday and today is Monday, it's fine
-    }
     base = base.add(delta, "day");
   }
+
   const fromIso = base.startOf("day").tz(TZ).toDate().toISOString();
-  const toIso   = base.endOf("day").tz(TZ).toDate().toISOString();
+  const toIso = base.endOf("day").tz(TZ).toDate().toISOString();
   return { day: base.format("dddd D MMMM"), fromIso, toIso };
 }
 
-/** True if caller said option two */
+/** True if caller clearly chose the second option */
 function choseSecondOption(digits: string, speechRaw: string) {
+  const s = (speechRaw || "").toLowerCase().trim();
+  return (
+    digits === "2" ||
+    /\b(two|2|second|option\s*two)\b/.test(s)
+  );
+}
+
+/** True if caller affirmed “yes/ok/one” in a single-option flow */
+function saidYesOrFirst(digits: string, speechRaw: string) {
+  const s = (speechRaw || "").toLowerCase().trim();
+  return (
+    digits === "1" ||
+    /\b(yes|yeah|yep|sure|ok|okay|one|1|option\s*one|first)\b/.test(s)
+  );
+}
+
+/** Simple intent parsing for start step */
+function intentFromSpeech(speechRaw: string): "reschedule" | "cancel" | "book" {
   const s = (speechRaw || "").toLowerCase();
-  return digits === "2" || /(^|\b)(two|2|second|option two)(\b|$)/.test(s);
+  if (/\b(resched|re[-\s]?schedule|change|move|shift)\b/.test(s)) return "reschedule";
+  if (/\b(cancel|delete|remove)\b/.test(s)) return "cancel";
+  return "book";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +114,10 @@ function choseSecondOption(digits: string, speechRaw: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function registerVoice(app: Express) {
+  // NOTE: Ideally, in server/index.ts you should register these routes
+  // BEFORE attaching any global body parsers to avoid raw-body conflicts.
+
+  // Core voice state machine
   app.post("/api/voice/handle", twilioWebhook, async (req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
 
@@ -91,22 +126,22 @@ export function registerVoice(app: Express) {
       const route = String(req.query.route || "start");
       const speechRaw = String(
         (req.body?.SpeechResult ?? req.query?.SpeechResult ?? "")
-      ).trim().toLowerCase();
-      const digits = String(req.body?.Digits ?? "");
-      const from = String(req.body?.From ?? "");
-      // const to = String(req.body?.To ?? ""); // not used
+      )
+        .trim()
+        .toLowerCase();
+      const digits = String(req.body?.Digits ?? "").trim();
+      const from = String(req.body?.From ?? "").trim();
 
       console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
 
-      // ───────────────────────────────────────────────────────────────────────
-      // ROUTES
-      // ───────────────────────────────────────────────────────────────────────
       switch (route) {
         // ───────────────────────────────────────────────────────────────────
-        // Entry: light intent detection → book / reschedule / cancel
+        // Entry: intent → book / reschedule / cancel
         // ───────────────────────────────────────────────────────────────────
         case "start": {
-          if (speechRaw.includes("reschedule") || speechRaw.includes("change") || speechRaw.includes("re schedule")) {
+          const intent = intentFromSpeech(speechRaw);
+
+          if (intent === "reschedule") {
             vr.redirect(
               { method: "POST" },
               abs(`/api/voice/handle?route=res-list&callSid=${encodeURIComponent(callSid)}`)
@@ -114,7 +149,7 @@ export function registerVoice(app: Express) {
             break;
           }
 
-          if (speechRaw.includes("cancel")) {
+          if (intent === "cancel") {
             vr.redirect(
               { method: "POST" },
               abs(`/api/voice/handle?route=cancel-list&callSid=${encodeURIComponent(callSid)}`)
@@ -122,6 +157,7 @@ export function registerVoice(app: Express) {
             break;
           }
 
+          // Default to booking prompt
           const g = vr.gather({
             input: ["speech"],
             language: "en-AU",
@@ -151,13 +187,12 @@ export function registerVoice(app: Express) {
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // BOOK: present two times for that day, carry them to next step via URL
+        // BOOK: present two times for that day, carry via query
         // ───────────────────────────────────────────────────────────────────
         case "book-part": {
           const { day, fromIso, toIso } = nextWeekdayFromSpeech(speechRaw || "");
           console.log("[BOOK][LOOKUP]", { fromIso, toIso, day });
 
-          // Ask Cliniko for times on that exact day using ISO strings
           const slots = await getAvailability({ fromIso, toIso, part: "any" });
           const availableSlots = (slots || []).slice(0, 2);
 
@@ -181,9 +216,7 @@ export function registerVoice(app: Express) {
             timeout: 5,
             actionOnEmptyResult: true,
             action: abs(
-              `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(
-                callSid
-              )}&s1=${s1}&s2=${s2}`
+              `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${s1}&s2=${s2}`
             ),
           });
 
@@ -197,57 +230,69 @@ export function registerVoice(app: Express) {
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // BOOK: user chooses; we have s1/s2 on the query; book in Cliniko
+        // BOOK: user chooses; book in Cliniko
         // ───────────────────────────────────────────────────────────────────
         case "book-choose": {
           const s1 = req.query.s1 ? decodeURIComponent(String(req.query.s1)) : null;
           const s2 = req.query.s2 ? decodeURIComponent(String(req.query.s2)) : null;
-          const useSecond = choseSecondOption(digits, speechRaw);
-          const slotISO = useSecond && s2 ? s2 : s1;
+
+          let slotISO: string | null = null;
+          if (s2) {
+            slotISO = choseSecondOption(digits, speechRaw) ? s2 : s1;
+          } else {
+            slotISO = saidYesOrFirst(digits, speechRaw) ? (s1 as string) : s1; // default to s1 if unclear
+          }
 
           if (!slotISO) {
             saySafe(vr, "Sorry, that option isn’t available. Let’s start again.");
-            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+            );
             break;
           }
 
           console.log("[BOOK-CHOOSE] Attempting to book slot:", slotISO);
 
-          // Validate the chosen ISO string
           const start = new Date(slotISO);
           if (isNaN(start.getTime())) {
             console.error("[BOOK-CHOOSE] Invalid slot time:", slotISO);
             saySafe(vr, "Sorry, there was an error with that time slot. Please try again.");
-            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+            );
             break;
           }
 
           const startIso = start.toISOString();
 
-          // Get Cliniko IDs from environment with fallback defaults
           const CLINIKO_BUSINESS_ID = process.env.CLINIKO_BUSINESS_ID || "";
           const CLINIKO_PRACTITIONER_ID = process.env.CLINIKO_PRACTITIONER_ID || "";
           const CLINIKO_APPOINTMENT_TYPE_ID = process.env.CLINIKO_APPT_TYPE_ID || "";
 
-          console.log("[BOOK-CHOOSE] Booking with:", {
-            businessId: CLINIKO_BUSINESS_ID,
-            practitionerId: CLINIKO_PRACTITIONER_ID,
-            appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
-            startIso
-          });
+          if (!CLINIKO_BUSINESS_ID || !CLINIKO_PRACTITIONER_ID || !CLINIKO_APPOINTMENT_TYPE_ID) {
+            console.error("[BOOK-CHOOSE] Missing Cliniko IDs in env", {
+              CLINIKO_BUSINESS_ID,
+              CLINIKO_PRACTITIONER_ID,
+              CLINIKO_APPOINTMENT_TYPE_ID,
+            });
+            saySafe(vr, "Sorry, booking is not available right now.");
+            break;
+          }
 
           try {
             await createAppointmentForPatient(from, {
               practitionerId: CLINIKO_PRACTITIONER_ID,
               appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
               startsAt: startIso,
-              businessId: CLINIKO_BUSINESS_ID
+              businessId: CLINIKO_BUSINESS_ID,
             });
             saySafe(
               vr,
-              `All set. Your booking is confirmed for ${dayjs(startIso).tz(TZ).format(
-                "h:mm A dddd D MMMM"
-              )}. We'll send a confirmation shortly.`
+              `All set. Your booking is confirmed for ${dayjs(startIso)
+                .tz(TZ)
+                .format("h:mm A dddd D MMMM")}. We'll send a confirmation shortly.`
             );
           } catch (err) {
             console.error("[BOOK-CHOOSE][ERROR]", err);
@@ -255,13 +300,14 @@ export function registerVoice(app: Express) {
           }
           break;
         }
+
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: list up to 2 upcoming appointments, let user choose
+        // RESCHEDULE: list up to 2 upcoming appointments
         // ───────────────────────────────────────────────────────────────────
         case "res-list": {
           try {
             const appts = await getPatientAppointments(from);
-            
+
             if (!appts || appts.length === 0) {
               saySafe(vr, "I couldn't find any upcoming bookings on your number.");
               vr.redirect(
@@ -277,20 +323,29 @@ export function registerVoice(app: Express) {
               language: "en-AU",
               timeout: 5,
               actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(callSid)}`) +
-                      `&aid1=${encodeURIComponent(a1.id)}` +
-                      (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+              action:
+                abs(
+                  `/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(callSid)}`
+                ) +
+                `&aid1=${encodeURIComponent(a1.id)}` +
+                (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
             });
 
             if (a2) {
               g.say(
                 { voice: "Polly.Olivia-Neural" },
-                `You have two bookings. Option one, ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
+                `You have two bookings. Option one, ${dayjs(a1.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
               );
             } else {
               g.say(
                 { voice: "Polly.Olivia-Neural" },
-                `Your upcoming booking is ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to reschedule this appointment.`
+                `Your upcoming booking is ${dayjs(a1.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or say yes to reschedule this appointment.`
               );
             }
           } catch (err) {
@@ -301,13 +356,13 @@ export function registerVoice(app: Express) {
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: capture which appointment (1 or 2), then ask for new day
+        // RESCHEDULE: pick which appointment (1 or 2), ask new day
         // ───────────────────────────────────────────────────────────────────
         case "res-pick-day": {
           const aid1 = String(req.query.aid1 || "");
           const aid2 = String(req.query.aid2 || "");
           const useSecond = choseSecondOption(digits, speechRaw);
-          const apptId = (useSecond && aid2) ? aid2 : aid1;
+          const apptId = useSecond && aid2 ? aid2 : aid1;
 
           if (!apptId) {
             saySafe(vr, "Sorry, I didn't catch that. Let's start again.");
@@ -324,14 +379,18 @@ export function registerVoice(app: Express) {
             timeout: 5,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=res-day&callSid=${encodeURIComponent(callSid)}&aid=${encodeURIComponent(apptId)}`),
+            action: abs(
+              `/api/voice/handle?route=res-day&callSid=${encodeURIComponent(
+                callSid
+              )}&aid=${encodeURIComponent(apptId)}`
+            ),
           });
           g.say({ voice: "Polly.Olivia-Neural" }, "Which day would you like to move it to?");
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: get availability for the new day, present 1-2 options
+        // RESCHEDULE: get availability for new day
         // ───────────────────────────────────────────────────────────────────
         case "res-day": {
           const aid = String(req.query.aid || "");
@@ -345,7 +404,11 @@ export function registerVoice(app: Express) {
             saySafe(vr, "Sorry, there are no times available that day.");
             vr.redirect(
               { method: "POST" },
-              abs(`/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(callSid)}&aid1=${encodeURIComponent(aid)}`)
+              abs(
+                `/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(
+                  callSid
+                )}&aid1=${encodeURIComponent(aid)}`
+              )
             );
             break;
           }
@@ -355,29 +418,40 @@ export function registerVoice(app: Express) {
             language: "en-AU",
             timeout: 5,
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=res-choose&callSid=${encodeURIComponent(callSid)}&aid=${encodeURIComponent(aid)}`) +
-                    `&s1=${encodeURIComponent(c1.startIso)}` +
-                    (c2 ? `&s2=${encodeURIComponent(c2.startIso)}` : ""),
+            action:
+              abs(
+                `/api/voice/handle?route=res-choose&callSid=${encodeURIComponent(
+                  callSid
+                )}&aid=${encodeURIComponent(aid)}`
+              ) +
+              `&s1=${encodeURIComponent(c1.startIso)}` +
+              (c2 ? `&s2=${encodeURIComponent(c2.startIso)}` : ""),
           });
 
           g.say(
             { voice: "Polly.Olivia-Neural" },
             c2
-              ? `I have two options. Option one, ${dayjs(c1.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Or option two, ${dayjs(c2.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
-              : `I have one option: ${dayjs(c1.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to move it here.`
+              ? `I have two options. Option one, ${dayjs(c1.startIso)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Or option two, ${dayjs(c2.startIso)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
+              : `I have one option: ${dayjs(c1.startIso)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or say yes to move it here.`
           );
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: complete the reschedule with chosen slot
+        // RESCHEDULE: complete move
         // ───────────────────────────────────────────────────────────────────
         case "res-choose": {
           const aid = String(req.query.aid || "");
           const s1 = String(req.query.s1 || "");
           const s2 = String(req.query.s2 || "");
-          const useSecond = choseSecondOption(digits, speechRaw);
-          const picked = (useSecond && s2) ? s2 : s1;
+          const picked =
+            s2 ? (choseSecondOption(digits, speechRaw) ? s2 : s1) : (saidYesOrFirst(digits, speechRaw) ? s1 : s1);
 
           if (!aid || !picked) {
             saySafe(vr, "Sorry, I couldn't complete that. Let's start again.");
@@ -392,7 +466,9 @@ export function registerVoice(app: Express) {
             await rescheduleAppointment(aid, picked);
             saySafe(
               vr,
-              `Done. I've moved your booking to ${dayjs(picked).tz(TZ).format("h:mm A dddd D MMMM")}. You'll receive a confirmation shortly. Goodbye.`
+              `Done. I've moved your booking to ${dayjs(picked)
+                .tz(TZ)
+                .format("h:mm A dddd D MMMM")}. You'll receive a confirmation shortly. Goodbye.`
             );
           } catch (err) {
             console.error("[RES-CHOOSE][ERROR]", err);
@@ -407,7 +483,7 @@ export function registerVoice(app: Express) {
         case "cancel-list": {
           try {
             const appts = await getPatientAppointments(from);
-            
+
             if (!appts || appts.length === 0) {
               saySafe(vr, "I couldn't find any upcoming bookings on your number.");
               vr.redirect(
@@ -423,20 +499,29 @@ export function registerVoice(app: Express) {
               language: "en-AU",
               timeout: 5,
               actionOnEmptyResult: true,
-              action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}`) +
-                      `&aid1=${encodeURIComponent(a1.id)}` +
-                      (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+              action:
+                abs(
+                  `/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}`
+                ) +
+                `&aid1=${encodeURIComponent(a1.id)}` +
+                (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
             });
 
             if (a2) {
               g.say(
                 { voice: "Polly.Olivia-Neural" },
-                `You have two bookings. Option one, ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice to cancel.`
+                `You have two bookings. Option one, ${dayjs(a1.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice to cancel.`
               );
             } else {
               g.say(
                 { voice: "Polly.Olivia-Neural" },
-                `Your upcoming booking is ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to cancel this appointment.`
+                `Your upcoming booking is ${dayjs(a1.starts_at)
+                  .tz(TZ)
+                  .format("h:mm A dddd D MMMM")}. Press 1 or say yes to cancel this appointment.`
               );
             }
           } catch (err) {
@@ -452,8 +537,7 @@ export function registerVoice(app: Express) {
         case "cancel-confirm": {
           const aid1 = String(req.query.aid1 || "");
           const aid2 = String(req.query.aid2 || "");
-          const useSecond = choseSecondOption(digits, speechRaw);
-          const apptId = (useSecond && aid2) ? aid2 : aid1;
+          const apptId = choseSecondOption(digits, speechRaw) && aid2 ? aid2 : aid1;
 
           if (!apptId) {
             saySafe(vr, "Sorry, I didn't catch that.");
@@ -466,7 +550,10 @@ export function registerVoice(app: Express) {
 
           try {
             await cancelAppointment(apptId);
-            saySafe(vr, "Your appointment has been cancelled. If you'd like to book another time, just say book an appointment.");
+            saySafe(
+              vr,
+              "Your appointment has been cancelled. If you'd like to book another time, just say book an appointment."
+            );
           } catch (err) {
             console.error("[CANCEL][CONFIRM][ERROR]", err);
             saySafe(vr, "Sorry, I couldn't cancel that.");
@@ -494,7 +581,7 @@ export function registerVoice(app: Express) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // TEST ROUTE (no signature validation) - for local testing without Twilio
+  // TEST (no signature validation needed)
   // ─────────────────────────────────────────────────────────────────────────────
   app.post("/api/voice/test", async (_req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
@@ -504,22 +591,22 @@ export function registerVoice(app: Express) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // INCOMING CALL WEBHOOK - entry point for real Twilio calls
+  // INCOMING CALL WEBHOOK (entry point)
   // ─────────────────────────────────────────────────────────────────────────────
   app.post("/api/voice/incoming", twilioWebhook, async (req: Request, res: Response) => {
     const vr = new twilio.twiml.VoiceResponse();
     const callSid = String(req.body?.CallSid || "");
     const from = String(req.body?.From || "");
-    
+
     console.log("[VOICE][INCOMING]", { callSid, from });
-    
+
     saySafe(vr, "Hello and welcome to your clinic. How can I help you today?");
     vr.pause({ length: 1 });
     vr.redirect(
       { method: "POST" },
       abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
     );
-    
+
     res.type("text/xml").send(vr.toString());
   });
 }
