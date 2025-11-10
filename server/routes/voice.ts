@@ -19,7 +19,9 @@ import { abs } from "../utils/url";
 // Important: use Twilio’s webhook middleware to avoid "stream is not readable"
 // DEV MODE: Disable validation to avoid 11200 errors during local testing
 const isDev = process.env.NODE_ENV !== "production";
-const twilioWebhook = twilio.webhook({ validate: !isDev, protocol: "https" });
+// For production testing: set DISABLE_TWILIO_VALIDATION=true to test without real Twilio
+const skipValidation = isDev || process.env.DISABLE_TWILIO_VALIDATION === "true";
+const twilioWebhook = twilio.webhook({ validate: !skipValidation, protocol: "https" });
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
