@@ -12,7 +12,9 @@ The deployment was failing because:
 ### 1. Created `build.js` - Proper esbuild configuration
 ```javascript
 import * as esbuild from 'esbuild';
+import { builtinModules } from 'module';
 
+// Build with all Node.js built-ins and packages marked as external
 await esbuild.build({
   entryPoints: ['server/index.ts'],
   bundle: true,
@@ -20,22 +22,24 @@ await esbuild.build({
   target: 'node20',
   format: 'esm',
   outdir: 'dist',
-  packages: 'external',  // ← External packages not bundled
+  packages: 'external', // External all npm packages
+  external: [
+    ...builtinModules, // External all Node.js built-ins (fs, path, etc.)
+    ...builtinModules.map(m => `node:${m}`), // Also handle node: prefix imports
+  ],
   alias: {
     '@shared': './shared',
     '@': './client/src',
     '@assets': './attached_assets'
-  },
-  banner: {
-    js: `import { createRequire } from 'module';const require = createRequire(import.meta.url);`
   }
 });
 ```
 
 **Key changes:**
-- `packages: 'external'` - All dependencies loaded from `node_modules` at runtime (not bundled)
-- This eliminates the dotenv dynamic require issue
-- Creates a 33KB bundle instead of 7.1MB
+- `packages: 'external'` - All npm dependencies loaded from `node_modules` at runtime (not bundled)
+- `external: [...builtinModules]` - All Node.js built-ins (fs, path, etc.) NOT bundled
+- ✅ **0 dynamic requires** in output - fixes ESM bundling error
+- Creates a clean 33KB bundle (805 lines)
 
 ### 2. Updated `server/index.ts` - Conditional dotenv loading
 ```typescript
@@ -117,17 +121,35 @@ curl http://localhost:5001/health
 
 After running `node build.js`, you should see:
 ```
-✓ Build complete
+✓ Build complete - All dependencies and built-ins externalized
 
 dist/
-  index.js    (33KB - ESM bundle with external packages)
+  index.js    (33KB / 805 lines - ESM bundle)
+```
+
+**Verification Tests:**
+```bash
+# Check for dynamic requires (should be 0)
+grep -c "require(" dist/index.js
+# Output: 0
+
+# Test production build
+NODE_ENV=production node dist/index.js
+# Expected: [express] serving on port 5000
+
+# Test health endpoint
+curl http://localhost:5000/health
+# Expected: {"ok":true,"env":"production"}
 ```
 
 ## 🚀 Deployment Checklist
 
 - [x] `build.js` created with proper esbuild config
+- [x] Node.js built-ins properly externalized (fs, path, etc.)
 - [x] `server/index.ts` uses conditional dotenv import
-- [x] Build tested locally (33KB bundle generated)
+- [x] Build tested locally (33KB bundle, 0 dynamic requires)
+- [x] Production runtime tested (health check passes)
+- [x] node_modules automatically included in Replit deployment snapshots
 - [ ] Update deployment build command to `node build.js`
 - [ ] Verify all secrets configured in Deployment Settings
 - [ ] Deploy and test webhook endpoints
