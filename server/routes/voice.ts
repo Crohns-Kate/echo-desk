@@ -276,7 +276,7 @@ export function registerVoice(app: Express) {
             // carry appointment id to next step via query
             saySafe(
               vr,
-              `I found your appointment on ${dayjs(appt.start_time).tz().format("dddd D MMMM at h:mm a")}.`
+              `I found your appointment on ${dayjs(appt.starts_at).tz(TZ).format("dddd D MMMM at h:mm A")}.`
             );
             vr.redirect(
               { method: "POST" },
