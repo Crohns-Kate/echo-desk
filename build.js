@@ -1,33 +1,37 @@
-import * as esbuild from 'esbuild';
-import { builtinModules } from 'module';
-import { readFileSync } from 'fs';
+import { build } from "esbuild";
+import fs from "node:fs";
+import path from "node:path";
+import url from "node:url";
 
-// Read package.json to get all dependencies
-const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
-const dependencies = Object.keys(pkg.dependencies || {});
-const devDependencies = Object.keys(pkg.devDependencies || {});
-const allDeps = [...dependencies, ...devDependencies];
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
 
-console.log('Externalizing dependencies:', allDeps.join(', '));
+const externals = [
+  ...Object.keys(pkg.dependencies || {}),
+  ...Object.keys(pkg.optionalDependencies || {}),
+  ...Object.keys(pkg.peerDependencies || {}),
+  "fs","path","url","zlib","http","https","stream","buffer","crypto",
+  "events","os","util","tty","net","tls","dns","cluster","module"
+];
 
-// Build with ALL dependencies and built-ins marked as external
-await esbuild.build({
-  entryPoints: ['server/index.ts'],
+const outdir = "dist";
+if (fs.existsSync(outdir)) fs.rmSync(outdir, { recursive: true, force: true });
+
+console.log("Externalizing dependencies:", externals.join(", ") || "(none)");
+
+await build({
+  entryPoints: ["server/index.ts"],
+  platform: "node",
+  target: "node20",
+  format: "esm",
   bundle: true,
-  platform: 'node',
-  target: 'node20',
-  format: 'esm',
-  outdir: 'dist',
-  external: [
-    ...builtinModules,                      // Node.js built-ins (fs, path, etc.)
-    ...builtinModules.map(m => `node:${m}`), // node: prefix imports
-    ...allDeps,                              // All npm dependencies
-  ],
-  alias: {
-    '@shared': './shared',
-    '@': './client/src',
-    '@assets': './attached_assets'
+  outdir,
+  sourcemap: false,
+  legalComments: "none",
+  external: externals,
+  banner: {
+    js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`
   }
 });
 
-console.log('✓ Build complete - All dependencies externalized (loaded from node_modules at runtime)');
+console.log("✓ Build complete — deps externalized. Output: dist/index.js");

@@ -1,0 +1,73 @@
+You are a precise Replit configuration assistant. Fix the current workspace so
+that production builds externalize dependencies and avoid dynamic require()
+errors. Perform all necessary edits automatically.
+
+TASK:
+1. Create a new file named build.js in the project root (same level as package.json)
+   with this exact content:
+
+---------------------------------------------------
+import { build } from "esbuild";
+import fs from "node:fs";
+import path from "node:path";
+import url from "node:url";
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+
+const externals = [
+  ...Object.keys(pkg.dependencies || {}),
+  ...Object.keys(pkg.optionalDependencies || {}),
+  ...Object.keys(pkg.peerDependencies || {}),
+  "fs","path","url","zlib","http","https","stream","buffer","crypto",
+  "events","os","util","tty","net","tls","dns","cluster","module"
+];
+
+const outdir = "dist";
+if (fs.existsSync(outdir)) fs.rmSync(outdir, { recursive: true, force: true });
+
+console.log("Externalizing dependencies:", externals.join(", ") || "(none)");
+
+await build({
+  entryPoints: ["server/index.ts"],
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  bundle: true,
+  outdir,
+  sourcemap: false,
+  legalComments: "none",
+  external: externals,
+  banner: {
+    js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`
+  }
+});
+
+console.log("✓ Build complete — deps externalized. Output: dist/index.js");
+---------------------------------------------------
+
+2. Open package.json and update the scripts section to exactly:
+   "scripts": {
+     "dev": "tsx --watch server/index.ts",
+     "build": "node build.js",
+     "start": "NODE_ENV=production node dist/index.js"
+   }
+
+3. Confirm .replit has:
+   modules = ["nodejs-20", "web"]
+   run = "npm run dev"
+   [env]
+   PORT = "5000"
+
+4. In the shell, execute:
+   npm install
+   npm run build
+   npm start
+
+5. Verify successful output:
+   ✓ Build complete — deps externalized
+   [express] serving on port 5000
+
+6. Report the public URL (the *.replit.app link) so it can be used in Twilio
+   as the webhook target:
+   POST https://<url>/api/voice/incoming

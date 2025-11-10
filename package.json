@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx --watch server/index.ts",
-    "build": "esbuild server/index.ts --platform=node --bundle --format=esm --target=node20 --outdir=dist --alias:@shared=./shared --alias:@=./client/src --alias:@assets=./attached_assets",
+    "build": "node build.js",
     "start": "NODE_ENV=production node dist/index.js"
   },
   "dependencies": {
