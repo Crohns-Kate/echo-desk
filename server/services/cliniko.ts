@@ -144,9 +144,11 @@ export async function getOrCreatePatient(params: {
 export { sanitizeEmail, sanitizePhoneE164AU };
 
 export async function getAvailability(opts?: {
-  fromDate?: string;  // YYYY-MM-DD format
-  toDate?: string;    // YYYY-MM-DD format
-  part?: 'early' | 'late' | 'morning' | 'afternoon';
+  fromDate?: string;  // YYYY-MM-DD format (deprecated, use fromIso)
+  toDate?: string;    // YYYY-MM-DD format (deprecated, use toIso)
+  fromIso?: string;   // ISO string (preferred)
+  toIso?: string;     // ISO string (preferred)
+  part?: 'early' | 'late' | 'morning' | 'afternoon' | 'any';
   timezone?: string;
   practitionerId?: string;
   appointmentTypeId?: string;
@@ -167,9 +169,20 @@ export async function getAvailability(opts?: {
       throw new Error('No appointment types found for practitioner');
     }
     
-    // Use provided date range or default to tomorrow
-    const from = opts?.fromDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const to = opts?.toDate || from;  // Same day query by default
+    // Accept ISO strings (preferred) or YYYY-MM-DD strings (legacy)
+    // Convert ISO strings to YYYY-MM-DD for Cliniko API
+    let from: string;
+    let to: string;
+    
+    if (opts?.fromIso && opts?.toIso) {
+      // Use ISO strings and convert to YYYY-MM-DD in the target timezone
+      from = dayjs(opts.fromIso).tz(tz).format('YYYY-MM-DD');
+      to = dayjs(opts.toIso).tz(tz).format('YYYY-MM-DD');
+    } else {
+      // Fallback to legacy fromDate/toDate or default to tomorrow
+      from = opts?.fromDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+      to = opts?.toDate || from;  // Same day query by default
+    }
     
     console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'}`);
     

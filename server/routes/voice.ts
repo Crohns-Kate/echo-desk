@@ -32,42 +32,43 @@ const TZ = "Australia/Brisbane";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Map “monday/tuesday/…” (or “today/tomorrow”) to a single-day range */
-function resolveSpokenDayToRange(speechRaw: string) {
-  const s = (speechRaw || "").toLowerCase().trim();
-
-  const tzNow = dayjs().tz();
-  const weekdayIndex: Record<string, number> = {
-    sunday: 0,
-    monday: 1,
-    tuesday: 2,
-    wednesday: 3,
-    thursday: 4,
-    friday: 5,
-    saturday: 6,
+function nextWeekdayFromSpeech(speechRaw: string): { day: string; fromIso: string; toIso: string } {
+  const map: Record<string, number> = {
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+    today: -1, tomorrow: -2,
   };
+  const words = speechRaw.toLowerCase();
+  let targetDow: number | null = null;
 
-  if (s.includes("today")) {
-    const d = tzNow.format("YYYY-MM-DD");
-    return { from: d, to: d };
-  }
-  if (s.includes("tomorrow")) {
-    const d = tzNow.add(1, "day").format("YYYY-MM-DD");
-    return { from: d, to: d };
-  }
-
-  for (const name of Object.keys(weekdayIndex)) {
-    if (s.includes(name)) {
-      const targetDow = weekdayIndex[name];
-      const diff =
-        (targetDow - tzNow.day() + 7) % 7 || 7; // always next occurrence
-      const d = tzNow.add(diff, "day").format("YYYY-MM-DD");
-      return { from: d, to: d };
+  if (words.includes("today")) targetDow = -1;
+  else if (words.includes("tomorrow")) targetDow = -2;
+  else {
+    for (const k of Object.keys(map)) {
+      if (words.includes(k) && k !== "today" && k !== "tomorrow") {
+        targetDow = map[k];
+        break;
+      }
     }
   }
 
-  // default: next business day
-  const d = tzNow.add(1, "day").format("YYYY-MM-DD");
-  return { from: d, to: d };
+  let base = dayjs().tz(TZ);
+  if (targetDow === -1) {
+    // today
+  } else if (targetDow === -2) {
+    base = base.add(1, "day");
+  } else if (targetDow !== null) {
+    const todayDow = base.day(); // 0..6
+    let delta = targetDow - todayDow;
+    if (delta < 0) delta += 7;
+    if (delta === 0) {
+      // same weekday today -> treat as next occurrence only if "today" wasn't said
+      // leave as today; if caller literally said Monday and today is Monday, it's fine
+    }
+    base = base.add(delta, "day");
+  }
+  const fromIso = base.startOf("day").tz(TZ).toDate().toISOString();
+  const toIso   = base.endOf("day").tz(TZ).toDate().toISOString();
+  return { day: base.format("dddd D MMMM"), fromIso, toIso };
 }
 
 /** True if caller said option two */
@@ -154,11 +155,11 @@ export function registerVoice(app: Express) {
         // BOOK: present two times for that day, carry them to next step via URL
         // ───────────────────────────────────────────────────────────────────
         case "book-part": {
-          const { from: fromDate, to: toDate } = resolveSpokenDayToRange(speechRaw);
-          console.log("[BOOK][LOOKUP]", { fromDate, toDate });
+          const { day, fromIso, toIso } = nextWeekdayFromSpeech(speechRaw || "");
+          console.log("[BOOK][LOOKUP]", { fromIso, toIso, day });
 
-          // Ask Cliniko for times on that exact day
-          const slots = await getAvailability(fromDate, toDate, "any");
+          // Ask Cliniko for times on that exact day using ISO strings
+          const slots = await getAvailability({ fromIso, toIso, part: "any" });
           const availableSlots = (slots || []).slice(0, 2);
 
           if (availableSlots.length === 0) {
@@ -166,11 +167,11 @@ export function registerVoice(app: Express) {
             break;
           }
 
-          const s1ISO = availableSlots[0].startIso || availableSlots[0].start || availableSlots[0];
-          const s2ISO = availableSlots[1]?.startIso || availableSlots[1]?.start || availableSlots[1];
+          const s1ISO = availableSlots[0].startIso;
+          const s2ISO = availableSlots[1]?.startIso;
 
-          const option1 = dayjs(s1ISO).tz().format("h:mm A dddd D MMMM");
-          const option2 = s2ISO ? dayjs(s2ISO).tz().format("h:mm A dddd D MMMM") : "";
+          const option1 = dayjs(s1ISO).tz(TZ).format("h:mm A dddd D MMMM");
+          const option2 = s2ISO ? dayjs(s2ISO).tz(TZ).format("h:mm A dddd D MMMM") : "";
 
           const s1 = encodeURIComponent(String(s1ISO));
           const s2 = s2ISO ? encodeURIComponent(String(s2ISO)) : "";
@@ -213,12 +214,40 @@ export function registerVoice(app: Express) {
 
           console.log("[BOOK-CHOOSE] Attempting to book slot:", slotISO);
 
+          // Validate the chosen ISO string
+          const start = new Date(slotISO);
+          if (isNaN(start.getTime())) {
+            console.error("[BOOK-CHOOSE] Invalid slot time:", slotISO);
+            saySafe(vr, "Sorry, there was an error with that time slot. Please try again.");
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+            break;
+          }
+
+          const startIso = start.toISOString();
+
+          // Get Cliniko IDs from environment with fallback defaults
+          const CLINIKO_BUSINESS_ID = process.env.CLINIKO_BUSINESS_ID || "";
+          const CLINIKO_PRACTITIONER_ID = process.env.CLINIKO_PRACTITIONER_ID || "";
+          const CLINIKO_APPOINTMENT_TYPE_ID = process.env.CLINIKO_APPT_TYPE_ID || "";
+
+          console.log("[BOOK-CHOOSE] Booking with:", {
+            businessId: CLINIKO_BUSINESS_ID,
+            practitionerId: CLINIKO_PRACTITIONER_ID,
+            appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
+            startIso
+          });
+
           try {
-            await createAppointmentForPatient(from, slotISO);
+            await createAppointmentForPatient(from, {
+              practitionerId: CLINIKO_PRACTITIONER_ID,
+              appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
+              startsAt: startIso,
+              businessId: CLINIKO_BUSINESS_ID
+            });
             saySafe(
               vr,
-              `All set. Your booking is confirmed for ${dayjs(slotISO).tz().format(
-                "h:mm a dddd D MMMM"
+              `All set. Your booking is confirmed for ${dayjs(startIso).tz(TZ).format(
+                "h:mm A dddd D MMMM"
               )}. We'll send a confirmation shortly.`
             );
           } catch (err) {
@@ -289,9 +318,10 @@ export function registerVoice(app: Express) {
         // ───────────────────────────────────────────────────────────────────
         case "reschedule-part": {
           const aid = String(req.query.aid || "");
-          const { from: fromDate, to: toDate } = resolveSpokenDayToRange(speechRaw);
+          const { day, fromIso, toIso } = nextWeekdayFromSpeech(speechRaw || "");
+          console.log("[RESCHEDULE][LOOKUP]", { fromIso, toIso, day });
 
-          const slots = await getAvailability(fromDate, toDate, "any");
+          const slots = await getAvailability({ fromIso, toIso, part: "any" });
           const availableSlots = (slots || []).slice(0, 2);
 
           if (!aid || availableSlots.length === 0) {
@@ -299,11 +329,11 @@ export function registerVoice(app: Express) {
             break;
           }
 
-          const s1ISO = availableSlots[0].startIso || availableSlots[0].start || availableSlots[0];
-          const s2ISO = availableSlots[1]?.startIso || availableSlots[1]?.start || availableSlots[1];
+          const s1ISO = availableSlots[0].startIso;
+          const s2ISO = availableSlots[1]?.startIso;
 
-          const option1 = dayjs(s1ISO).tz().format("h:mm a dddd D MMMM");
-          const option2 = s2ISO ? dayjs(s2ISO).tz().format("h:mm a dddd D MMMM") : "";
+          const option1 = dayjs(s1ISO).tz(TZ).format("h:mm A dddd D MMMM");
+          const option2 = s2ISO ? dayjs(s2ISO).tz(TZ).format("h:mm A dddd D MMMM") : "";
 
           const s1 = encodeURIComponent(String(s1ISO));
           const s2 = s2ISO ? encodeURIComponent(String(s2ISO)) : "";
