@@ -376,4 +376,34 @@ export function registerVoice(app: Express) {
       res.type("text/xml").send(fallback.toString());
     }
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TEST ROUTE (no signature validation) - for local testing without Twilio
+  // ─────────────────────────────────────────────────────────────────────────────
+  app.post("/api/voice/test", async (_req: Request, res: Response) => {
+    const vr = new twilio.twiml.VoiceResponse();
+    saySafe(vr, "This is a test Twi M L response. The voice system is working.");
+    vr.redirect({ method: "POST" }, abs("/api/voice/handle?route=start"));
+    res.type("text/xml").send(vr.toString());
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // INCOMING CALL WEBHOOK - entry point for real Twilio calls
+  // ─────────────────────────────────────────────────────────────────────────────
+  app.post("/api/voice/incoming", twilioWebhook, async (req: Request, res: Response) => {
+    const vr = new twilio.twiml.VoiceResponse();
+    const callSid = String(req.body?.CallSid || "");
+    const from = String(req.body?.From || "");
+    
+    console.log("[VOICE][INCOMING]", { callSid, from });
+    
+    saySafe(vr, "Hello and welcome to your clinic. How can I help you today?");
+    vr.pause({ length: 1 });
+    vr.redirect(
+      { method: "POST" },
+      abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+    );
+    
+    res.type("text/xml").send(vr.toString());
+  });
 }
