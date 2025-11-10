@@ -25,7 +25,7 @@ const twilioWebhook = twilio.webhook({ validate: !skipValidation, protocol: "htt
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
-dayjs.tz.setDefault("Australia/Brisbane");
+const TZ = "Australia/Brisbane";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers

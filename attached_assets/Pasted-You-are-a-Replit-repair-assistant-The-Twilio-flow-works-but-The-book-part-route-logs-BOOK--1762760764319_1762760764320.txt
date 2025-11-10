@@ -1,0 +1,125 @@
+You are a Replit repair assistant. The Twilio flow works, but:
+- The "book-part" route logs [BOOK][LOOKUP] with fromDate X but then fetches availability using a different date (often today).
+- Spoken day (e.g., "Wednesday") is not respected.
+- Need stable Australia/Brisbane timezone handling.
+- Final booking sometimes fails with undefined practitionerId and invalid start time.
+
+Make these exact changes:
+
+1) Open server/routes/voice.ts (or the file where the voice routes live inside server/).
+   Find the "book-part" case and replace the current date logic with this helper + usage:
+
+   // --- Add near top of file (after dayjs imports) ---
+   import dayjs from "dayjs";
+   import utc from "dayjs/plugin/utc.js";
+   import timezone from "dayjs/plugin/timezone.js";
+   dayjs.extend(utc);
+   dayjs.extend(timezone);
+   const TZ = "Australia/Brisbane";
+
+   function nextWeekdayFromSpeech(speechRaw: string): { day: string; fromIso: string; toIso: string } {
+     const map: Record<string, number> = {
+       sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+       today: -1, tomorrow: -2,
+     };
+     const words = speechRaw.toLowerCase();
+     let targetDow: number | null = null;
+
+     if (words.includes("today")) targetDow = -1;
+     else if (words.includes("tomorrow")) targetDow = -2;
+     else {
+       for (const k of Object.keys(map)) {
+         if (words.includes(k) && k !== "today" && k !== "tomorrow") {
+           targetDow = map[k];
+           break;
+         }
+       }
+     }
+
+     let base = dayjs().tz(TZ);
+     if (targetDow === -1) {
+       // today
+     } else if (targetDow === -2) {
+       base = base.add(1, "day");
+     } else if (targetDow !== null) {
+       const todayDow = base.day(); // 0..6
+       let delta = targetDow - todayDow;
+       if (delta < 0) delta += 7;
+       if (delta === 0) {
+         // same weekday today -> treat as next occurrence only if "today" wasn't said
+         // leave as today; if caller literally said Monday and today is Monday, it's fine
+       }
+       base = base.add(delta, "day");
+     }
+     const fromIso = base.startOf("day").tz(TZ).toDate().toISOString();
+     const toIso   = base.endOf("day").tz(TZ).toDate().toISOString();
+     return { day: base.format("dddd D MMMM"), fromIso, toIso };
+   }
+
+   // --- In the "book-part" route, replace any existing from/to calculation with: ---
+   const { day, fromIso, toIso } = nextWeekdayFromSpeech(speechRaw || "");
+   console.log("[BOOK][LOOKUP]", { fromIso, toIso, day });
+
+   // Call your availability fetch with these exact from/to values (no fallback to "today"):
+   const slots = await getAvailability(fromIso, toIso, "any"); // keep your signature as needed
+
+   // When presenting options, always format with TZ:
+   const option1 = dayjs(slots[0].startIso || slots[0].start).tz(TZ).format("h:mm A dddd D MMMM");
+   const option2 = slots[1] ? dayjs(slots[1].startIso || slots[1].start).tz(TZ).format("h:mm A dddd D MMMM") : "";
+
+   // And when you put the ISO strings as query params to book-choose, pass the raw ISO start times:
+   // e.g., vr.redirect(...?s1=<slots[0].startIso>&s2=<slots[1].startIso>)
+
+2) In the "book-choose" route:
+   - Read s1/s2 from req.query exactly as provided and DO NOT reformat before storing.
+   - Pick the selected ISO string as `chosenIso`.
+   - Validate it and convert safely for Cliniko:
+
+   const chosenIso = (req.query.s2 as string) && (digits === "2" || speechRaw.includes("two"))
+       ? String(req.query.s2) : String(req.query.s1);
+
+   console.log("[BOOK-CHOOSE] Attempting to book slot:", chosenIso);
+   const start = new Date(chosenIso);
+   if (isNaN(start as any)) {
+     console.error("[BOOK-CHOOSE] Invalid slot time:", chosenIso);
+     // say error, then end
+   }
+   const startIso = start.toISOString(); // this stays in UTC which Cliniko expects
+
+3) Ensure IDs are defined when booking:
+   At top-level (same file or your Cliniko service), ensure these envs are loaded and defaulted for testing:
+   const CLINIKO_BUSINESS_ID = process.env.CLINIKO_BUSINESS_ID || "1797514430146160197";
+   const CLINIKO_PRACTITIONER_ID = process.env.CLINIKO_PRACTITIONER_ID || "1797514426656498878";
+   const CLINIKO_APPOINTMENT_TYPE_ID = process.env.CLINIKO_APPOINTMENT_TYPE_ID || "1797514429433128673";
+
+   When calling createAppointmentForPatient or your booking call, pass those IDs explicitly:
+   await createAppointmentForPatient({
+     patientId, // whatever you resolved
+     businessId: CLINIKO_BUSINESS_ID,
+     practitionerId: CLINIKO_PRACTITIONER_ID,
+     appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
+     startIso
+   });
+
+   Add:
+   console.log("[Cliniko] Booking with:", {
+     businessId: CLINIKO_BUSINESS_ID,
+     practitionerId: CLINIKO_PRACTITIONER_ID,
+     appointmentTypeId: CLINIKO_APPOINTMENT_TYPE_ID,
+     startIso
+   });
+
+4) Make sure getAvailability(fromIso, toIso) uses those exact ISO strings when calling Cliniko:
+   GET /businesses/{businessId}/practitioners/{practitionerId}/appointment_types/{appointmentTypeId}/available_times?from=<fromIso>&to=<toIso>
+   (If your existing helper only accepts YYYY-MM-DD, then compute YYYY-MM-DD from the TZ date, but do not silently override from/to elsewhere.)
+
+5) Rebuild and restart:
+   npm run build
+   npm start
+
+6) Test:
+   - Say “book an appointment”
+   - When prompted “Which day suits you best?”, say a weekday, e.g., “Wednesday”.
+   - Verify logs show [BOOK][LOOKUP] fromIso/toIso for that Wednesday (Australia/Brisbane).
+   - Options spoken should match that weekday and correct local times.
+   - Choose option 1 or 2, and confirm Cliniko booking logs with the correct IDs and 200 OK.
