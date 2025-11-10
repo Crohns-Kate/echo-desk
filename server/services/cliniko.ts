@@ -361,7 +361,7 @@ export async function getNextUpcomingAppointment(patientId: string): Promise<{ i
 
 export async function getPatientAppointments(phone: string): Promise<ClinikoAppointment[]> {
   try {
-    const patient = await findPatientByPhone(phone);
+    const patient = await findPatientByPhoneRobust(phone);
     if (!patient) {
       return [];
     }

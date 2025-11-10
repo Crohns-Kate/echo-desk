@@ -8,8 +8,9 @@ import timezone from "dayjs/plugin/timezone.js";
 import {
   getAvailability,
   findPatientByPhoneRobust,
-  getNextUpcomingAppointment,
+  getPatientAppointments,
   rescheduleAppointment,
+  cancelAppointment,
   createAppointmentForPatient,
 } from "../services/cliniko";
 
@@ -105,20 +106,18 @@ export function registerVoice(app: Express) {
         // Entry: light intent detection → book / reschedule / cancel
         // ───────────────────────────────────────────────────────────────────
         case "start": {
-          if (speechRaw.includes("reschedule") || speechRaw.includes("change")) {
+          if (speechRaw.includes("reschedule") || speechRaw.includes("change") || speechRaw.includes("re schedule")) {
             vr.redirect(
               { method: "POST" },
-              abs(`/api/voice/handle?route=reschedule-lookup&callSid=${encodeURIComponent(callSid)}`)
+              abs(`/api/voice/handle?route=res-list&callSid=${encodeURIComponent(callSid)}`)
             );
             break;
           }
 
           if (speechRaw.includes("cancel")) {
-            // You can wire a cancel flow later if desired
-            saySafe(vr, "Okay. I can help with booking or rescheduling.");
             vr.redirect(
               { method: "POST" },
-              abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+              abs(`/api/voice/handle?route=cancel-list&callSid=${encodeURIComponent(callSid)}`)
             );
             break;
           }
@@ -256,140 +255,225 @@ export function registerVoice(app: Express) {
           }
           break;
         }
-
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: locate upcoming appt for caller
+        // RESCHEDULE: list up to 2 upcoming appointments, let user choose
         // ───────────────────────────────────────────────────────────────────
-        case "reschedule-lookup": {
+        case "res-list": {
           try {
-            // Find patient & next appointment
-            const patient = await findPatientByPhoneRobust(from);
-            const appt = patient
-              ? await getNextUpcomingAppointment(patient.id)
-              : null;
-
-            if (!appt) {
-              saySafe(vr, "I couldn’t find an existing appointment under this number.");
+            const appts = await getPatientAppointments(from);
+            
+            if (!appts || appts.length === 0) {
+              saySafe(vr, "I couldn't find any upcoming bookings on your number.");
+              vr.redirect(
+                { method: "POST" },
+                abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+              );
               break;
             }
 
-            // carry appointment id to next step via query
-            saySafe(
-              vr,
-              `I found your appointment on ${dayjs(appt.starts_at).tz(TZ).format("dddd D MMMM at h:mm A")}.`
-            );
-            vr.redirect(
-              { method: "POST" },
-              abs(
-                `/api/voice/handle?route=reschedule-day&callSid=${encodeURIComponent(
-                  callSid
-                )}&aid=${encodeURIComponent(String(appt.id))}`
-              )
-            );
-          } catch (e) {
-            console.error("[RESCHEDULE][LOOKUP][ERROR]", e);
-            saySafe(vr, "Sorry, I couldn’t access your appointment details.");
+            const [a1, a2] = appts.slice(0, 2);
+            const g = vr.gather({
+              input: ["speech", "dtmf"],
+              language: "en-AU",
+              timeout: 5,
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(callSid)}`) +
+                      `&aid1=${encodeURIComponent(a1.id)}` +
+                      (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+            });
+
+            if (a2) {
+              g.say(
+                { voice: "Polly.Olivia-Neural" },
+                `You have two bookings. Option one, ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
+              );
+            } else {
+              g.say(
+                { voice: "Polly.Olivia-Neural" },
+                `Your upcoming booking is ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to reschedule this appointment.`
+              );
+            }
+          } catch (err) {
+            console.error("[RES][LIST][ERROR]", err);
+            saySafe(vr, "Sorry, I couldn't load your bookings.");
           }
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: ask which new day
+        // RESCHEDULE: capture which appointment (1 or 2), then ask for new day
         // ───────────────────────────────────────────────────────────────────
-        case "reschedule-day": {
-          const aid = String(req.query.aid || "");
+        case "res-pick-day": {
+          const aid1 = String(req.query.aid1 || "");
+          const aid2 = String(req.query.aid2 || "");
+          const useSecond = choseSecondOption(digits, speechRaw);
+          const apptId = (useSecond && aid2) ? aid2 : aid1;
+
+          if (!apptId) {
+            saySafe(vr, "Sorry, I didn't catch that. Let's start again.");
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=res-list&callSid=${encodeURIComponent(callSid)}`)
+            );
+            break;
+          }
+
           const g = vr.gather({
             input: ["speech"],
             language: "en-AU",
             timeout: 5,
+            speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(
-              `/api/voice/handle?route=reschedule-part&callSid=${encodeURIComponent(
-                callSid
-              )}&aid=${encodeURIComponent(aid)}`
-            ),
+            action: abs(`/api/voice/handle?route=res-day&callSid=${encodeURIComponent(callSid)}&aid=${encodeURIComponent(apptId)}`),
           });
-          g.say({ voice: "Polly.Olivia-Neural" }, "Which new day would you prefer?");
+          g.say({ voice: "Polly.Olivia-Neural" }, "Which day would you like to move it to?");
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: present two new times for that day
+        // RESCHEDULE: get availability for the new day, present 1-2 options
         // ───────────────────────────────────────────────────────────────────
-        case "reschedule-part": {
+        case "res-day": {
           const aid = String(req.query.aid || "");
           const { day, fromIso, toIso } = nextWeekdayFromSpeech(speechRaw || "");
-          console.log("[RESCHEDULE][LOOKUP]", { fromIso, toIso, day });
+          console.log("[RES][DAY]", { fromIso, toIso, day });
 
           const slots = await getAvailability({ fromIso, toIso, part: "any" });
-          const availableSlots = (slots || []).slice(0, 2);
+          const [c1, c2] = (slots || []).slice(0, 2);
 
-          if (!aid || availableSlots.length === 0) {
-            saySafe(vr, "Sorry, I couldn’t find new times for that day.");
+          if (!c1) {
+            saySafe(vr, "Sorry, there are no times available that day.");
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=res-pick-day&callSid=${encodeURIComponent(callSid)}&aid1=${encodeURIComponent(aid)}`)
+            );
             break;
           }
-
-          const s1ISO = availableSlots[0].startIso;
-          const s2ISO = availableSlots[1]?.startIso;
-
-          const option1 = dayjs(s1ISO).tz(TZ).format("h:mm A dddd D MMMM");
-          const option2 = s2ISO ? dayjs(s2ISO).tz(TZ).format("h:mm A dddd D MMMM") : "";
-
-          const s1 = encodeURIComponent(String(s1ISO));
-          const s2 = s2ISO ? encodeURIComponent(String(s2ISO)) : "";
 
           const g = vr.gather({
             input: ["speech", "dtmf"],
             language: "en-AU",
             timeout: 5,
             actionOnEmptyResult: true,
-            action: abs(
-              `/api/voice/handle?route=reschedule-choose&callSid=${encodeURIComponent(
-                callSid
-              )}&aid=${encodeURIComponent(aid)}&s1=${s1}&s2=${s2}`
-            ),
+            action: abs(`/api/voice/handle?route=res-choose&callSid=${encodeURIComponent(callSid)}&aid=${encodeURIComponent(aid)}`) +
+                    `&s1=${encodeURIComponent(c1.startIso)}` +
+                    (c2 ? `&s2=${encodeURIComponent(c2.startIso)}` : ""),
           });
 
           g.say(
             { voice: "Polly.Olivia-Neural" },
-            s2ISO
-              ? `I found two options. Option one, ${option1}. Option two, ${option2}. Press 1 or 2, or say your choice.`
-              : `I found one option: ${option1}. Press 1 or say yes to move it.`
+            c2
+              ? `I have two options. Option one, ${dayjs(c1.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Or option two, ${dayjs(c2.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice.`
+              : `I have one option: ${dayjs(c1.startIso).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to move it here.`
           );
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
-        // RESCHEDULE: user chooses; we have appt id + s1/s2 on query
+        // RESCHEDULE: complete the reschedule with chosen slot
         // ───────────────────────────────────────────────────────────────────
-        case "reschedule-choose": {
+        case "res-choose": {
           const aid = String(req.query.aid || "");
-          const s1 = req.query.s1 ? decodeURIComponent(String(req.query.s1)) : null;
-          const s2 = req.query.s2 ? decodeURIComponent(String(req.query.s2)) : null;
+          const s1 = String(req.query.s1 || "");
+          const s2 = String(req.query.s2 || "");
           const useSecond = choseSecondOption(digits, speechRaw);
-          const slotISO = useSecond && s2 ? s2 : s1;
+          const picked = (useSecond && s2) ? s2 : s1;
 
-          if (!aid || !slotISO) {
-            saySafe(vr, "Sorry, I couldn’t reschedule that appointment.");
+          if (!aid || !picked) {
+            saySafe(vr, "Sorry, I couldn't complete that. Let's start again.");
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=res-list&callSid=${encodeURIComponent(callSid)}`)
+            );
             break;
           }
 
           try {
-            await rescheduleAppointment(aid, slotISO);
+            await rescheduleAppointment(aid, picked);
             saySafe(
               vr,
-              `Your appointment has been moved to ${dayjs(slotISO).tz().format(
-                "h:mm a dddd D MMMM"
-              )}.`
+              `Done. I've moved your booking to ${dayjs(picked).tz(TZ).format("h:mm A dddd D MMMM")}. You'll receive a confirmation shortly. Goodbye.`
             );
           } catch (err) {
-            console.error("[RESCHEDULE][CHOOSE][ERROR]", err);
-            saySafe(vr, "Sorry, I couldn’t complete the reschedule.");
+            console.error("[RES-CHOOSE][ERROR]", err);
+            saySafe(vr, "Sorry, I couldn't complete the reschedule.");
           }
           break;
         }
 
         // ───────────────────────────────────────────────────────────────────
+        // CANCEL: list up to 2 upcoming appointments
+        // ───────────────────────────────────────────────────────────────────
+        case "cancel-list": {
+          try {
+            const appts = await getPatientAppointments(from);
+            
+            if (!appts || appts.length === 0) {
+              saySafe(vr, "I couldn't find any upcoming bookings on your number.");
+              vr.redirect(
+                { method: "POST" },
+                abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`)
+              );
+              break;
+            }
+
+            const [a1, a2] = appts.slice(0, 2);
+            const g = vr.gather({
+              input: ["speech", "dtmf"],
+              language: "en-AU",
+              timeout: 5,
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}`) +
+                      `&aid1=${encodeURIComponent(a1.id)}` +
+                      (a2 ? `&aid2=${encodeURIComponent(a2.id)}` : ""),
+            });
+
+            if (a2) {
+              g.say(
+                { voice: "Polly.Olivia-Neural" },
+                `You have two bookings. Option one, ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Option two, ${dayjs(a2.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or 2, or say your choice to cancel.`
+              );
+            } else {
+              g.say(
+                { voice: "Polly.Olivia-Neural" },
+                `Your upcoming booking is ${dayjs(a1.starts_at).tz(TZ).format("h:mm A dddd D MMMM")}. Press 1 or say yes to cancel this appointment.`
+              );
+            }
+          } catch (err) {
+            console.error("[CANCEL][LIST][ERROR]", err);
+            saySafe(vr, "Sorry, I couldn't load your bookings.");
+          }
+          break;
+        }
+
+        // ───────────────────────────────────────────────────────────────────
+        // CANCEL: perform cancellation
+        // ───────────────────────────────────────────────────────────────────
+        case "cancel-confirm": {
+          const aid1 = String(req.query.aid1 || "");
+          const aid2 = String(req.query.aid2 || "");
+          const useSecond = choseSecondOption(digits, speechRaw);
+          const apptId = (useSecond && aid2) ? aid2 : aid1;
+
+          if (!apptId) {
+            saySafe(vr, "Sorry, I didn't catch that.");
+            vr.redirect(
+              { method: "POST" },
+              abs(`/api/voice/handle?route=cancel-list&callSid=${encodeURIComponent(callSid)}`)
+            );
+            break;
+          }
+
+          try {
+            await cancelAppointment(apptId);
+            saySafe(vr, "Your appointment has been cancelled. If you'd like to book another time, just say book an appointment.");
+          } catch (err) {
+            console.error("[CANCEL][CONFIRM][ERROR]", err);
+            saySafe(vr, "Sorry, I couldn't cancel that.");
+          }
+          break;
+        }
+
         default: {
           saySafe(vr, "I’m not sure what you meant. Let’s start again.");
           vr.redirect(
