@@ -2,28 +2,24 @@
   "name": "rest-express",
   "version": "1.0.0",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=production node --watch dist/index.cjs",
-    "build": "esbuild server/index.ts --platform=node --bundle --format=cjs --target=node20 --outfile=dist/index.cjs --alias:@shared=./shared --alias:@=./client/src --alias:@assets=./attached_assets",
-    "start": "NODE_ENV=production node dist/index.cjs"
+    "dev": "tsx --watch server/index.ts",
+    "build": "esbuild server/index.ts --platform=node --bundle --format=esm --target=node20 --outdir=dist --alias:@shared=./shared --alias:@=./client/src --alias:@assets=./attached_assets",
+    "start": "NODE_ENV=production node dist/index.js"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.0.2",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
-    "dayjs": "^1.11.13",
-    "dotenv": "^16.4.5",
-    "drizzle-orm": "^0.44.7",
-    "drizzle-zod": "^0.8.3",
-    "express": "^4.19.2",
-    "twilio": "^5.3.5",
-    "ws": "^8.18.3",
-    "zod": "^4.1.12"
+    "dayjs": "^1.11.19",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "twilio": "^5.10.4"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
     "esbuild": "^0.24.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.6.3"
   },
   "engines": {

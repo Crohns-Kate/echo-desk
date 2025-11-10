@@ -17,7 +17,9 @@ import { saySafe } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 
 // Important: use Twilio’s webhook middleware to avoid "stream is not readable"
-const twilioWebhook = twilio.webhook({ validate: true, protocol: "https" });
+// DEV MODE: Disable validation to avoid 11200 errors during local testing
+const isDev = process.env.NODE_ENV !== "production";
+const twilioWebhook = twilio.webhook({ validate: !isDev, protocol: "https" });
 
 dayjs.extend(utc);
 dayjs.extend(timezone);

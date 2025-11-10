@@ -5,7 +5,8 @@ import cors from "cors";
 
 // Your local modules
 import { registerVoice } from "./routes/voice";
-import { storage } from "./storage";
+// DEV MODE: Comment out storage import to run minimal server without DB
+// import { storage } from "./storage";
 
 // --- App setup ---
 const app = express();
@@ -33,10 +34,10 @@ registerVoice(app);
 // --- Robust startup, no top-level await ---
 (async () => {
   try {
-    // init storage/db/etc. (rename or remove if your storage exposes a different init)
-    if (typeof (storage as any)?.init === "function") {
-      await (storage as any).init();
-    }
+    // DEV MODE: Skip storage initialization in minimal mode
+    // if (typeof (storage as any)?.init === "function") {
+    //   await (storage as any).init();
+    // }
 
     const port = Number(process.env.PORT) || 5000;
     app.listen(port, () => {
