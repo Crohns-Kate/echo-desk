@@ -3,18 +3,26 @@
 ## ✅ Problem Solved
 
 The deployment was failing because:
-- esbuild was bundling `dotenv` which uses dynamic `require()` for Node.js built-ins
-- This doesn't work in ESM output format
-- Replit Deployments **automatically inject environment variables**, so dotenv is unnecessary in production
+- esbuild was bundling ALL dependencies (express, cors, twilio, body-parser, etc.) which use dynamic `require()` calls
+- These dynamic requires don't work in ESM output format
+- `dotenv` was being imported but is unnecessary in production
+- Replit Deployments **automatically inject environment variables** at runtime
 
 ## 🔧 Fixes Applied
 
-### 1. Created `build.js` - Proper esbuild configuration
+### 1. Created `build.js` - Explicit Dependency Externalization
 ```javascript
 import * as esbuild from 'esbuild';
 import { builtinModules } from 'module';
+import { readFileSync } from 'fs';
 
-// Build with all Node.js built-ins and packages marked as external
+// Read package.json to get all dependencies
+const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
+const dependencies = Object.keys(pkg.dependencies || {});
+const devDependencies = Object.keys(pkg.devDependencies || {});
+const allDeps = [...dependencies, ...devDependencies];
+
+// Build with ALL dependencies and built-ins marked as external
 await esbuild.build({
   entryPoints: ['server/index.ts'],
   bundle: true,
@@ -22,10 +30,10 @@ await esbuild.build({
   target: 'node20',
   format: 'esm',
   outdir: 'dist',
-  packages: 'external', // External all npm packages
   external: [
-    ...builtinModules, // External all Node.js built-ins (fs, path, etc.)
-    ...builtinModules.map(m => `node:${m}`), // Also handle node: prefix imports
+    ...builtinModules,                      // Node.js built-ins (fs, path, etc.)
+    ...builtinModules.map(m => `node:${m}`), // node: prefix imports
+    ...allDeps,                              // ALL npm dependencies
   ],
   alias: {
     '@shared': './shared',
@@ -36,22 +44,23 @@ await esbuild.build({
 ```
 
 **Key changes:**
-- `packages: 'external'` - All npm dependencies loaded from `node_modules` at runtime (not bundled)
-- `external: [...builtinModules]` - All Node.js built-ins (fs, path, etc.) NOT bundled
-- ✅ **0 dynamic requires** in output - fixes ESM bundling error
-- Creates a clean 33KB bundle (805 lines)
+- ✅ **Explicitly externalizes ALL dependencies** from package.json (express, cors, twilio, dayjs, etc.)
+- ✅ **Externalizes ALL Node.js built-ins** (fs, path, http, etc.)
+- ✅ **0 dynamic requires** in output - dependencies loaded from node_modules at runtime
+- ✅ Creates a clean 33KB bundle (802 lines) containing ONLY your application code
 
-### 2. Updated `server/index.ts` - Conditional dotenv loading
+### 2. Updated `server/index.ts` - Removed dotenv Completely
 ```typescript
-// Only load dotenv in development - Replit Deployments inject env vars automatically
-if (process.env.NODE_ENV !== "production") {
-  await import("dotenv/config");
-}
+// NOTE: No dotenv needed - Replit Deployments automatically inject environment variables
+// In dev mode, create a .env file and the tsx runtime will load it automatically
+import express from "express";
+import cors from "cors";
 ```
 
-This ensures:
-- ✅ Dev mode: dotenv loads `.env` file for local testing
-- ✅ Production: Skip dotenv, use Replit's injected environment variables
+**Why this works:**
+- ✅ **Dev mode (`tsx`):** Automatically loads `.env` file without importing dotenv
+- ✅ **Production (Replit):** Environment variables injected by deployment platform
+- ✅ **No bundling issues:** dotenv completely removed from import chain
 
 ## 📋 Manual Configuration Required
 

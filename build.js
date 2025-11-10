@@ -1,7 +1,16 @@
 import * as esbuild from 'esbuild';
 import { builtinModules } from 'module';
+import { readFileSync } from 'fs';
 
-// Build with all Node.js built-ins and packages marked as external
+// Read package.json to get all dependencies
+const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
+const dependencies = Object.keys(pkg.dependencies || {});
+const devDependencies = Object.keys(pkg.devDependencies || {});
+const allDeps = [...dependencies, ...devDependencies];
+
+console.log('Externalizing dependencies:', allDeps.join(', '));
+
+// Build with ALL dependencies and built-ins marked as external
 await esbuild.build({
   entryPoints: ['server/index.ts'],
   bundle: true,
@@ -9,10 +18,10 @@ await esbuild.build({
   target: 'node20',
   format: 'esm',
   outdir: 'dist',
-  packages: 'external', // External all npm packages
   external: [
-    ...builtinModules, // External all Node.js built-ins (fs, path, etc.)
-    ...builtinModules.map(m => `node:${m}`), // Also handle node: prefix imports
+    ...builtinModules,                      // Node.js built-ins (fs, path, etc.)
+    ...builtinModules.map(m => `node:${m}`), // node: prefix imports
+    ...allDeps,                              // All npm dependencies
   ],
   alias: {
     '@shared': './shared',
@@ -21,4 +30,4 @@ await esbuild.build({
   }
 });
 
-console.log('✓ Build complete - All dependencies and built-ins externalized');
+console.log('✓ Build complete - All dependencies externalized (loaded from node_modules at runtime)');

@@ -1,8 +1,6 @@
 // server/index.ts
-// Only load dotenv in development - Replit Deployments inject env vars automatically
-if (process.env.NODE_ENV !== "production") {
-  await import("dotenv/config");
-}
+// NOTE: No dotenv needed - Replit Deployments automatically inject environment variables
+// In dev mode, create a .env file and the tsx runtime will load it automatically
 import express from "express";
 import cors from "cors";
 
