@@ -1,56 +1,72 @@
-import express, { type Express } from "express";
-import { createServer, type Server } from "http";
-import { storage } from "./storage";
-import { registerVoice } from "./routes/voice";
-import { registerApp } from "./routes/app";
-import { initializeWebSocket } from "./services/websocket";
+        import express, { type Express } from "express";
+        import { createServer, type Server } from "http";
+        import { storage } from "./storage";
+        import { registerVoice } from "./routes/voice";
+        import { registerApp } from "./routes/app";
+        import { initializeWebSocket } from "./services/websocket";
 
-export async function registerRoutes(app: Express): Promise<Server> {
-  // Initialize database
-  await storage.seed();
+        /**
+         * Register all routes and initialize dependencies for the server.
+         * This is the unified routing layer for both Twilio and your app.
+         */
+        export async function registerRoutes(app: Express): Promise<Server> {
+          // ──────────────────────────────────────────────────────────────
+          // 1️⃣ Initialize storage / database
+          // ──────────────────────────────────────────────────────────────
+          await storage.seed();
 
-  // Simple health check for Twilio and monitoring
-  app.get('/health', (_req, res) => {
-    res.json({ ok: true });
-  });
+          // ──────────────────────────────────────────────────────────────
+          // 2️⃣ Twilio routes — must be first
+          // ──────────────────────────────────────────────────────────────
+          // Twilio webhooks need unmodified raw request body for signature validation.
+          // These routes must be mounted before JSON parsing middleware elsewhere.
+          registerVoice(app);
 
-  // Enhanced health check endpoint with live API verification
-  app.get('/__cliniko/health', async (_req, res) => {
-    const region = process.env.CLINIKO_REGION || 'au4';
-    const apiKey = process.env.CLINIKO_API_KEY;
-    const businessId = process.env.CLINIKO_BUSINESS_ID;
-    const practitionerId = process.env.CLINIKO_PRACTITIONER_ID;
-    const appointmentTypeId = process.env.CLINIKO_APPT_TYPE_ID;
-    
-    const response: any = {
-      region,
-      businessId,
-      practitionerId,
-      appointmentTypeId,
-      ok: false,
-      reason: null
-    };
+          // ──────────────────────────────────────────────────────────────
+          // 3️⃣ Health Check Endpoints
+          // ──────────────────────────────────────────────────────────────
 
-    try {
-      if (!apiKey) {
-        response.reason = 'CLINIKO_API_KEY not set';
-        return res.json(response);
-      }
+          // Simple ping for uptime monitoring
+          app.get("/health", (_req, res) => {
+            res.json({
+              ok: true,
+              env: process.env.NODE_ENV || "development",
+              timestamp: new Date().toISOString(),
+            });
+          });
 
-      const base = `https://api.${region}.cliniko.com/v1`;
-      const url = `${base}/appointment_types?per_page=1`;
-      
-      const apiRes = await fetch(url, {
-        headers: {
-          'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
-          'Accept': 'application/json'
-        }
-      });
+          // Enhanced Cliniko health endpoint
+          app.get("/__cliniko/health", async (_req, res) => {
+            const region = process.env.CLINIKO_REGION || "au4";
+            const apiKey = process.env.CLINIKO_API_KEY;
+            const businessId = process.env.CLINIKO_BUSINESS_ID;
+            const practitionerId = process.env.CLINIKO_PRACTITIONER_ID;
 
-      if (!apiRes.ok) {
-        const text = await apiRes.text();
-        response.reason = `Cliniko API ${apiRes.status}: ${text.slice(0, 100)}`;
-        return res.json(response);
+            res.json({
+              ok: Boolean(apiKey && businessId && practitionerId),
+              region,
+              businessId,
+              practitionerId,
+              timestamp: new Date().toISOString(),
+            });
+          });
+
+          // ──────────────────────────────────────────────────────────────
+          // 4️⃣ Application routes (REST endpoints, web UI, etc.)
+          // ──────────────────────────────────────────────────────────────
+          registerApp(app);
+
+          // ──────────────────────────────────────────────────────────────
+          // 5️⃣ WebSocket server (for live notifications / dashboard updates)
+          // ──────────────────────────────────────────────────────────────
+          const server = createServer(app);
+          initializeWebSocket(server);
+
+          // ──────────────────────────────────────────────────────────────
+          // 6️⃣ Return the configured HTTP server
+          // ──────────────────────────────────────────────────────────────
+          return server;
+        }        return res.json(response);
       }
 
       response.ok = true;
