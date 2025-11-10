@@ -1,0 +1,269 @@
+Absolutely — here’s a single “Replit AI Prompt” you can paste into Replit’s AI panel. It tells the assistant exactly what to change, creates minimal server-only code, and gives the commands to rebuild and run. You can literally copy-paste this whole thing:
+
+---
+
+## 🔧 Replit AI “Fix-All” Prompt (paste everything below)
+
+**You are my Replit pair-programmer.** Please do the following EXACTLY and in this order to reset my project to a minimal, stable, server-only Twilio voice bot that answers calls, offers two times, and confirms a booking (no DB, no Cliniko, no React/Vite/Tailwind/Drizzle/Neon). We will add them back later.
+
+### 1) Remove unused client/build cruft
+
+* Delete any client/front-end build files and configs if present:
+
+  * `client/` (entire folder)
+  * `vite.config.*`
+  * `postcss.config.*`
+  * `tailwind.config.*`
+* Do **not** delete the `server/` folder.
+
+### 2) Create/replace these files
+
+**`package.json`** (replace entirely):
+
+```json
+{
+  "name": "rest-express",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild server/index.ts --platform=node --bundle --format=cjs --target=node20 --outfile=dist/index.cjs",
+    "start": "NODE_ENV=production node dist/index.cjs"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.13",
+    "express": "^4.21.1",
+    "twilio": "^5.3.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.30",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+```
+
+**`tsconfig.json`** (replace entirely):
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "dist",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["server/**/*.ts"]
+}
+```
+
+**`server/index.ts`** (replace entirely):
+
+```ts
+import express from "express";
+import cors from "cors";
+import bodyParser from "body-parser";
+import { registerVoice } from "./routes/voice";
+
+const app = express();
+
+app.use(cors());
+app.use(bodyParser.urlencoded({ extended: false })); // Twilio posts x-www-form-urlencoded
+app.use(bodyParser.json());
+
+// health
+app.get("/health", (_req, res) => res.json({ ok: true, env: process.env.NODE_ENV || "dev" }));
+
+// voice routes
+registerVoice(app);
+
+const port = Number(process.env.PORT || 5000);
+app.listen(port, () => {
+  console.log(`[express] serving on port ${port}`);
+});
+```
+
+**`server/routes/voice.ts`** (create/replace with this minimal, working flow):
+
+```ts
+import type { Express, Request, Response } from "express";
+import twilio from "twilio";
+import dayjs from "dayjs";
+
+type CallState = {
+  slots?: { iso: string; spoken: string }[];
+};
+const memory = new Map<string, CallState>(); // keyed by callSid
+
+export function registerVoice(app: Express) {
+  app.post("/api/voice/handle", async (req: Request, res: Response) => {
+    const vr = new twilio.twiml.VoiceResponse();
+
+    try {
+      const callSid = String(req.query.callSid || req.body.CallSid || "");
+      const route = String(req.query.route || "start");
+      const speechRaw = String(req.body.SpeechResult || "").trim().toLowerCase();
+      const digits = String(req.body.Digits || "").trim();
+      const from = String(req.body.From || "");
+
+      console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
+
+      if (route === "start" && digits === "9") {
+        vr.say({ voice: "Polly.Olivia-Neural" }, "Reschedule is not available in this minimal build.");
+        res.type("text/xml").send(vr.toString());
+        return;
+      }
+
+      switch (route) {
+        case "start": {
+          if (speechRaw.includes("book")) {
+            vr.redirect({ method: "POST" }, `/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`);
+            break;
+          }
+          if (speechRaw.includes("reschedule") || speechRaw.includes("change")) {
+            vr.say({ voice: "Polly.Olivia-Neural" }, "Reschedule is not available in this minimal build.");
+            break;
+          }
+
+          const g = vr.gather({
+            input: ["speech"],
+            language: "en-AU",
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: `/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`
+          });
+          g.say({ voice: "Polly.Olivia-Neural" }, "Hello and welcome to your clinic. Say book to make an appointment.");
+          break;
+        }
+
+        case "book-day": {
+          const g = vr.gather({
+            input: ["speech"],
+            language: "en-AU",
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: `/api/voice/handle?route=book-part&callSid=${encodeURIComponent(callSid)}`
+          });
+          g.say({ voice: "Polly.Olivia-Neural" }, "Which day suits you best?");
+          break;
+        }
+
+        case "book-part": {
+          const base = dayjs();
+          const s1 = base.add(90, "minute").second(0).millisecond(0).toDate();
+          const s2 = base.add(135, "minute").second(0).millisecond(0).toDate();
+
+          const slots = [
+            { iso: s1.toISOString(), spoken: dayjs(s1).format("h:mm A dddd D MMMM") },
+            { iso: s2.toISOString(), spoken: dayjs(s2).format("h:mm A dddd D MMMM") }
+          ];
+          memory.set(callSid, { slots });
+
+          const g = vr.gather({
+            input: ["speech", "dtmf"],
+            language: "en-AU",
+            timeout: 5,
+            actionOnEmptyResult: true,
+            action: `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}`
+          });
+
+          g.say(
+            { voice: "Polly.Olivia-Neural" },
+            `I have two options. Option one, ${slots[0].spoken}. Or option two, ${slots[1].spoken}. Press 1 or 2, or say your choice.`
+          );
+          break;
+        }
+
+        case "book-choose": {
+          const state = memory.get(callSid);
+          const sayTwo = speechRaw.includes("two") || digits === "2";
+          const choiceIdx = sayTwo ? 1 : 0;
+          const pick = state?.slots?.[choiceIdx];
+
+          if (!pick) {
+            vr.say({ voice: "Polly.Olivia-Neural" }, "Sorry, that option isn't available. Let's start again.");
+            vr.redirect({ method: "POST" }, `/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
+            break;
+          }
+
+          vr.say(
+            { voice: "Polly.Olivia-Neural" },
+            `All set. Your booking is confirmed for ${dayjs(pick.iso).format("h:mm A dddd D MMMM")}. We'll send a confirmation by message. Goodbye.`
+          );
+          break;
+        }
+
+        default: {
+          vr.say({ voice: "Polly.Olivia-Neural" }, "I didn't catch that. Let's start again.");
+          vr.redirect({ method: "POST" }, `/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
+          break;
+        }
+      }
+
+      res.type("text/xml").send(vr.toString());
+    } catch (err) {
+      console.error("[VOICE][ERROR]", err);
+      const fallback = new twilio.twiml.VoiceResponse();
+      fallback.say({ voice: "Polly.Olivia-Neural" }, "Sorry, an error occurred. Please try again later.");
+      res.type("text/xml").send(fallback.toString());
+    }
+  });
+}
+```
+
+### 3) Install & build fresh, then start a single process
+
+Open the Shell and run (exact order):
+
+```bash
+pkill -f "node .*dist/index" || true
+pkill -f "node dist/index.cjs" || true
+
+rm -rf dist node_modules
+npm install
+npm run build
+npm start
+```
+
+You should see:
+
+```
+[express] serving on port 5000
+```
+
+### 4) Verify health
+
+* Open the web preview (or curl) `GET /health` → expect: `{"ok":true,"env":"production"}`
+
+### 5) Twilio wiring (unchanged from your existing setup)
+
+* Your existing **/api/voice/incoming** (the first TwiML greet + `<Gather>`) should **POST** to:
+
+  * `action="/api/voice/handle?route=start&callSid={CallSid}"`
+* This minimal server responds to all `/api/voice/handle` routes and will no longer 500.
+
+### 6) After the call flow works
+
+Tell me when the call confirms a time. Then I’ll give you a **drop-in** patch to:
+
+* replace the fake two slots with live **Cliniko availability**,
+* add a safe reschedule path, and
+* keep all the build settings stable.
+
+**Do not** add Vite/React/DB until the phone flow is 100% boring and stable.
+
+---
+
+That’s it. Paste the prompt above into Replit’s AI, let it apply changes, then run the shell commands exactly as listed.
