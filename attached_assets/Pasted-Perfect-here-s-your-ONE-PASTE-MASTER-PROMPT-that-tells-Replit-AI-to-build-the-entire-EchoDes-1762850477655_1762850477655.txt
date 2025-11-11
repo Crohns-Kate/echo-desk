@@ -1,0 +1,329 @@
+Perfect — here’s your **ONE-PASTE MASTER PROMPT** that tells Replit AI to build the **entire EchoDesk stack**: backend (Twilio+Cliniko, OpenAI NLU, guardrails, multi-tenant, health checks) **and** the **pro admin dashboard UI** (recordings + transcriptions dropdowns, feature flags, tenant settings).
+
+Paste everything below into Replit AI’s “Ask” box (no code editor).
+
+---
+
+# ECHODESK: FULL STACK REFIT (BACKEND + ADMIN UI)
+
+You are refactoring a Node/Express Twilio voice bot called **EchoDesk** into a **multi-tenant, provider-agnostic voice scheduling OS** with a **professional admin dashboard**.
+
+## Goals (do all)
+
+* Fix current bugs (**empty CallSid**, date window limited to same day, AU date parsing, timezone conversion).
+* Conversational flows: **new/existing**, **book**, **reschedule**, **cancel**, contact capture with SMS fallback.
+* Provider-agnostic layer (start with **Cliniko**, but keep adapters).
+* **OpenAI NLU** for intent/slots + AI summaries (guardrails in front).
+* **Guardrails**: emergency detection, prohibited topics, PII redaction, rate limiting, audit log.
+* **Health/ops**: `/healthz`, `/readyz`, `/metrics`, **admin dashboard** with recordings, transcripts, and QA tools.
+* **Multi-tenant**: branding, hours, voice, providers, flags per tenant.
+* **Pro Admin UI** (React): tenant switcher, KPIs, charts, feature flags, full settings, **call recordings & transcriptions** via dropdown, exports.
+
+---
+
+## Tech + Deps
+
+* Node 18+, Express, `luxon`, `prom-client`, `jsonwebtoken`, `zod` (for schema), `qs`.
+* Optional: `ejs` for a simple HTML host page if not using React build tools.
+* Frontend: React + Tailwind + shadcn/ui + lucide-react + recharts (single-file SPA served by Express).
+* Testing: light unit tests with `vitest` or `jest`.
+
+Run:
+
+```
+npm i luxon prom-client jsonwebtoken zod qs
+# if bundling React UI with Vite, set it up; or inline single-file React via esbuild
+```
+
+---
+
+## ENV (validate on boot; fail early if missing)
+
+```
+PORT=5000
+BUSINESS_TZ=Australia/Brisbane
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_SMS_FROM=+61...
+CLINIKO_API_KEY=
+CLINIKO_BUSINESS_ID=
+CLINIKO_PRACTITIONER_ID=
+CLINIKO_APPOINTMENT_TYPE_ID=
+OPENAI_API_KEY=
+OPENAI_MODEL_NLU=gpt-4o-mini
+OPENAI_MODEL_SUMMARY=gpt-4o-mini
+ADMIN_JWT_SECRET=change-me
+DISABLE_TWILIO_VALIDATION=true   # dev only
+SESSION_BACKEND=memory           # later: redis
+```
+
+---
+
+## File Structure (create/migrate)
+
+```
+/src
+  /routes
+    voiceRouter.js              # Twilio webhooks
+    adminRouter.js              # /healthz, /readyz, /metrics, /admin/*
+  /services
+    appointmentsService.js      # provider-agnostic booking ops
+    identityService.js          # resolve caller→patient
+    smsService.js               # Twilio SMS fallback links
+  /adapters
+    /providers
+      providerRegistry.js
+      clinikoAdapter.js
+  /util
+    dates.js                    # Luxon helpers, AU parsing, windows
+    twiml.js                    # TwiML helpers
+    logger.js
+  /guardrails
+    filters.js                  # emergency/prohibited/redaction/rate-limit
+    audit.js                    # append-only JSONL
+  /ai
+    openaiClient.js             # NLU + summaries with schemas
+    schemas.js
+    policies/safety.md
+  /tenancy
+    resolveTenant.js            # header or inbound-number → tenant
+    tenants.json                # multi-tenant config
+  /state
+    sessionStore.js             # per CallSid; memory for now
+/admin-ui
+  Dashboard.jsx                 # Single-file React SPA (pro UI)
+/index.js                       # Express bootstrap
+```
+
+---
+
+## Tenancy (multi-business ready)
+
+* `tenants.json` example:
+
+```json
+[
+  {
+    "tenant_id": "spinalogic",
+    "brand": { "name": "Spinalogic", "voice": "Polly.Olivia-Neural" },
+    "locale": "en-AU",
+    "business_tz": "Australia/Brisbane",
+    "clinic_hours": { "mon":[10,15], "tue":null, "wed":[10,15], "thu":[10,15], "fri":[10,15], "sat":null, "sun":null },
+    "providers": {
+      "primary": "cliniko",
+      "cliniko": {
+        "api_key": "env:CLINIKO_API_KEY",
+        "business_id": "1797514430146160197",
+        "practitioner_id": "1797514426656498878",
+        "appointment_type_id": "1797514429433128673"
+      }
+    },
+    "twilio": { "sms_from": "env:TWILIO_SMS_FROM", "validate_signatures": false },
+    "features": { "new_patient": true, "reschedule": true, "cancel": true, "sms_fallback": true, "aiSummaries": true }
+  }
+]
+```
+
+* Middleware `resolveTenant(req)` resolves tenant from inbound number or header `x-tenant-id`. Attach `req.tenant`.
+
+---
+
+## Provider Adapter Interface
+
+Create `clinikoAdapter.js` implementing:
+
+```
+listAppointmentTypes(practitionerId)
+getAvailability({ businessId, practitionerId, appointmentTypeId, fromDateUTC, toDateUTC }) -> ISO[]
+createAppointment({ startUtcISO, patient, meta })
+findUpcomingAppointment({ phone })
+rescheduleAppointment({ apptId, newStartUtcISO })
+cancelAppointment({ apptId })
+```
+
+Register in `providerRegistry.js` and select by tenant’s `providers.primary`.
+
+---
+
+## Date/Time Rules (AU first)
+
+* **Never** use `new Date("11/11/2025")`.
+* Use `luxon` with explicit AU formats and natural language:
+
+  * Recognize: “today”, “tomorrow”, weekday names, “next week”, “the following week”, “in a month”, “11/11”, “11 Nov”, “11 November 2025”.
+  * Prefer **dd/MM(/yy)** if ambiguous.
+* Convert provider UTC → **tenant tz** for speaking + filtering; convert back to UTC for writes.
+* Filter to **clinic hours** (Mon/Wed/Thu/Fri 10:00–15:00; rest closed).
+* Offer only **future** slots.
+
+Implement in `/util/dates.js`:
+
+* `parsePreferredDateAU(input, nowLocal)`
+* `dateRangeForWindow(selection, nowLocal)` where selection ∈ `this-week`, `next-week`, `week-plus-2`, `in-a-month`
+* `formatSpokenLocal(dtLocal)` → `"h:mm a cccc d LLLL"`
+* `toClinikoDateRangeLocalToUTC(fromLocal,toLocal)`.
+
+---
+
+## Voice Flow (Twilio)
+
+* **Always propagate** `callSid` and `tenant_id` in every `<Redirect>` and `<Gather action>`.
+* Routes:
+
+  * `POST /api/voice/incoming` → greet, capture `CallSid` + `From`, session seed → redirect `route=start&callSid=...`
+  * `POST /api/voice/handle?route=...&callSid=...`
+* Intents: **book**, **reschedule**, **cancel**, **help**; branch **new vs existing** patient.
+
+**Dialog Minimum**
+
+1. `start` → “Are you a new or existing patient? Would you like to book, reschedule, or cancel?”
+2. `choose-intent` → set `intent`, `isNewPatient`.
+3. `collect-contact` if missing or low confidence:
+
+   * Confirm `From` or enter another number; collect **name**/**email**; if unclear, **SMS link** to webform (`CONTACT_CAPTURE_URL_BASE?sid=...`).
+4. `ask-when` → options: **this week / next week / the following week / in a month**.
+5. `ask-day` → which day.
+6. `offer-times` → up to 2 local filtered slots; 1=first, 2=second (or speech “first/second”).
+7. `confirm-book` → create in UTC, speak AU local confirmation.
+8. `find-to-resched` → fetch upcoming appt by phone; then same ask-when/day/times; `confirm-resched`.
+9. `confirm-cancel` → confirm and cancel.
+
+---
+
+## OpenAI NLU + Summaries (guarded)
+
+* `/ai/openaiClient.js`:
+
+  * `classifyIntentAndSlots(transcript, locale)` → **strict JSON** `{ intent, entities, confidence }`. Use tool/function-calling or JSON schema; validate with `zod`. On failure, fallback to rule-based `/nlp/intents.js`.
+  * `summarizeCall(session)` → `{title, bullets[], actions[]}` (short).
+* ENV models: `OPENAI_MODEL_NLU`, `OPENAI_MODEL_SUMMARY`.
+* Keep prompts small; truncate transcripts >4k chars.
+* Call **guardrails** first (see below).
+
+---
+
+## Guardrails (safety + ops)
+
+* `/guardrails/filters.js`:
+
+  * `detectEmergency(text)` → route to emergency script (AU: **call 000**), hang up, audit.
+  * `detectProhibited(text)` → refuse politely (no medical advice/controlled substances/etc.).
+  * `redactPII(text)` → mask CC/TFN/Medicare, optionally emails/phones in logs.
+  * `rateLimit(key)` using token-bucket (ENV `RATE_MAX_REQS`, `RATE_WINDOW_MS`).
+* `/guardrails/audit.js`: append JSONL `{ts, callSid, tenant, action, outcome}`.
+* Run guardrails before OpenAI calls and before provider writes.
+
+---
+
+## Health, Readiness, Metrics, Admin
+
+* `/healthz`: process up, memory, event loop lag.
+* `/readyz`: Twilio signing enabled?, OpenAI reachable?, Cliniko reachable?, ENV ok.
+* `/metrics`: Prometheus counters/histograms:
+
+  * HTTP requests, Twilio/Cliniko/OpenAI latency, ASR no-match rate, booking success %, abandonment.
+* `/admin/status`: JSON snapshot: integration states, version, tenant counts.
+* `/admin/calls`:
+
+  * `GET /admin/calls?tenant=&from=&to=&intent=&outcome=`
+  * return list with `{id, startedAt, from, tenant, intent, outcome, durationSec}`
+* `GET /admin/calls/:id/recording` → HTTP 302 to mp3 (Twilio media URL) or proxy.
+* `GET /admin/calls/:id/transcript` → text/JSON transcript.
+* `POST /admin/run-checks` → run ping to each integration; return green/amber/red.
+* `GET/POST /admin/flags` → feature flags per tenant.
+* `POST /admin/export` → CSV of metrics/calls.
+* Auth all admin routes with `Authorization: Bearer <JWT>` (role claims: `owner`, `admin`, `viewer`).
+
+---
+
+## Admin Dashboard (React SPA)
+
+Create `/admin-ui/Dashboard.jsx` (single-file React) with **pro styling**:
+
+* **Header:** Logo “ED”, Tenant select, date range, Actions (Export CSV, Chaos Mode, Clear Cache), “Run Checks”.
+* **Status Cards:** Twilio/Cliniko/OpenAI status + latency, Signature state.
+* **KPI Chart:** Calls vs Bookings (recharts), totals.
+* **ASR No-Match Gauge** (progress bar).
+* **Recent Calls Table:** columns: Call SID, Started, From, Intent, Outcome, Actions.
+* **Call Drawer (side sheet):**
+
+  * **Recording player** (audio) + **dropdown**: Download, Export transcript, Flag for QA.
+  * **Transcript** textarea (read-only) + dropdown: Copy, Export .txt, Send to QA.
+  * **AI Summary & Entities**: intent, outcome, confidence, duration.
+  * Buttons: Call Back, Open in Provider, Close.
+* **Feature Flags Panel:** toggles for reschedule, cancel, smsFallback, strictSignature, aiSummaries.
+* **Tabs:** Tenant Settings, Branding/Voice, Providers (secure inputs), Webhooks/Plugins.
+* **Footer** with copyright.
+
+### Wire the UI
+
+Replace mock data with real fetches:
+
+* `GET /admin/status` → status cards
+* `GET /metrics` → chart series
+* `GET /admin/calls?...` → table
+* `GET /admin/calls/:id/transcript` → drawer transcript
+* `GET /admin/calls/:id/recording` → set `<audio src>`
+* `POST /admin/run-checks`, `POST /admin/flags`, `POST /admin/export`
+  Always pass `?tenant=<id>` and Authorization header.
+
+Serve the SPA at `/dashboard` (either prebuilt assets or server-rendered shell that inlines the component).
+
+---
+
+## Logging (make issues obvious)
+
+Prefix with context and callSid:
+
+* `[VOICE][INCOMING][CAxxxx] from=+61… tenant=spinalogic`
+* `[VOICE][HANDLE][CAxxxx] route=offer-times intent=book speech=\"…\"`
+* `[Cliniko][CAxxxx] GET /available_times?from=…&to=…`
+* `[AI][CAxxxx] intent=book conf=0.91`
+* Redact PII where not necessary.
+
+---
+
+## Tests (light)
+
+* `parsePreferredDateAU`, `dateRangeForWindow('next-week')`, `isInClinicWindow`, `formatSpokenLocal`
+* `detectEmergency`, `redactPII`, `classifyIntentAndSlots` (mocked)
+
+---
+
+## Migration & Fixes for Known Bugs
+
+* Ensure **every** TwiML `<Redirect>` and `<Gather action>` appends `?callSid=${encodeURIComponent(callSid)}&tenant=${tenantId}`.
+* Convert provider slots `UTC → tenant tz` **before** filtering and speaking; **filter out** anything outside 10:00–15:00 **Mon/Wed/Thu/Fri**, and anything **in the past**.
+* When booking/rescheduling, convert chosen **local** time **back to UTC** (`.setZone('utc').toISO()`) for provider POST.
+* Expand availability searches via `dateRangeForWindow` for “this week / next week / following week / in a month”.
+* Default to **this week** if caller is vague; escalate options if no suitable slots.
+
+---
+
+## Done Criteria
+
+* Calling the Twilio number shows **non-empty CallSid** in logs and consistent tenant id.
+* Saying “I’m a new patient, next week Thursday afternoon”:
+
+  * NLU: `{ intent: 'book', whenWindow: 'next-week' }`, confidence > 0.7.
+  * Admin dashboard: metrics increment; call appears in “Recent Calls” with recording link and transcript.
+* Booking offers only **within clinic hours** on allowed days; confirmation speaks AU local time that matches provider booking.
+* `/dashboard` shows green/amber/red statuses, charts, feature flags, tenant settings, and **recordings + transcripts** available from the call drawer dropdown.
+* `/healthz`, `/readyz`, `/metrics` respond with correct data; `/admin/run-checks` returns a clear summary.
+
+---
+
+**Implement all of the above now. Output:**
+
+1. A list of files created/modified.
+2. Any missing ENV keys.
+3. CURL examples for:
+
+   * `GET /admin/status`
+   * `GET /admin/calls?tenant=spinalogic`
+   * `GET /admin/calls/:id/transcript`
+4. How to launch `/dashboard`.
+
+---
+
+**End of Master Prompt.**
