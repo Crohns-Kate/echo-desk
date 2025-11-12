@@ -1,4 +1,4 @@
-export const VOICE_NAME = (process.env.TTS_VOICE ?? "Polly.Nicole-Neural") as any;
+export const VOICE_NAME = (process.env.TTS_VOICE ?? "Polly.Olivia-Neural") as any;
 export const FALLBACK_VOICE = "alice" as any;
 export const BUSINESS_TZ = process.env.BUSINESS_TZ || "Australia/Brisbane";
 
