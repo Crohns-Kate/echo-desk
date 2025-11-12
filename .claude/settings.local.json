@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(pkill:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(npx tsc:*)",
+      "Bash(curl:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

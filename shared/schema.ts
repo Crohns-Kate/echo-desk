@@ -56,6 +56,7 @@ export const callLogs = pgTable("call_logs", {
   summary: text("summary"),
   recordingSid: text("recording_sid"),
   recordingUrl: text("recording_url"),
+  recordingStatus: text("recording_status"),
   transcript: text("transcript"),
   duration: integer("duration"), // in seconds
   createdAt: timestamp("created_at").defaultNow(),

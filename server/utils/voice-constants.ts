@@ -1,63 +1,46 @@
-export const VOICE_NAME = (process.env.TTS_VOICE ?? "Polly.Matthew") as any;
+export const VOICE_NAME = (process.env.TTS_VOICE ?? "Polly.Nicole-Neural") as any;
 export const FALLBACK_VOICE = "alice" as any;
 export const BUSINESS_TZ = process.env.BUSINESS_TZ || "Australia/Brisbane";
 
 export function sanitizeForSay(text?: string): string {
   if (!text) return "";
   return String(text)
-    .replace(/[^\x20-\x7E]/g, " ")  // ASCII only
-    .replace(/[""'']/g, '"')
-    .replace(/\s+/g, " ")
+    .replace(/[^\x00-\x7F]/g, '') // strip non-ASCII
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-export function ttsClean(s: string | null | undefined) {
-  if (!s) return "";
-  return String(s)
-    .replace(/<[^>]*>/g, " ")       // strip any SSML
-    .replace(/[^\x20-\x7E]/g, " ")  // ASCII only
-    .replace(/[""'']/g, '"')
-    .replace(/[?!,:;()]/g, "")      // keep it simple
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-export function saySafe(node: any, text?: string, voice?: string) {
+// Optional: chunk very long strings to avoid provider limits (~3000 chars)
+export function chunkForSay(text: string, max = 1200): string[] {
   const t = sanitizeForSay(text);
-  if (!t) return;
-  const primary = voice || VOICE_NAME;
-  try {
-    node.say({ voice: primary }, t);
-  } catch {
-    node.say({ voice: FALLBACK_VOICE }, t);
+  if (t.length <= max) return [t];
+  const parts: string[] = [];
+  let i = 0;
+  while (i < t.length) {
+    let end = Math.min(i + max, t.length);
+    // try to break on sentence boundary
+    const dot = t.lastIndexOf(". ", end);
+    if (dot > i + 100) end = dot + 1;
+    parts.push(t.slice(i, end).trim());
+    i = end;
   }
+  return parts;
 }
 
-export function say(node: any, text: string) {
-  // If text contains SSML tags (<speak>, <say-as>, etc.), pass it raw
-  const isSSML = text.includes("<speak>") || text.includes("<say-as");
-  
-  if (isSSML) {
-    // SSML mode - pass raw text with voice parameter
-    if (!text.trim()) return;
+export function saySafe(node: any, text?: string, voice?: any) {
+  const chunks = chunkForSay(text ?? "");
+  const v = (voice ?? VOICE_NAME) as any;
+  for (const c of chunks) {
+    if (!c) continue;
     try {
-      node.say({ voice: VOICE_NAME }, text);
+      node.say({ voice: v, language: "en-AU" }, c);
     } catch {
-      node.say({ voice: FALLBACK_VOICE }, text);
-    }
-  } else {
-    // Plain text mode - clean and pass
-    const cleaned = ttsClean(text);
-    if (!cleaned) return;
-    try {
-      node.say({ voice: VOICE_NAME }, cleaned);
-    } catch {
-      node.say({ voice: FALLBACK_VOICE }, cleaned);
+      node.say({ voice: FALLBACK_VOICE, language: "en-AU" }, c);
     }
   }
 }
 
 export function pause(node: any, secs = 1) {
-  const n = Number.isInteger(secs) ? secs : 1;
+  const n = Number.isFinite(secs) && secs > 0 ? Math.min(10, Math.floor(secs)) : 1;
   node.pause({ length: n });
 }
