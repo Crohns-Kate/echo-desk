@@ -86,27 +86,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { localDayWindow, speakableTime, AUST_TZ } = await import('./time');
       const { getAvailability } = await import('./services/cliniko');
-      
+
       const day = (req.query.day as string) || 'tomorrow';
       const part = (req.query.part as string) as 'morning' | 'afternoon' | undefined;
-      
+
       // Calculate exact day window
       const { fromDate, toDate } = localDayWindow(day, AUST_TZ);
-      
+
       console.log(`[Diagnostic] Fetching avail for day="${day}" part="${part}" → from=${fromDate} to=${toDate}`);
-      
+
       // Fetch slots
-      const slots = await getAvailability({ 
-        fromDate, 
-        toDate, 
-        part, 
-        timezone: AUST_TZ 
+      const result = await getAvailability({
+        fromISO: fromDate,
+        toISO: toDate,
+        part,
+        timezone: AUST_TZ
       });
-      
+      const slots = result.slots || [];
+
       // Pick top 2 for IVR offer
       const option1 = slots[0];
       const option2 = slots[1];
-      
+
       const response: any = {
         ok: true,
         day,
@@ -116,25 +117,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalSlots: slots.length,
         options: []
       };
-      
+
       if (option1) {
         response.options.push({
-          iso: option1.startIso,
-          speakable: speakableTime(option1.startIso, AUST_TZ)
+          iso: option1.startISO,
+          speakable: speakableTime(option1.startISO, AUST_TZ)
         });
       }
-      
+
       if (option2) {
         response.options.push({
-          iso: option2.startIso,
-          speakable: speakableTime(option2.startIso, AUST_TZ)
+          iso: option2.startISO,
+          speakable: speakableTime(option2.startISO, AUST_TZ)
         });
       }
-      
+
       if (slots.length === 0) {
         response.message = `No ${part || ''} slots available for ${day} (${fromDate})`;
       }
-      
+
       res.json(response);
     } catch (err: any) {
       res.json({
@@ -163,6 +164,192 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Voice test utility - test TTS voices
+  app.get('/__voice/test', async (req, res) => {
+    const voice = (req.query.voice as string) || process.env.TTS_VOICE || 'Polly.Matthew';
+    const text = (req.query.say as string) || 'Hello, this is a voice test.';
+
+    const twilio = (await import('twilio')).default;
+    const vr = new twilio.twiml.VoiceResponse();
+    vr.say({ voice: voice as any }, text);
+
+    res.type('text/xml').send(vr.toString());
+  });
+
+  // Intent classifier test endpoint
+  app.post('/__intent/classify', async (req, res) => {
+    try {
+      const { text } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: 'Missing text parameter' });
+      }
+
+      const { classifyIntent } = await import('./services/intent');
+      const result = await classifyIntent(text);
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Dashboard - last 20 calls with intent filter
+  app.get('/__cliniko/dashboard', async (req, res) => {
+    const intentFilter = req.query.intent as string | undefined;
+
+    try {
+      const { storage } = await import('./storage');
+      const allCalls = await storage.listCalls(undefined, 50);
+
+      // Filter by intent if specified
+      const calls = intentFilter
+        ? allCalls.filter(c => c.intent?.toLowerCase() === intentFilter.toLowerCase())
+        : allCalls;
+
+      const displayCalls = calls.slice(0, 20).map(c => ({
+        time: c.createdAt ? new Date(c.createdAt).toLocaleString('en-AU', {
+          timeZone: 'Australia/Brisbane',
+          dateStyle: 'short',
+          timeStyle: 'short'
+        }) : '-',
+        sid: c.callSid || '-',
+        intent: c.intent || '-',
+        outcome: c.summary || '-',
+        error: c.summary?.includes('error') || c.summary?.includes('failed') ? '⚠️' : ''
+      }));
+
+      // HTML response with filter and search
+      const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Call Dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 20px; background: #f5f5f5; }
+    h1 { color: #333; }
+    .controls { margin: 20px 0; display: flex; gap: 10px; }
+    input, select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #0079F2; color: white; font-weight: 600; }
+    tr:hover { background: #f9f9f9; }
+    .error { color: #d32f2f; }
+    .empty { text-align: center; padding: 40px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>📞 Call Dashboard</h1>
+  <div class="controls">
+    <select id="intentFilter" onchange="filterIntent()">
+      <option value="">All Intents</option>
+      <option value="incoming" ${intentFilter === 'incoming' ? 'selected' : ''}>Incoming</option>
+      <option value="booking" ${intentFilter === 'booking' ? 'selected' : ''}>Booking</option>
+      <option value="book" ${intentFilter === 'book' ? 'selected' : ''}>Book</option>
+    </select>
+    <input type="search" id="searchBox" placeholder="Search calls..." onkeyup="searchCalls()" />
+  </div>
+  <table id="callsTable">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Call SID</th>
+        <th>Intent</th>
+        <th>Outcome</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${displayCalls.length ? displayCalls.map(c => `
+        <tr>
+          <td>${c.time}</td>
+          <td><code>${c.sid}</code></td>
+          <td><strong>${c.intent}</strong></td>
+          <td>${c.outcome}</td>
+          <td class="error">${c.error}</td>
+        </tr>
+      `).join('') : '<tr><td colspan="5" class="empty">No calls found</td></tr>'}
+    </tbody>
+  </table>
+  <script>
+    function filterIntent() {
+      const intent = document.getElementById('intentFilter').value;
+      window.location.href = intent ? '?intent=' + intent : '/__cliniko/dashboard';
+    }
+    function searchCalls() {
+      const query = document.getElementById('searchBox').value.toLowerCase();
+      const rows = document.querySelectorAll('#callsTable tbody tr');
+      rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(query) ? '' : 'none';
+      });
+    }
+
+    // Live WebSocket updates
+    const wsToken = new URLSearchParams(window.location.search).get('ws_token') || '';
+    if (wsToken) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(\`\${protocol}//\${window.location.host}/ws?ws_token=\${wsToken}\`);
+
+      ws.onmessage = (event) => {
+        try {
+          const { event: eventType, data } = JSON.parse(event.data);
+
+          if (eventType === 'call:started' || eventType === 'call:updated') {
+            prependCall(data);
+          } else if (eventType === 'alert:created') {
+            showToast('⚠️ New Alert: ' + data.reason);
+          }
+        } catch (e) {
+          console.error('WS parse error:', e);
+        }
+      };
+
+      ws.onerror = () => console.warn('WS connection error');
+      ws.onclose = () => console.log('WS disconnected');
+    }
+
+    function prependCall(call) {
+      const tbody = document.querySelector('#callsTable tbody');
+      const time = new Date(call.createdAt).toLocaleString('en-AU', {
+        timeZone: 'Australia/Brisbane',
+        dateStyle: 'short',
+        timeStyle: 'short'
+      });
+
+      const row = document.createElement('tr');
+      row.innerHTML = \`
+        <td>\${time}</td>
+        <td><code>\${call.callSid || '-'}</code></td>
+        <td><strong>\${call.intent || '-'}</strong></td>
+        <td>\${call.summary || '-'}</td>
+        <td class="error">\${call.summary?.includes('error') ? '⚠️' : ''}</td>
+      \`;
+
+      // Prepend to table (newest first)
+      tbody.insertBefore(row, tbody.firstChild);
+
+      // Highlight briefly
+      row.style.backgroundColor = '#fffbcc';
+      setTimeout(() => row.style.backgroundColor = '', 2000);
+    }
+
+    function showToast(message) {
+      const toast = document.createElement('div');
+      toast.textContent = message;
+      toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#d32f2f;color:white;padding:16px 24px;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:9999;';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 5000);
+    }
+  </script>
+</body>
+</html>`;
+
+      res.type('text/html').send(html);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Self-test endpoint - runs both checks
   app.get('/__selftest', async (_req, res) => {
     const results: any = {
@@ -183,7 +370,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Overall status
       results.ok = results.tests.health.ok && results.tests.availability.ok;
-      results.summary = results.ok 
+      results.summary = results.ok
         ? `✅ All tests passed. ${results.tests.availability.totalSlots || 0} slots available.`
         : `❌ Some tests failed. Check individual test results.`;
 
@@ -195,40 +382,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(results);
   });
 
-  // Timezone test endpoint - verify AU timezone formatting works
-  app.get('/__tz-test', async (_req, res) => {
-    const { speakTimeAU, speakDayAU, formatAppointmentTimeAU, isMorningAU, dateOnlyAU } = await import('./utils/tz');
-    
-    const testSlots = [
-      "2025-10-31T23:00:00Z",  // 10am Nov 1 AEDT
-      "2025-11-01T02:00:00Z",  // 1pm Nov 1 AEDT
-      "2025-11-01T05:00:00Z"   // 4pm Nov 1 AEDT
-    ];
-    
-    const results = testSlots.map(slot => ({
-      utc: slot,
-      speakTimeAU: speakTimeAU(slot),
-      speakDayAU: speakDayAU(slot),
-      formatAppointmentTimeAU: formatAppointmentTimeAU(slot),
-      isMorningAU: isMorningAU(slot),
-      dateOnlyAU: dateOnlyAU(slot)
-    }));
-    
-    res.json({
-      ok: true,
-      timezone: 'Australia/Sydney',
-      samples: results
-    });
-  });
 
   // Recording proxy endpoints for authenticated playback and download
   app.get('/api/recordings/:sid/stream', async (req, res) => {
     try {
+      // Check recording token authentication
+      const recordingToken = process.env.RECORDING_TOKEN;
+      if (!recordingToken) {
+        return res.status(500).json({ error: 'Recording access not configured' });
+      }
+
+      const authHeader = req.headers.authorization;
+      const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+      if (!providedToken || providedToken !== recordingToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
       const { sid } = req.params;
       const fetch = (await import('node-fetch')).default;
       const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
-      
+
       if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
         return res.status(500).json({ error: 'Twilio credentials not configured' });
       }
@@ -270,11 +445,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/recordings/:sid/download', async (req, res) => {
     try {
+      // Check recording token authentication
+      const recordingToken = process.env.RECORDING_TOKEN;
+      if (!recordingToken) {
+        return res.status(500).json({ error: 'Recording access not configured' });
+      }
+
+      const authHeader = req.headers.authorization;
+      const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+      if (!providedToken || providedToken !== recordingToken) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
       const { sid } = req.params;
       const fetch = (await import('node-fetch')).default;
       const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
-      
+
       if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
         return res.status(500).json({ error: 'Twilio credentials not configured' });
       }
@@ -317,6 +505,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Apply URL-encoded parser specifically for Twilio voice webhooks
   // This prevents "stream is not readable" errors by parsing only once
   app.use('/api/voice', express.urlencoded({ extended: false }));
+
+  // Apply Twilio signature validation to all voice webhooks
+  const { validateTwilioSignature } = await import('./middlewares/twilioAuth');
+  app.use('/api/voice', validateTwilioSignature);
 
   // Register Twilio voice webhook routes
   registerVoice(app);

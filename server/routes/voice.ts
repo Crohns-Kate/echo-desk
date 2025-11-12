@@ -4,8 +4,13 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
 import { getAvailability, createAppointmentForPatient } from "../services/cliniko";
-import { saySafe } from "../utils/voice-constants";
+import { saySafe, VOICE_NAME } from "../utils/voice-constants";
 import { abs } from "../utils/url";
+import { labelForSpeech, AUST_TZ } from "../time";
+import { storage } from "../storage";
+import { sendAppointmentConfirmation } from "../services/sms";
+import { emitCallStarted, emitCallUpdated, emitAlertCreated } from "../services/websocket";
+import { classifyIntent } from "../services/intent";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -14,11 +19,35 @@ dayjs.tz.setDefault("Australia/Brisbane");
 export function registerVoice(app: Express) {
   // ───────────────────────────────────────────────
   // Entry point for each call
-  app.post("/api/voice/incoming", (req: Request, res: Response) => {
+  app.post("/api/voice/incoming", async (req: Request, res: Response) => {
     const callSid =
       (req.body?.CallSid as string) ||
       (req.query?.callSid as string) ||
       "";
+    const from = (req.body?.From as string) || "";
+    const to = (req.body?.To as string) || "";
+
+    // Log call start and load conversation memory
+    try {
+      const tenant = await storage.getTenant('default');
+      if (tenant) {
+        // Create or get existing conversation
+        let conversation = await storage.createConversation(tenant.id, undefined, true);
+
+        const call = await storage.logCall({
+          tenantId: tenant.id,
+          conversationId: conversation.id,
+          callSid,
+          fromNumber: from,
+          toNumber: to,
+          intent: "incoming",
+          summary: "Call initiated"
+        });
+        emitCallStarted(call);
+      }
+    } catch (e) {
+      console.error("[VOICE][LOG ERROR]", e);
+    }
 
     const vr = new twilio.twiml.VoiceResponse();
     const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
@@ -34,7 +63,7 @@ export function registerVoice(app: Express) {
       method: "POST",
     });
 
-    g.say({ voice: "Polly.Olivia-Neural" }, "Hello and welcome to your clinic. How can I help you today?");
+    g.say({ voice: VOICE_NAME }, "Hello and welcome to your clinic. How can I help you today?");
     g.pause({ length: 1 });
 
     vr.redirect({ method: "POST" }, timeoutUrl);
@@ -67,7 +96,7 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        g.say({ voice: "Polly.Olivia-Neural" }, "Sorry, I didn’t catch that. Please say book, reschedule, or cancel.");
+        g.say({ voice: VOICE_NAME }, "Sorry, I didn't catch that. Please say book, reschedule, or cancel.");
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -81,7 +110,7 @@ export function registerVoice(app: Express) {
           actionOnEmptyResult: true,
           action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`),
         });
-        g.say({ voice: "Polly.Olivia-Neural" }, "System ready. Would you like to book an appointment?");
+        g.say({ voice: VOICE_NAME }, "System ready. Would you like to book an appointment?");
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -99,7 +128,7 @@ export function registerVoice(app: Express) {
           actionOnEmptyResult: true,
           action: abs(`/api/voice/handle?route=book-part&callSid=${encodeURIComponent(callSid)}`),
         });
-        g.say({ voice: "Polly.Olivia-Neural" }, "Which day suits you best?");
+        g.say({ voice: VOICE_NAME }, "Which day suits you best?");
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -122,27 +151,59 @@ export function registerVoice(app: Express) {
 
         console.log("[BOOK][LOOKUP]", { fromDate, toDate });
 
-        let slots: Array<{ startIso?: string; start?: string }> = [];
+        let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
-          // part="any" keeps simple; your Cliniko service maps this appropriately
-          slots = (await getAvailability(fromDate, toDate, "any")) || [];
-        } catch (e) {
+          const result = await getAvailability({ fromISO: fromDate, toISO: toDate });
+          slots = result.slots || [];
+        } catch (e: any) {
           console.error("[BOOK-PART][getAvailability ERROR]", e);
-          saySafe(vr, "Sorry, I couldn’t load available times. Please try again later.");
+
+          // Create alert for Cliniko failure
+          try {
+            const tenant = await storage.getTenant('default');
+            if (tenant) {
+              const alert = await storage.createAlert({
+                tenantId: tenant.id,
+                reason: 'cliniko_error',
+                payload: { error: e.message, endpoint: 'getAvailability', callSid, from }
+              });
+              emitAlertCreated(alert);
+            }
+          } catch (alertErr) {
+            console.error("[ALERT ERROR]", alertErr);
+          }
+
+          saySafe(vr, "Sorry, I couldn't load available times. Please try again later.");
           return res.type("text/xml").send(vr.toString());
         }
 
         const available = slots.slice(0, 2);
         if (available.length === 0) {
-          saySafe(vr, "Sorry, there are no times available for that day.");
+          // Create alert for no availability
+          try {
+            const tenant = await storage.getTenant('default');
+            if (tenant) {
+              const alert = await storage.createAlert({
+                tenantId: tenant.id,
+                reason: 'no_availability',
+                payload: { fromDate, toDate, callSid, from }
+              });
+              emitAlertCreated(alert);
+            }
+          } catch (alertErr) {
+            console.error("[ALERT ERROR]", alertErr);
+          }
+
+          saySafe(vr, "Sorry, there are no times available for that day. Would you like to try a different day?");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
 
-        const s1 = available[0].startIso || available[0].start!;
-        const s2 = available[1]?.startIso || available[1]?.start;
+        const s1 = available[0].startISO;
+        const s2 = available[1]?.startISO;
 
-        const opt1 = dayjs(s1).tz().format("h:mm A dddd D MMMM");
-        const opt2 = s2 ? dayjs(s2).tz().format("h:mm A dddd D MMMM") : "";
+        const opt1 = labelForSpeech(s1, AUST_TZ);
+        const opt2 = s2 ? labelForSpeech(s2, AUST_TZ) : "";
 
         const nextUrl = abs(
           `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${s2 ? `&s2=${encodeURIComponent(s2)}` : ""}`
@@ -157,7 +218,7 @@ export function registerVoice(app: Express) {
         });
 
         g.say(
-          { voice: "Polly.Olivia-Neural" },
+          { voice: VOICE_NAME },
           s2
             ? `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`
             : `I have one option available: ${opt1}. Press 1 or say yes to book it.`
@@ -180,16 +241,64 @@ export function registerVoice(app: Express) {
         }
 
         try {
-          await createAppointmentForPatient(from, chosen);
-        } catch (e) {
+          const { env } = await import("../utils/env");
+          await createAppointmentForPatient(from, {
+            startsAt: chosen,
+            practitionerId: env.CLINIKO_PRACTITIONER_ID,
+            appointmentTypeId: env.CLINIKO_APPT_TYPE_ID,
+            notes: `Booked via voice call at ${new Date().toISOString()}`
+          });
+
+          // Log successful booking
+          try {
+            const updated = await storage.updateCall(callSid, {
+              intent: "booking",
+              summary: `Appointment booked for ${chosen}`
+            });
+            if (updated) emitCallUpdated(updated);
+          } catch (logErr) {
+            console.error("[LOG ERROR]", logErr);
+          }
+
+          // Send SMS confirmation
+          const spokenTime = labelForSpeech(chosen, AUST_TZ);
+          try {
+            const tenant = await storage.getTenant('default');
+            if (tenant) {
+              await sendAppointmentConfirmation({
+                to: from,
+                appointmentDate: spokenTime,
+                clinicName: tenant.clinicName
+              });
+            }
+          } catch (smsErr) {
+            console.warn("[SMS] Failed to send confirmation:", smsErr);
+            // Don't fail the call if SMS fails
+          }
+
+          saySafe(vr, `All set. Your appointment is confirmed for ${spokenTime}. Goodbye.`);
+          return res.type("text/xml").send(vr.toString());
+        } catch (e: any) {
           console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
-          saySafe(vr, "Sorry, I couldn’t complete the booking. Please try again later.");
+
+          // Create alert for booking failure
+          try {
+            const tenant = await storage.getTenant('default');
+            if (tenant) {
+              const alert = await storage.createAlert({
+                tenantId: tenant.id,
+                reason: 'booking_failed',
+                payload: { error: e.message, chosen, callSid, from }
+              });
+              emitAlertCreated(alert);
+            }
+          } catch (alertErr) {
+            console.error("[ALERT ERROR]", alertErr);
+          }
+
+          saySafe(vr, "Sorry, I couldn't complete the booking. Please try again later.");
           return res.type("text/xml").send(vr.toString());
         }
-
-        const spokenTime = dayjs(chosen).tz().format("h:mm A dddd D MMMM");
-        saySafe(vr, `All set. Your appointment is confirmed for ${spokenTime}. Goodbye.`);
-        return res.type("text/xml").send(vr.toString());
       }
 
       // Fallback

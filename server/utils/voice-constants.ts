@@ -1,5 +1,5 @@
-export const VOICE_NAME = process.env.VOICE_NAME || "Polly.Olivia-Neural";
-export const FALLBACK_VOICE = "alice";
+export const VOICE_NAME = (process.env.TTS_VOICE ?? "Polly.Matthew") as any;
+export const FALLBACK_VOICE = "alice" as any;
 export const BUSINESS_TZ = process.env.BUSINESS_TZ || "Australia/Brisbane";
 
 export function sanitizeForSay(text?: string): string {

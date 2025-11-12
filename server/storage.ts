@@ -54,9 +54,12 @@ export interface IStorage {
 
   // Stats
   getStats(tenantId?: number): Promise<{
-    activeCalls: number;
+    callsToday: number;
+    calls7d: number;
+    bookings: number;
+    cancels: number;
+    errors: number;
     pendingAlerts: number;
-    todayCalls: number;
   }>;
 
   // Seed
@@ -189,25 +192,87 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getStats(tenantId?: number): Promise<{
-    activeCalls: number;
+    callsToday: number;
+    calls7d: number;
+    bookings: number;
+    cancels: number;
+    errors: number;
     pendingAlerts: number;
-    todayCalls: number;
   }> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const allAlerts = await this.listAlerts(tenantId, 1000);
-    const pendingAlerts = allAlerts.filter(a => a.status === 'open').length;
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    const allCalls = await this.listCalls(tenantId, 1000);
-    const todayCalls = allCalls.filter(c => 
-      c.createdAt && new Date(c.createdAt) >= today
-    ).length;
+    // Fast aggregated queries
+    const [callsTodayResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(callLogs)
+      .where(
+        and(
+          tenantId ? eq(callLogs.tenantId, tenantId) : undefined,
+          gt(callLogs.createdAt, today)
+        )
+      );
+
+    const [calls7dResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(callLogs)
+      .where(
+        and(
+          tenantId ? eq(callLogs.tenantId, tenantId) : undefined,
+          gt(callLogs.createdAt, sevenDaysAgo)
+        )
+      );
+
+    const [bookingsResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(callLogs)
+      .where(
+        and(
+          tenantId ? eq(callLogs.tenantId, tenantId) : undefined,
+          sql`${callLogs.intent} LIKE '%book%'`
+        )
+      );
+
+    const [cancelsResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(callLogs)
+      .where(
+        and(
+          tenantId ? eq(callLogs.tenantId, tenantId) : undefined,
+          sql`${callLogs.intent} LIKE '%cancel%'`
+        )
+      );
+
+    const [errorsResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(alerts)
+      .where(
+        and(
+          tenantId ? eq(alerts.tenantId, tenantId) : undefined,
+          sql`${alerts.reason} IN ('cliniko_error', 'booking_failed')`
+        )
+      );
+
+    const [pendingAlertsResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(alerts)
+      .where(
+        and(
+          tenantId ? eq(alerts.tenantId, tenantId) : undefined,
+          eq(alerts.status, 'open')
+        )
+      );
 
     return {
-      activeCalls: 0, // Would need real-time tracking via Twilio Status Callbacks
-      pendingAlerts,
-      todayCalls,
+      callsToday: Number(callsTodayResult?.count ?? 0),
+      calls7d: Number(calls7dResult?.count ?? 0),
+      bookings: Number(bookingsResult?.count ?? 0),
+      cancels: Number(cancelsResult?.count ?? 0),
+      errors: Number(errorsResult?.count ?? 0),
+      pendingAlerts: Number(pendingAlertsResult?.count ?? 0),
     };
   }
 

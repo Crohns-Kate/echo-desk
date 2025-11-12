@@ -1,144 +1,119 @@
 import { env } from '../utils/env';
 
-const regex = {
-  book: /\b(book|appointment|new|schedule)\b/i,
-  reschedule: /\b(reschedule|change|move)\b/i,
-  cancel: /\b(cancel)\b/i,
-  human: /\b(reception(ist)?|human|staff|person)\b/i,
-  hours: /\b(hour|open|close|time)\b/i,
-};
-
-type ConversationContext = {
-  turns: Array<{
-    role: 'user' | 'assistant';
-    content: string;
-  }>;
-  previousIntent?: string;
+export interface IntentResult {
+  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'unknown';
+  day?: string;
+  part?: 'morning' | 'afternoon';
   confidence?: number;
-};
-
-export async function detectIntent(
-  utterance: string,
-  conversationContext?: ConversationContext
-): Promise<{ intent: string; confidence: number }> {
-  // If OpenAI not set or intent engine disabled, use regex
-  if (!env.OPENAI_API_KEY || !env.INTENT_ENGINE) {
-    return detectIntentRegex(utterance);
-  }
-
-  try {
-    return await detectIntentOpenAI(utterance, conversationContext);
-  } catch (error) {
-    console.error('[INTENT] OpenAI detection failed, falling back to regex:', error);
-    return detectIntentRegex(utterance);
-  }
 }
 
-function detectIntentRegex(utterance: string): { intent: string; confidence: number } {
-  if (regex.book.test(utterance)) return { intent: 'book', confidence: 0.8 };
-  if (regex.reschedule.test(utterance)) return { intent: 'reschedule', confidence: 0.8 };
-  if (regex.cancel.test(utterance)) return { intent: 'cancel', confidence: 0.8 };
-  if (regex.human.test(utterance)) return { intent: 'human', confidence: 0.7 };
-  if (regex.hours.test(utterance)) return { intent: 'hours', confidence: 0.7 };
-  return { intent: 'unknown', confidence: 0.3 };
-}
+/**
+ * Classify caller intent using LLM (OpenAI/Anthropic) with fallback to keyword matching
+ */
+export async function classifyIntent(utterance: string): Promise<IntentResult> {
+  const text = utterance.toLowerCase().trim();
 
-async function detectIntentOpenAI(
-  utterance: string,
-  conversationContext?: ConversationContext
-): Promise<{ intent: string; confidence: number }> {
-  const systemPrompt = `You are an intent classifier for a medical clinic voice receptionist system.
-
-Available intents:
-- book: Patient wants to book a new appointment
-- reschedule: Patient wants to reschedule an existing appointment
-- cancel: Patient wants to cancel an existing appointment
-- human: Patient wants to speak with a human receptionist
-- hours: Patient is asking about clinic hours
-- unknown: Intent is unclear or doesn't match any category
-
-Analyze the user's utterance and return:
-1. The most likely intent
-2. A confidence score (0.0 to 1.0)
-
-Consider conversation context if provided to improve accuracy.`;
-
-  const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: systemPrompt },
-  ];
-
-  // Add conversation history for multi-turn refinement
-  if (conversationContext?.turns && conversationContext.turns.length > 0) {
-    messages.push({
-      role: 'system',
-      content: `Previous conversation:\n${conversationContext.turns
-        .map((t) => `${t.role}: ${t.content}`)
-        .join('\n')}\n\nPrevious detected intent: ${conversationContext.previousIntent || 'none'}`,
-    });
+  // Try LLM classification if API key available
+  if (env.OPENAI_API_KEY) {
+    try {
+      const result = await classifyWithLLM(text);
+      if (result.confidence && result.confidence > 0.7) {
+        return result;
+      }
+    } catch (e) {
+      console.warn('[Intent] LLM classification failed, using fallback:', e);
+    }
   }
 
-  messages.push({
-    role: 'user',
-    content: `Classify this utterance: "${utterance}"
+  // Fallback to keyword matching
+  return classifyWithKeywords(text);
+}
 
-Return a JSON object with:
+async function classifyWithLLM(text: string): Promise<IntentResult> {
+  const { OPENAI_API_KEY, OPENAI_BASE_URL } = env;
+
+  const prompt = `Classify the caller's intent from their utterance. Return ONLY a JSON object with this schema:
 {
-  "intent": "book|reschedule|cancel|human|hours|unknown",
-  "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
-}`,
-  });
+  "action": "book" | "reschedule" | "cancel" | "operator" | "unknown",
+  "day": string (optional - e.g., "monday", "tomorrow", "today"),
+  "part": "morning" | "afternoon" (optional),
+  "confidence": number (0-1)
+}
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+Utterance: "${text}"
+
+JSON:`;
+
+  const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      messages,
+      messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
-      max_tokens: 150,
-      response_format: { type: 'json_object' },
-    }),
+      max_tokens: 100
+    })
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
+    throw new Error(`OpenAI API error: ${response.status}`);
   }
 
   const data = await response.json();
-  const content = data.choices[0]?.message?.content;
+  const content = data.choices?.[0]?.message?.content || '{}';
 
-  if (!content) {
-    throw new Error('No content in OpenAI response');
+  // Extract JSON from response (handle markdown code blocks)
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('No JSON found in LLM response');
   }
 
-  const result = JSON.parse(content);
-
-  console.log('[INTENT] OpenAI detection:', {
-    utterance,
-    intent: result.intent,
-    confidence: result.confidence,
-    reasoning: result.reasoning,
-  });
-
+  const result = JSON.parse(jsonMatch[0]);
   return {
-    intent: result.intent,
-    confidence: result.confidence,
+    action: result.action || 'unknown',
+    day: result.day,
+    part: result.part,
+    confidence: result.confidence || 0.8
   };
 }
 
-export function buildConversationContext(
-  turns: Array<{ role: 'user' | 'assistant'; content: string }>,
-  previousIntent?: string,
-  previousConfidence?: number
-): ConversationContext {
-  return {
-    turns,
-    previousIntent,
-    confidence: previousConfidence,
-  };
+function classifyWithKeywords(text: string): IntentResult {
+  let action: IntentResult['action'] = 'unknown';
+  let day: string | undefined;
+  let part: 'morning' | 'afternoon' | undefined;
+
+  // Action detection
+  if (text.includes('book') || text.includes('appointment') || text.includes('schedule')) {
+    action = 'book';
+  } else if (text.includes('reschedule') || text.includes('change') || text.includes('move')) {
+    action = 'reschedule';
+  } else if (text.includes('cancel')) {
+    action = 'cancel';
+  } else if (text.includes('speak') || text.includes('operator') || text.includes('human') || text.includes('person')) {
+    action = 'operator';
+  }
+
+  // Day detection
+  const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const foundDay = weekdays.find(d => text.includes(d));
+  if (foundDay) {
+    day = foundDay;
+  } else if (text.includes('tomorrow')) {
+    day = 'tomorrow';
+  } else if (text.includes('today')) {
+    day = 'today';
+  }
+
+  // Part of day detection
+  if (text.includes('morning') || text.includes('early')) {
+    part = 'morning';
+  } else if (text.includes('afternoon') || text.includes('late')) {
+    part = 'afternoon';
+  }
+
+  return { action, day, part, confidence: 0.6 };
 }

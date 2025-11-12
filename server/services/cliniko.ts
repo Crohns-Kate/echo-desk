@@ -144,41 +144,66 @@ export async function getOrCreatePatient(params: {
 export { sanitizeEmail, sanitizePhoneE164AU };
 
 export async function getAvailability(opts?: {
-  fromDate?: string;  // YYYY-MM-DD format
-  toDate?: string;    // YYYY-MM-DD format
+  day?: string;        // e.g., "tomorrow", "monday" (optional - for future use)
+  fromISO?: string;    // YYYY-MM-DD format
+  toISO?: string;      // YYYY-MM-DD format
   part?: 'early' | 'late' | 'morning' | 'afternoon';
   timezone?: string;
   practitionerId?: string;
   appointmentTypeId?: string;
   businessId?: string;
-}): Promise<Array<{ startIso: string; practitionerId: string; appointmentTypeId: string; businessId: string; duration: number }>> {
+}): Promise<{ slots: Array<{ startISO: string; endISO?: string; label?: string }> }> {
+  // If CLINIKO_API_KEY is not set, return demo slots
+  if (!env.CLINIKO_API_KEY) {
+    console.warn('[Cliniko] CLINIKO_API_KEY not set - returning demo slots');
+    const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
+    const now = dayjs().tz(tz);
+    const tomorrow9am = now.add(1, 'day').hour(9).minute(0).second(0);
+    const tomorrow2pm = now.add(1, 'day').hour(14).minute(0).second(0);
+
+    return {
+      slots: [
+        {
+          startISO: tomorrow9am.toISOString(),
+          endISO: tomorrow9am.add(30, 'minute').toISOString(),
+          label: 'Demo Slot 1'
+        },
+        {
+          startISO: tomorrow2pm.toISOString(),
+          endISO: tomorrow2pm.add(30, 'minute').toISOString(),
+          label: 'Demo Slot 2'
+        }
+      ]
+    };
+  }
+
   try {
     // Use provided IDs or fallback to environment defaults
     const businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
     const practitionerId = opts?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = opts?.appointmentTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
-    
+
     // Fetch appointment type details for duration
     const appointmentTypes = await getAppointmentTypes(practitionerId);
     const appointmentType = appointmentTypes.find(at => at.id === appointmentTypeId) || appointmentTypes[0];
-    
+
     if (!appointmentType) {
       throw new Error('No appointment types found for practitioner');
     }
-    
+
     // Use provided date range or default to tomorrow
-    const from = opts?.fromDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const to = opts?.toDate || from;  // Same day query by default
-    
+    const from = opts?.fromISO || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const to = opts?.toISO || from;  // Same day query by default
+
     console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'}`);
-    
+
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
       `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=50`
     );
-    
+
     const times = data.available_times || [];
-    
+
     // Filter by part of day in LOCAL timezone (not UTC!)
     let filtered = times;
     if (opts?.part) {
@@ -188,7 +213,7 @@ export async function getAvailability(opts?: {
           d.toLocaleString('en-AU', { timeZone: tz, hour: "2-digit", hour12: false }),
           10
         );
-        
+
         if (opts.part === 'morning' || opts.part === 'early') {
           return localHour >= 8 && localHour < 12;
         }
@@ -198,16 +223,17 @@ export async function getAvailability(opts?: {
         return true;
       });
     }
-    
+
     console.log(`[Cliniko] Found ${times.length} total slots, ${filtered.length} after ${opts?.part || 'no'} filter`);
-    
-    return filtered.slice(0, 50).map(t => ({
-      startIso: t.appointment_start,
-      practitionerId,
-      appointmentTypeId,
-      businessId,
-      duration: appointmentType.duration_in_minutes
+
+    const duration = appointmentType.duration_in_minutes;
+    const slots = filtered.slice(0, 50).map(t => ({
+      startISO: t.appointment_start,
+      endISO: dayjs(t.appointment_start).add(duration, 'minute').toISOString(),
+      label: undefined
     }));
+
+    return { slots };
   } catch (e) {
     console.error('[Cliniko] getAvailability error', e);
     throw e;  // Don't return fake data - let caller handle the error
@@ -224,59 +250,45 @@ export async function createAppointmentForPatient(phone: string, payload: {
   fullName?: string;
   email?: string;
 }): Promise<ClinikoAppointment> {
-  try {
-    const patient = await getOrCreatePatient({
-      phone,
-      fullName: payload.fullName,
-      email: payload.email
-    });
-    
-    // Get business ID if not provided
-    let businessId = payload.businessId;
+  const patient = await getOrCreatePatient({
+    phone,
+    fullName: payload.fullName,
+    email: payload.email
+  });
+
+  // Get business ID if not provided
+  let businessId = payload.businessId;
+  if (!businessId) {
+    const businesses = await getBusinesses();
+    businessId = businesses[0]?.id;
     if (!businessId) {
-      const businesses = await getBusinesses();
-      businessId = businesses[0]?.id;
-      if (!businessId) {
-        throw new Error('No business found in Cliniko account');
-      }
+      throw new Error('No business found in Cliniko account');
     }
-    
-    // Get appointment type duration if not provided
-    let duration = payload.duration;
-    if (!duration) {
-      const appointmentTypes = await getAppointmentTypes(payload.practitionerId);
-      const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
-      duration = appointmentType?.duration_in_minutes || 30; // default 30 min
-    }
-    
-    // CRITICAL FIX: Compute ends_at from starts_at + duration
-    const startsAt = new Date(payload.startsAt);
-    const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
-    
-    const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
-      business_id: businessId,
-      patient_id: patient.id,
-      practitioner_id: payload.practitionerId,
-      appointment_type_id: payload.appointmentTypeId,
-      starts_at: payload.startsAt,
-      ends_at: endsAt.toISOString(),
-      notes: payload.notes || null
-    });
-    
-    return appointment;
-  } catch (e) {
-    console.error('[Cliniko] createAppointmentForPatient error', e);
-    return {
-      id: 'mock-apt-' + Date.now(),
-      starts_at: payload.startsAt,
-      ends_at: new Date(new Date(payload.startsAt).getTime() + 30 * 60 * 1000).toISOString(),
-      patient_id: phone,
-      practitioner_id: payload.practitionerId,
-      appointment_type_id: payload.appointmentTypeId,
-      notes: payload.notes || null,
-      cancelled_at: null
-    };
   }
+
+  // Get appointment type duration if not provided
+  let duration = payload.duration;
+  if (!duration) {
+    const appointmentTypes = await getAppointmentTypes(payload.practitionerId);
+    const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
+    duration = appointmentType?.duration_in_minutes || 30; // default 30 min
+  }
+
+  // CRITICAL FIX: Compute ends_at from starts_at + duration
+  const startsAt = new Date(payload.startsAt);
+  const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
+
+  const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
+    business_id: businessId,
+    patient_id: patient.id,
+    practitioner_id: payload.practitionerId,
+    appointment_type_id: payload.appointmentTypeId,
+    starts_at: payload.startsAt,
+    ends_at: endsAt.toISOString(),
+    notes: payload.notes || null
+  });
+
+  return appointment;
 }
 
 export async function findPatientByPhoneRobust(e164Phone: string): Promise<{ id: string; first_name: string; last_name: string } | null> {
