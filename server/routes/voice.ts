@@ -11,6 +11,7 @@ import { storage } from "../storage";
 import { sendAppointmentConfirmation } from "../services/sms";
 import { emitCallStarted, emitCallUpdated, emitAlertCreated } from "../services/websocket";
 import { classifyIntent } from "../services/intent";
+import { env } from "../utils/env";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -122,8 +123,18 @@ export function registerVoice(app: Express) {
       method: "POST",
     });
 
-    // ✅ Safe say - Ultra-simplified text to diagnose 13520 error
-    saySafe(g, "Hello. How can I help you today?");
+    // Check if returning patient and personalize greeting
+    let greetingMessage = "Hello. How can I help you today?";
+    try {
+      const phoneMapEntry = await storage.getPhoneMap(from);
+      if (phoneMapEntry?.fullName) {
+        greetingMessage = `Hello ${phoneMapEntry.fullName}. How can I help you today?`;
+      }
+    } catch (err) {
+      console.error("[VOICE] Error checking phone_map for greeting:", err);
+    }
+
+    saySafe(g, greetingMessage);
     g.pause({ length: 1 });
     vr.redirect({ method: "POST" }, timeoutUrl);
 
@@ -163,29 +174,23 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 1) START → ask to book
+      // 1) START → check if returning patient, then ask to book
       if (route === "start") {
-        const g = vr.gather({
-          input: ["speech"],
-          // NOTE: language removed - Polly voices have built-in language
-          timeout: 5,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // ✅ Safe say
-        saySafe(g, "System ready. Would you like to book an appointment?");
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(vr.toString());
-      }
+        // Check if this is a returning patient
+        let isReturningPatient = false;
+        let patientName: string | undefined;
 
-      // 2) BOOK-DAY → confirm intent then ask for name
-      if (route === "book-day") {
-        if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
-          saySafe(vr, "Okay, goodbye.");
-          return res.type("text/xml").send(vr.toString());
+        try {
+          const phoneMapEntry = await storage.getPhoneMap(from);
+          if (phoneMapEntry?.patientId) {
+            isReturningPatient = true;
+            patientName = phoneMapEntry.fullName || undefined;
+            console.log("[VOICE] Returning patient detected:", { phone: from, name: patientName, patientId: phoneMapEntry.patientId });
+          } else {
+            console.log("[VOICE] New patient (not in phone_map):", from);
+          }
+        } catch (err) {
+          console.error("[VOICE] Error checking phone_map:", err);
         }
 
         const g = vr.gather({
@@ -194,19 +199,70 @@ export function registerVoice(app: Express) {
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-name&callSid=${encodeURIComponent(callSid)}`),
+          action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
-        // ✅ Safe say
-        saySafe(g, "Great! May I have your full name please?");
+
+        // Natural greeting based on patient status
+        if (isReturningPatient && patientName) {
+          saySafe(g, `Okay. Would you like to book an appointment?`);
+        } else if (isReturningPatient) {
+          saySafe(g, "Okay. Would you like to book an appointment?");
+        } else {
+          saySafe(g, "Okay, one moment. Would you like to book an appointment?");
+        }
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 3) ASK-NAME → capture name and ask for email
+      // 2) BOOK-DAY → confirm intent then either ask for name or skip to day selection
+      if (route === "book-day") {
+        if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
+          saySafe(vr, "Okay, goodbye.");
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Check if returning patient
+        const isReturningPatient = (req.query.returning as string) === '1';
+
+        // If returning patient, skip name collection and go straight to day selection
+        if (isReturningPatient) {
+          const g = vr.gather({
+            input: ["speech"],
+            // NOTE: language removed - Polly voices have built-in language
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-day&callSid=${encodeURIComponent(callSid)}&returning=1`),
+            method: "POST",
+          });
+          saySafe(g, "Great. Which day would you prefer?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // New patient - ask for name
+        const g = vr.gather({
+          input: ["speech"],
+          // NOTE: language removed - Polly voices have built-in language
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=ask-name&callSid=${encodeURIComponent(callSid)}&returning=0`),
+          method: "POST",
+        });
+        saySafe(g, "Great. May I have your full name please?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 3) ASK-NAME → capture name and skip to day selection (skip email - unreliable via voice)
       if (route === "ask-name") {
         const name = speechRaw || "";
+        const isReturningPatient = (req.query.returning as string) === '1';
 
         // Store name in conversation context
         if (name && name.length > 0) {
@@ -214,9 +270,10 @@ export function registerVoice(app: Express) {
             const conversation = await storage.getCallByCallSid(callSid);
             if (conversation?.conversationId) {
               await storage.updateConversation(conversation.conversationId, {
-                context: { fullName: name }
+                context: { fullName: name, isNewPatient: !isReturningPatient }
               });
             }
+            console.log("[ASK-NAME] Stored name:", name);
           } catch (err) {
             console.error("[ASK-NAME] Failed to store name:", err);
           }
@@ -228,55 +285,17 @@ export function registerVoice(app: Express) {
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-email&callSid=${encodeURIComponent(callSid)}`),
+          action: abs(`/api/voice/handle?route=ask-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
-        // ✅ Safe say
-        if (name && name.length > 0) {
-          saySafe(g, "Thank you. And what is your email address?");
-        } else {
-          saySafe(g, "I didn't quite catch that. What is your email address?");
-        }
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-day&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(vr.toString());
-      }
-
-      // 4) ASK-EMAIL → capture email and ask which day
-      if (route === "ask-email") {
-        const email = speechRaw || "";
-
-        // Store email in conversation context
-        if (email && email.length > 0) {
-          try {
-            const conversation = await storage.getCallByCallSid(callSid);
-            if (conversation?.conversationId) {
-              const existingContext = await storage.getConversation(conversation.conversationId);
-              const context = { ...(existingContext?.context || {}), email };
-              await storage.updateConversation(conversation.conversationId, { context });
-            }
-          } catch (err) {
-            console.error("[ASK-EMAIL] Failed to store email:", err);
-          }
-        }
-
-        const g = vr.gather({
-          input: ["speech"],
-          // NOTE: language removed - Polly voices have built-in language
-          timeout: 5,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-day&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // ✅ Safe say
-        saySafe(g, "Perfect. Which day suits you best?");
+        // Skip email and go straight to day
+        saySafe(g, "Thank you. Which day would you prefer for your appointment?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 5) ASK-DAY / BOOK-PART → fetch next available 1–2 slots
+      // 4) ASK-DAY / BOOK-PART → fetch next available 1–2 slots with appropriate appointment type
       if (route === "ask-day" || route === "book-part") {
         const tzNow = dayjs().tz();
         let fromDate = tzNow.format("YYYY-MM-DD");
@@ -291,11 +310,38 @@ export function registerVoice(app: Express) {
           toDate = d.format("YYYY-MM-DD");
         }
 
-        console.log("[BOOK][LOOKUP]", { fromDate, toDate });
+        // Determine if new patient based on query param or conversation context
+        const isReturningPatient = (req.query.returning as string) === '1';
+        let isNewPatient = !isReturningPatient;
+
+        // Also check conversation context if available
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            if (context?.isNewPatient !== undefined) {
+              isNewPatient = context.isNewPatient;
+            }
+          }
+        } catch (err) {
+          console.error("[ASK-DAY] Error checking conversation context:", err);
+        }
+
+        // Use appropriate appointment type
+        const appointmentTypeId = isNewPatient
+          ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
+          : env.CLINIKO_APPT_TYPE_ID;
+
+        console.log("[BOOK][LOOKUP]", { fromDate, toDate, isNewPatient, appointmentTypeId });
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
-          const result = await getAvailability({ fromISO: fromDate, toISO: toDate });
+          const result = await getAvailability({
+            fromISO: fromDate,
+            toISO: toDate,
+            appointmentTypeId
+          });
           slots = result.slots || [];
         } catch (e: any) {
           console.error("[BOOK-PART][getAvailability ERROR]", e);
@@ -344,7 +390,7 @@ export function registerVoice(app: Express) {
         const nextUrl = abs(
           `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${
             s2 ? `&s2=${encodeURIComponent(s2)}` : ""
-          }`
+          }&returning=${isReturningPatient ? '1' : '0'}&apptTypeId=${encodeURIComponent(appointmentTypeId)}`
         );
         const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
@@ -371,12 +417,14 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 6) BOOK-CHOOSE → pick slot & book with captured identity
+      // 5) BOOK-CHOOSE → pick slot & book with captured identity and correct appointment type
       if (route === "book-choose") {
         const s1 = (req.query.s1 as string) || "";
         const s2 = (req.query.s2 as string) || "";
         const choiceIdx = (digits === "2" || speechRaw.includes("two")) && s2 ? 1 : 0;
         const chosen = choiceIdx === 1 ? s2 : s1;
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const appointmentTypeId = (req.query.apptTypeId as string) || env.CLINIKO_APPT_TYPE_ID;
 
         if (!chosen) {
           saySafe(vr, "Sorry, that option is no longer available. Let's start again.");
@@ -384,17 +432,35 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         }
 
-        // Retrieve captured identity from conversation context
+        // Retrieve captured identity from conversation context OR phone_map
         let fullName: string | undefined;
         let email: string | undefined;
+        let patientId: string | undefined;
+
         try {
+          // First try phone_map for returning patients
+          if (isReturningPatient) {
+            const phoneMapEntry = await storage.getPhoneMap(from);
+            if (phoneMapEntry) {
+              fullName = phoneMapEntry.fullName || undefined;
+              email = phoneMapEntry.email || undefined;
+              patientId = phoneMapEntry.patientId || undefined;
+              console.log("[BOOK-CHOOSE] Retrieved from phone_map:", { fullName, email, patientId });
+            }
+          }
+
+          // Then check conversation context (for new patients or if phone_map incomplete)
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
-            fullName = context?.fullName;
-            email = context?.email;
-            console.log("[BOOK-CHOOSE] Retrieved identity:", { fullName, email });
+            if (context?.fullName && !fullName) {
+              fullName = context.fullName;
+            }
+            if (context?.email && !email) {
+              email = context.email;
+            }
+            console.log("[BOOK-CHOOSE] Retrieved from conversation:", { fullName, email });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
@@ -403,25 +469,35 @@ export function registerVoice(app: Express) {
         try {
           const { env } = await import("../utils/env");
 
-          // Create appointment with captured identity
-          await createAppointmentForPatient(from, {
+          const appointmentNotes = isReturningPatient
+            ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
+            : `New patient appointment booked via voice call at ${new Date().toISOString()}`;
+
+          // Create appointment with captured identity and correct appointment type
+          const appointment = await createAppointmentForPatient(from, {
             startsAt: chosen,
             practitionerId: env.CLINIKO_PRACTITIONER_ID,
-            appointmentTypeId: env.CLINIKO_APPT_TYPE_ID,
-            notes: `Booked via voice call at ${new Date().toISOString()}`,
+            appointmentTypeId: appointmentTypeId,
+            notes: appointmentNotes,
             fullName,
             email,
           });
 
-          // Store identity in phone_map for future use
-          if (fullName || email) {
+          // Get the patientId from the created appointment
+          if (appointment && appointment.patient_id) {
+            patientId = appointment.patient_id;
+          }
+
+          // Store identity in phone_map for future use (including patientId)
+          if (fullName || email || patientId) {
             try {
               await storage.upsertPhoneMap({
                 phone: from,
                 fullName,
                 email,
+                patientId,
               });
-              console.log("[BOOK-CHOOSE] Stored identity in phone_map:", { phone: from, fullName, email });
+              console.log("[BOOK-CHOOSE] Stored identity in phone_map:", { phone: from, fullName, email, patientId });
             } catch (mapErr) {
               console.error("[BOOK-CHOOSE] Failed to store phone_map:", mapErr);
             }

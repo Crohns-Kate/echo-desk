@@ -131,19 +131,28 @@ export async function findPatientByPhone(phoneRaw: string) {
   // Use phone_number query param for exact matching (NOT q= free-text search)
   try {
     // Try E.164 format first (+61...)
+    console.log('[Cliniko] Looking up patient by phone:', phone);
     let data = await clinikoGet("/patients", { phone_number: phone });
     let list = Array.isArray(data?.patients) ? data.patients : [];
-    
-    if (list.length > 0) return list[0];
-    
+
+    if (list.length > 0) {
+      console.log('[Cliniko] Found patient by E.164 format:', list[0].id, list[0].first_name, list[0].last_name);
+      return list[0];
+    }
+
     // Try local format (0...) as fallback
     if (phone.startsWith('+61')) {
       const localFormat = '0' + phone.slice(3);
+      console.log('[Cliniko] Trying local format:', localFormat);
       data = await clinikoGet("/patients", { phone_number: localFormat });
       list = Array.isArray(data?.patients) ? data.patients : [];
-      if (list.length > 0) return list[0];
+      if (list.length > 0) {
+        console.log('[Cliniko] Found patient by local format:', list[0].id, list[0].first_name, list[0].last_name);
+        return list[0];
+      }
     }
-    
+
+    console.log('[Cliniko] No patient found for phone:', phone);
     return null;
   } catch (e) {
     console.error('[Cliniko] findPatientByPhone error:', e);
@@ -166,18 +175,28 @@ export async function getOrCreatePatient({
 
   // Try finders first
   if (email) {
+    console.log('[Cliniko] getOrCreatePatient: Searching by email:', email);
     const p = await findPatientByEmail(email);
-    if (p) return p;
+    if (p) {
+      console.log('[Cliniko] Found existing patient by email:', p.id);
+      return p;
+    }
   }
   if (phone) {
+    console.log('[Cliniko] getOrCreatePatient: Searching by phone:', phone);
     const p = await findPatientByPhone(phone);
-    if (p) return p;
+    if (p) {
+      console.log('[Cliniko] Found existing patient by phone:', p.id);
+      return p;
+    }
   }
 
   // Split name safely
   const name = (fullName || "").trim() || "New Caller";
   const [first_name, ...rest] = name.split(/\s+/);
   const last_name = rest.join(" ") || "Unknown";
+
+  console.log('[Cliniko] No existing patient found, creating new patient:', { first_name, last_name, email, phone });
 
   // Create payload — Cliniko requires structured fields
   const payload: any = { first_name, last_name };
@@ -190,13 +209,16 @@ export async function getOrCreatePatient({
   // If email is invalid, DO NOT send it — Cliniko returned 422 previously
   try {
     const created = await clinikoPost("/patients", payload);
+    console.log("[Cliniko] Created patient:", created.id, first_name, last_name);
     return created;
   } catch (e) {
     // If creation fails due to email, retry without email once
     const msg = String(e);
     if (/email.*invalid/i.test(msg)) {
+      console.warn("[Cliniko] Email invalid, retrying without email");
       delete payload.email;
       const created = await clinikoPost("/patients", payload);
+      console.log("[Cliniko] Created patient (no email):", created.id, first_name, last_name);
       return created;
     }
     throw e;
