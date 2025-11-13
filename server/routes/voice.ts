@@ -24,6 +24,80 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault("Australia/Brisbane");
 
+/**
+ * Helper function to interpret slot choice from user input
+ * Returns: "option1", "option2", "reject", "alt_day", or "unknown"
+ * Also returns requestedDayOfWeek if alt_day is detected
+ */
+function interpretSlotChoice(speechRaw: string, digits: string): {
+  choice: "option1" | "option2" | "reject" | "alt_day" | "unknown";
+  requestedDayOfWeek?: string;
+} {
+  const speech = speechRaw.toLowerCase().trim();
+
+  // Check DTMF first (most reliable)
+  if (digits === "1") {
+    return { choice: "option1" };
+  }
+  if (digits === "2") {
+    return { choice: "option2" };
+  }
+
+  // Check for explicit option 1 selection
+  if (
+    speech.includes("option one") ||
+    speech.includes("option 1") ||
+    speech === "one" ||
+    speech === "first" ||
+    speech.includes("the first") ||
+    speech.includes("first one") ||
+    speech.includes("first time") ||
+    speech.includes("first option")
+  ) {
+    return { choice: "option1" };
+  }
+
+  // Check for explicit option 2 selection
+  if (
+    speech.includes("option two") ||
+    speech.includes("option 2") ||
+    speech === "two" ||
+    speech === "second" ||
+    speech.includes("the second") ||
+    speech.includes("second one") ||
+    speech.includes("second time") ||
+    speech.includes("second option")
+  ) {
+    return { choice: "option2" };
+  }
+
+  // Check for rejections
+  if (
+    speech.includes("no") ||
+    speech.includes("neither") ||
+    speech.includes("none") ||
+    speech.includes("those don't work") ||
+    speech.includes("doesn't work") ||
+    speech.includes("can't do") ||
+    speech.includes("won't work") ||
+    speech.includes("not good") ||
+    speech.includes("different")
+  ) {
+    return { choice: "reject" };
+  }
+
+  // Check for alternative day requests (weekday names)
+  const weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  for (const day of weekdays) {
+    if (speech.includes(day)) {
+      return { choice: "alt_day", requestedDayOfWeek: day };
+    }
+  }
+
+  // Unknown input
+  return { choice: "unknown" };
+}
+
 export function registerVoice(app: Express) {
   // ───────────────────────────────────────────────
   // Recording status callback (Twilio posts here)
@@ -1014,10 +1088,101 @@ export function registerVoice(app: Express) {
       if (route === "book-choose") {
         const s1 = (req.query.s1 as string) || "";
         const s2 = (req.query.s2 as string) || "";
-        const choiceIdx = (digits === "2" || speechRaw.includes("two")) && s2 ? 1 : 0;
-        const chosen = choiceIdx === 1 ? s2 : s1;
         const isReturningPatient = (req.query.returning as string) === '1';
         const appointmentTypeId = (req.query.apptTypeId as string) || env.CLINIKO_APPT_TYPE_ID;
+        const retryCount = parseInt((req.query.retry as string) || "0", 10);
+
+        // Use helper function to interpret the choice
+        const interpretation = interpretSlotChoice(speechRaw, digits);
+        console.log("[BOOK-CHOOSE] Interpretation:", interpretation);
+
+        // Handle rejection - ask for alternative
+        if (interpretation.choice === "reject") {
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
+            method: "POST",
+          });
+          saySafe(g, "That's okay. Which day works better for you?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Handle alternative day request
+        if (interpretation.choice === "alt_day" && interpretation.requestedDayOfWeek) {
+          const requestedDay = interpretation.requestedDayOfWeek;
+          console.log("[BOOK-CHOOSE] User requested alternative day:", requestedDay);
+
+          // Store the requested day in context and redirect to time preference
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, requestedDayOfWeek: requestedDay }
+              });
+            }
+          } catch (err) {
+            console.error("[BOOK-CHOOSE] Error storing requested day:", err);
+          }
+
+          // Ask for time preference for the new day
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=get-availability-specific-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&day=${encodeURIComponent(requestedDay)}`),
+            method: "POST",
+          });
+          saySafe(g, `No worries, let me check ${requestedDay}. Do you prefer morning or afternoon?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Handle unknown input - reprompt once
+        if (interpretation.choice === "unknown") {
+          if (retryCount < 1) {
+            // First retry - reprompt
+            const opt1 = labelForSpeech(s1, AUST_TZ);
+            const opt2 = s2 ? labelForSpeech(s2, AUST_TZ) : "";
+            const nextUrl = abs(
+              `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${
+                s2 ? `&s2=${encodeURIComponent(s2)}` : ""
+              }&returning=${isReturningPatient ? '1' : '0'}&apptTypeId=${encodeURIComponent(appointmentTypeId)}&retry=1`
+            );
+            const g = vr.gather({
+              input: ["speech", "dtmf"],
+              timeout: 5,
+              speechTimeout: "auto",
+              actionOnEmptyResult: true,
+              action: nextUrl,
+              method: "POST",
+            });
+            saySafe(
+              g,
+              `Sorry, I didn't quite catch that. If you'd like one of those times, you can say 'option one' or 'option two'. Or you can tell me another day and time that works better for you.`
+            );
+            g.pause({ length: 1 });
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          } else {
+            // Second failure - offer to transfer or end call
+            saySafe(vr, "I'm sorry, I'm having trouble understanding. Please call our front desk at your convenience to book your appointment. Goodbye.");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+        }
+
+        // Valid choice - determine which option was selected
+        const choiceIdx = interpretation.choice === "option2" && s2 ? 1 : 0;
+        const chosen = choiceIdx === 1 ? s2 : s1;
 
         if (!chosen) {
           saySafe(vr, "Sorry, that option is no longer available. Let's start again.");
@@ -1025,12 +1190,13 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         }
 
-        // Retrieve captured identity from conversation context OR phone_map
+        // Retrieve captured identity and reason from conversation context OR phone_map
         let fullName: string | undefined;
         let email: string | undefined;
         let patientId: string | undefined;
         let isReschedule = false;
         let apptId: string | undefined;
+        let reasonForVisit: string | undefined;
 
         try {
           // First try phone_map as fallback for returning patients
@@ -1062,13 +1228,19 @@ export function registerVoice(app: Express) {
               console.log("[BOOK-CHOOSE] Using email from conversation context:", email);
             }
 
+            // Extract reason for visit from context
+            if (context?.reason) {
+              reasonForVisit = context.reason;
+              console.log("[BOOK-CHOOSE] Retrieved reason for visit:", reasonForVisit);
+            }
+
             // Check if this is a reschedule operation
             if (context?.isReschedule) {
               isReschedule = true;
               apptId = context.apptId;
               patientId = context.patientId || patientId;
             }
-            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId });
+            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId, reasonForVisit });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
@@ -1114,9 +1286,14 @@ export function registerVoice(app: Express) {
             return res.type("text/xml").send(vr.toString());
           } else {
             // CREATE NEW appointment
-            const appointmentNotes = isReturningPatient
+            // Include reason for visit in notes if available
+            let appointmentNotes = isReturningPatient
               ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
               : `New patient appointment booked via voice call at ${new Date().toISOString()}`;
+
+            if (reasonForVisit) {
+              appointmentNotes += `\n\nReason for visit: ${reasonForVisit}`;
+            }
 
             appointment = await createAppointmentForPatient(from, {
               startsAt: chosen,
@@ -1194,6 +1371,178 @@ export function registerVoice(app: Express) {
           saySafe(vr, "Sorry, I couldn't complete the booking. Please try again later.");
           return res.type("text/xml").send(vr.toString());
         }
+      }
+
+      // GET-AVAILABILITY-SPECIFIC-DAY → Handle requests for specific day of week
+      if (route === "get-availability-specific-day") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const requestedDay = ((req.query.day as string) || "").toLowerCase();
+
+        // Get time preference from speech
+        let timePart: 'morning' | 'afternoon' | undefined;
+        if (speechRaw.includes("morning") || speechRaw.includes("early")) {
+          timePart = 'morning';
+        } else if (speechRaw.includes("afternoon") || speechRaw.includes("midday") || speechRaw.includes("late")) {
+          timePart = 'afternoon';
+        }
+
+        // Determine if new patient from conversation context
+        let isNewPatient = !isReturningPatient;
+
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            if (context?.isNewPatient !== undefined) {
+              isNewPatient = context.isNewPatient;
+            }
+          }
+        } catch (err) {
+          console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Error checking conversation context:", err);
+        }
+
+        // Use appropriate appointment type
+        const appointmentTypeId = isNewPatient
+          ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
+          : env.CLINIKO_APPT_TYPE_ID;
+
+        // Calculate the date for the requested day of week
+        const weekdayMap: { [key: string]: number } = {
+          "sunday": 0,
+          "monday": 1,
+          "tuesday": 2,
+          "wednesday": 3,
+          "thursday": 4,
+          "friday": 5,
+          "saturday": 6
+        };
+
+        const targetDayNumber = weekdayMap[requestedDay];
+        if (targetDayNumber === undefined) {
+          saySafe(vr, "Sorry, I didn't catch which day you wanted. Let me ask again.");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const tzNow = dayjs().tz();
+        const currentDayNumber = tzNow.day();
+
+        // Calculate days ahead to the requested day
+        // If the day is in the past this week, go to next week
+        let daysAhead = targetDayNumber - currentDayNumber;
+        if (daysAhead <= 0) {
+          daysAhead += 7;
+        }
+
+        const targetDate = tzNow.add(daysAhead, 'day');
+        const fromDate = targetDate.format("YYYY-MM-DD");
+        const toDate = fromDate;
+
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]", { requestedDay, fromDate, toDate, isNewPatient, appointmentTypeId, timePart });
+
+        // Add thinking filler
+        saySafe(vr, `Let me check ${requestedDay} for you.`);
+
+        let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
+        try {
+          const result = await getAvailability({
+            fromISO: fromDate,
+            toISO: toDate,
+            appointmentTypeId,
+            part: timePart
+          });
+          slots = result.slots || [];
+          console.log(`[GET-AVAILABILITY-SPECIFIC-DAY] Received ${slots.length} slots from getAvailability`);
+        } catch (e: any) {
+          console.error("[GET-AVAILABILITY-SPECIFIC-DAY][getAvailability ERROR]", e);
+          try {
+            const tenant = await storage.getTenant("default");
+            if (tenant) {
+              const alert = await storage.createAlert({
+                tenantId: tenant.id,
+                reason: "cliniko_error",
+                payload: {
+                  error: e.message,
+                  stack: e.stack,
+                  endpoint: "getAvailability",
+                  callSid,
+                  from,
+                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient }
+                },
+              });
+              emitAlertCreated(alert);
+            }
+          } catch (alertErr) {
+            console.error("[ALERT ERROR]", alertErr);
+          }
+          saySafe(vr, "Sorry, I'm having trouble accessing the schedule right now. Please try calling back in a few minutes.");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const available = slots.slice(0, 2);
+        if (available.length === 0) {
+          try {
+            const tenant = await storage.getTenant("default");
+            if (tenant) {
+              const alert = await storage.createAlert({
+                tenantId: tenant.id,
+                reason: "no_availability",
+                payload: { fromDate, toDate, timePart, requestedDay, callSid, from },
+              });
+              emitAlertCreated(alert);
+            }
+          } catch (alertErr) {
+            console.error("[ALERT ERROR]", alertErr);
+          }
+
+          // Offer to try different time or day
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
+            method: "POST",
+          });
+          saySafe(g, `Sorry, there are no times available on ${requestedDay} for that time. Would you like to try a different day?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        const s1 = available[0].startISO;
+        const s2 = available[1]?.startISO;
+        const opt1 = labelForSpeech(s1, AUST_TZ);
+        const opt2 = s2 ? labelForSpeech(s2, AUST_TZ) : "";
+
+        const nextUrl = abs(
+          `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${
+            s2 ? `&s2=${encodeURIComponent(s2)}` : ""
+          }&returning=${isReturningPatient ? '1' : '0'}&apptTypeId=${encodeURIComponent(appointmentTypeId)}`
+        );
+        const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
+
+        const g = vr.gather({
+          input: ["speech", "dtmf"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: nextUrl,
+          method: "POST",
+        });
+
+        saySafe(
+          g,
+          s2
+            ? `I have two options for ${requestedDay}. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`
+            : `I have one option available on ${requestedDay}: ${opt1}. Press 1 or say yes to book it.`
+        );
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, timeoutUrl);
+
+        return res.type("text/xml").send(vr.toString());
       }
 
       // Fallback
