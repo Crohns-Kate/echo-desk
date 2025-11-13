@@ -25,6 +25,31 @@ dayjs.extend(timezone);
 dayjs.tz.setDefault("Australia/Brisbane");
 
 /**
+ * Helper function to extract first name from full name
+ */
+function extractFirstName(fullName: string): string {
+  if (!fullName) return "";
+  const parts = fullName.trim().split(/\s+/);
+  return parts[0] || "";
+}
+
+/**
+ * Helper function to parse day of week from speech
+ */
+function parseDayOfWeek(speechRaw: string): string | undefined {
+  const speech = speechRaw.toLowerCase().trim();
+  const weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+  for (const day of weekdays) {
+    if (speech.includes(day)) {
+      return day;
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Helper function to interpret slot choice from user input
  * Returns: "option1", "option2", "reject", "alt_day", or "unknown"
  * Also returns requestedDayOfWeek if alt_day is detected
@@ -35,6 +60,8 @@ function interpretSlotChoice(speechRaw: string, digits: string): {
 } {
   const speech = speechRaw.toLowerCase().trim();
 
+  console.log("[interpretSlotChoice] Raw speech:", speechRaw, "Digits:", digits);
+
   // Check DTMF first (most reliable)
   if (digits === "1") {
     return { choice: "option1" };
@@ -43,30 +70,50 @@ function interpretSlotChoice(speechRaw: string, digits: string): {
     return { choice: "option2" };
   }
 
-  // Check for explicit option 1 selection
+  // Check for explicit option 1 selection - EXPANDED PATTERNS
   if (
+    speech === "one" ||
+    speech === "1" ||
+    speech === "first" ||
     speech.includes("option one") ||
     speech.includes("option 1") ||
-    speech === "one" ||
-    speech === "first" ||
+    speech.includes("number one") ||
+    speech.includes("number 1") ||
     speech.includes("the first") ||
     speech.includes("first one") ||
     speech.includes("first time") ||
-    speech.includes("first option")
+    speech.includes("first option") ||
+    speech.includes("the earlier") ||
+    speech.includes("earlier one") ||
+    speech.includes("earlier time") ||
+    speech.match(/\b(i'?ll|i will|i'd like|give me|take|book) (the )?first\b/) ||
+    speech.match(/\b(i'?ll|i will|i'd like|give me|take|book) (the )?one\b/) ||
+    speech.match(/\btake (the )?first\b/) ||
+    speech.match(/\bgive me (the )?first\b/)
   ) {
     return { choice: "option1" };
   }
 
-  // Check for explicit option 2 selection
+  // Check for explicit option 2 selection - EXPANDED PATTERNS
   if (
+    speech === "two" ||
+    speech === "2" ||
+    speech === "second" ||
     speech.includes("option two") ||
     speech.includes("option 2") ||
-    speech === "two" ||
-    speech === "second" ||
+    speech.includes("number two") ||
+    speech.includes("number 2") ||
     speech.includes("the second") ||
     speech.includes("second one") ||
     speech.includes("second time") ||
-    speech.includes("second option")
+    speech.includes("second option") ||
+    speech.includes("the later") ||
+    speech.includes("later one") ||
+    speech.includes("later time") ||
+    speech.match(/\b(i'?ll|i will|i'd like|give me|take|book) (the )?second\b/) ||
+    speech.match(/\b(i'?ll|i will|i'd like|give me|take|book) (the )?two\b/) ||
+    speech.match(/\btake (the )?second\b/) ||
+    speech.match(/\bgive me (the )?second\b/)
   ) {
     return { choice: "option2" };
   }
@@ -78,10 +125,13 @@ function interpretSlotChoice(speechRaw: string, digits: string): {
     speech.includes("none") ||
     speech.includes("those don't work") ||
     speech.includes("doesn't work") ||
+    speech.includes("don't work") ||
     speech.includes("can't do") ||
     speech.includes("won't work") ||
     speech.includes("not good") ||
-    speech.includes("different")
+    speech.includes("different") ||
+    speech.includes("another time") ||
+    speech.includes("another day")
   ) {
     return { choice: "reject" };
   }
@@ -191,33 +241,64 @@ export function registerVoice(app: Express) {
       }
     }
 
-    const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
-    const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
-
-    const g = vr.gather({
-      input: ["speech"],
-      // NOTE: language removed - Polly voices have built-in language and reject language parameter
-      timeout: 5,
-      speechTimeout: "auto",
-      actionOnEmptyResult: true,
-      action: handleUrl,
-      method: "POST",
-    });
-
-    // Check if returning patient and personalize greeting
-    let greetingMessage = "Hello. How can I help you today?";
+    // Check if we have a known patient for this number
+    let knownPatientName: string | undefined;
     try {
       const phoneMapEntry = await storage.getPhoneMap(from);
       if (phoneMapEntry?.fullName) {
-        greetingMessage = `Hello ${phoneMapEntry.fullName}. How can I help you today?`;
+        knownPatientName = phoneMapEntry.fullName;
+        console.log("[VOICE] Known patient detected:", knownPatientName);
       }
     } catch (err) {
       console.error("[VOICE] Error checking phone_map for greeting:", err);
     }
 
-    saySafe(g, greetingMessage);
-    g.pause({ length: 1 });
-    vr.redirect({ method: "POST" }, timeoutUrl);
+    // Get clinic name for greeting
+    let clinicName = "the clinic";
+    try {
+      const tenant = await storage.getTenant("default");
+      if (tenant?.clinicName) {
+        clinicName = tenant.clinicName;
+      }
+    } catch (err) {
+      console.error("[VOICE] Error getting clinic name:", err);
+    }
+
+    if (knownPatientName) {
+      // Known patient - confirm identity
+      const handleUrl = abs(`/api/voice/handle?route=confirm-caller-identity&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownPatientName)}`);
+      const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
+
+      const g = vr.gather({
+        input: ["speech"],
+        timeout: 5,
+        speechTimeout: "auto",
+        actionOnEmptyResult: true,
+        action: handleUrl,
+        method: "POST",
+      });
+
+      saySafe(g, `Hi, thanks for calling ${clinicName}. Am I speaking with ${knownPatientName}?`);
+      g.pause({ length: 1 });
+      vr.redirect({ method: "POST" }, timeoutUrl);
+    } else {
+      // Unknown number - generic greeting
+      const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
+      const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
+
+      const g = vr.gather({
+        input: ["speech"],
+        timeout: 5,
+        speechTimeout: "auto",
+        actionOnEmptyResult: true,
+        action: handleUrl,
+        method: "POST",
+      });
+
+      saySafe(g, `Hi, thanks for calling ${clinicName}. How can I help you today?`);
+      g.pause({ length: 1 });
+      vr.redirect({ method: "POST" }, timeoutUrl);
+    }
 
     return res.type("text/xml").send(vr.toString());
   });
@@ -252,6 +333,106 @@ export function registerVoice(app: Express) {
         g.pause({ length: 1 });
         // If timeout again, end call gracefully
         saySafe(vr, "I'm sorry, I'm having trouble understanding you. Please call back when you're ready. Goodbye.");
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
+      if (route === "confirm-caller-identity") {
+        const knownName = (req.query.knownName as string) || "";
+        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's me");
+        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong");
+
+        if (confirmed) {
+          // Identity confirmed - store name and first name in context
+          const firstName = extractFirstName(knownName);
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              await storage.updateConversation(call.conversationId, {
+                context: { fullName: knownName, firstName, identityConfirmed: true }
+              });
+            }
+            console.log("[CONFIRM-CALLER-IDENTITY] Identity confirmed:", knownName, "First name:", firstName);
+          } catch (err) {
+            console.error("[CONFIRM-CALLER-IDENTITY] Error storing context:", err);
+          }
+
+          // Proceed to intent detection
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, `Great, ${firstName}. How can I help you today?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (denied) {
+          // Identity not confirmed - ask for correct name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=capture-caller-name&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "No problem. Who am I speaking with today?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=confirm-caller-identity&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Am I speaking with " + knownName + "? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CAPTURE-CALLER-NAME → Capture name when identity wasn't confirmed
+      if (route === "capture-caller-name") {
+        const name = speechRaw || "";
+        const firstName = extractFirstName(name);
+
+        // Store name and first name in context
+        if (name && name.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              await storage.updateConversation(call.conversationId, {
+                context: { fullName: name, firstName, identityConfirmed: false }
+              });
+            }
+            console.log("[CAPTURE-CALLER-NAME] Stored name:", name, "First name:", firstName);
+          } catch (err) {
+            console.error("[CAPTURE-CALLER-NAME] Failed to store name:", err);
+          }
+        }
+
+        // Proceed to intent detection
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafe(g, firstName ? `Thanks, ${firstName}. How can I help you today?` : "Thank you. How can I help you today?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -508,8 +689,9 @@ export function registerVoice(app: Express) {
       // 5) ASK-NAME-NEW → Collect name for new patient
       if (route === "ask-name-new") {
         const name = speechRaw || "";
+        const firstName = extractFirstName(name);
 
-        // Store name in conversation context
+        // Store name and firstName in conversation context
         if (name && name.length > 0) {
           try {
             const call = await storage.getCallByCallSid(callSid);
@@ -517,10 +699,10 @@ export function registerVoice(app: Express) {
               const conversation = await storage.getConversation(call.conversationId);
               const existingContext = (conversation?.context as any) || {};
               await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, fullName: name, isNewPatient: true }
+                context: { ...existingContext, fullName: name, firstName, isNewPatient: true }
               });
             }
-            console.log("[ASK-NAME-NEW] Stored name:", name);
+            console.log("[ASK-NAME-NEW] Stored name:", name, "First name:", firstName);
           } catch (err) {
             console.error("[ASK-NAME-NEW] Failed to store name:", err);
           }
@@ -535,7 +717,7 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafe(g, "Thank you. What's the main reason for your visit today?");
+        saySafe(g, firstName ? `Thank you, ${firstName}. What's the main reason for your visit today?` : "Thank you. What's the main reason for your visit today?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -544,6 +726,19 @@ export function registerVoice(app: Express) {
       // 5) ASK-REASON → Collect reason and move to week selection
       if (route === "ask-reason") {
         const reason = speechRaw || "";
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-REASON] Error getting firstName:", err);
+        }
 
         // Store reason in conversation context
         if (reason && reason.length > 0) {
@@ -562,8 +757,11 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Move to week selection with thinking filler
-        saySafe(vr, "I'm sorry to hear that. Let me see what we have available to get you in…");
+        // Move to week selection with empathetic filler using first name
+        const empathyLine = firstName
+          ? `I'm sorry to hear that, ${firstName}. Let me see what we have available to get you in…`
+          : "I'm sorry to hear that. Let me see what we have available to get you in…";
+        saySafe(vr, empathyLine);
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         return res.type("text/xml").send(vr.toString());
       }
@@ -571,6 +769,20 @@ export function registerVoice(app: Express) {
       // 6) ASK-WEEK → Which week do they want?
       if (route === "ask-week") {
         const isReturningPatient = (req.query.returning as string) === '1';
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-WEEK] Error getting firstName:", err);
+        }
+
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -579,13 +791,16 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
-        saySafe(g, "Which week works best for you? This week, next week, or another week?");
+        const prompt = firstName
+          ? `Which week works best for you, ${firstName}? This week, next week, or another week?`
+          : "Which week works best for you? This week, next week, or another week?";
+        saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 7) PROCESS-WEEK → Determine the week and ask for time preference
+      // 7) PROCESS-WEEK → Determine the week and check if day was mentioned
       if (route === "process-week") {
         const isReturningPatient = (req.query.returning as string) === '1';
         let weekOffset = 0; // 0 = this week, 1 = next week
@@ -607,21 +822,142 @@ export function registerVoice(app: Express) {
           specificWeek = "next week";
         }
 
-        // Store week preference
+        // Check if they mentioned a specific day in their response
+        const mentionedDay = parseDayOfWeek(speechRaw);
+
+        // Store week preference (and day if mentioned)
         try {
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const existingContext = (conversation?.context as any) || {};
+            const updates: any = { ...existingContext, weekOffset, specificWeek };
+            if (mentionedDay) {
+              updates.preferredDayOfWeek = mentionedDay;
+            }
             await storage.updateConversation(call.conversationId, {
-              context: { ...existingContext, weekOffset, specificWeek }
+              context: updates
             });
           }
         } catch (err) {
           console.error("[PROCESS-WEEK] Error storing week:", err);
         }
 
-        // Ask for time preference
+        // If they mentioned a day, skip to time-of-day question
+        // Otherwise, ask which day of the week they prefer
+        if (mentionedDay) {
+          console.log("[PROCESS-WEEK] Day mentioned:", mentionedDay, "- proceeding to time selection");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Ask for day of week
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 7a) ASK-DAY-OF-WEEK → Which day of the week do they prefer?
+      if (route === "ask-day-of-week") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const weekOffset = parseInt((req.query.weekOffset as string) || "1", 10);
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-DAY-OF-WEEK] Error getting firstName:", err);
+        }
+
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
+          method: "POST",
+        });
+        const prompt = firstName
+          ? `Great. Is there a particular day of that week that works best for you, ${firstName}? For example, Monday, Wednesday, or Friday?`
+          : "Great. Is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?";
+        saySafe(g, prompt);
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 7b) PROCESS-DAY-OF-WEEK → Parse the day and move to time selection
+      if (route === "process-day-of-week") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const weekOffset = parseInt((req.query.weekOffset as string) || "1", 10);
+
+        // Try to parse day of week from response
+        const preferredDay = parseDayOfWeek(speechRaw);
+
+        if (preferredDay) {
+          // Store the preferred day
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, preferredDayOfWeek: preferredDay }
+              });
+            }
+            console.log("[PROCESS-DAY-OF-WEEK] Stored day:", preferredDay);
+          } catch (err) {
+            console.error("[PROCESS-DAY-OF-WEEK] Error storing day:", err);
+          }
+
+          // Move to time-of-day selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (speechRaw.includes("any") || speechRaw.includes("no preference") || speechRaw.includes("doesn't matter")) {
+          // No preference - proceed without specific day
+          console.log("[PROCESS-DAY-OF-WEEK] No day preference expressed");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Which day works best? For example, Monday, Wednesday, or Friday?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 7c) ASK-TIME-OF-DAY → Ask for time preference (morning/afternoon)
+      if (route === "ask-time-of-day") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const weekOffset = parseInt((req.query.weekOffset as string) || "1", 10);
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-TIME-OF-DAY] Error getting firstName:", err);
+        }
+
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -630,7 +966,10 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=get-availability&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
           method: "POST",
         });
-        saySafe(g, "And do you prefer morning, midday, or afternoon?");
+        const prompt = firstName
+          ? `And do you prefer morning, midday, or afternoon, ${firstName}?`
+          : "And do you prefer morning, midday, or afternoon?";
+        saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -928,9 +1267,10 @@ export function registerVoice(app: Express) {
           timePart = 'afternoon';
         }
 
-        // Determine if new patient from conversation context
+        // Determine if new patient and preferred day from conversation context
         let isNewPatient = !isReturningPatient;
         let weekOffset = weekOffsetParam;
+        let preferredDayOfWeek: string | undefined;
 
         try {
           const call = await storage.getCallByCallSid(callSid);
@@ -943,6 +1283,9 @@ export function registerVoice(app: Express) {
             if (context?.weekOffset !== undefined) {
               weekOffset = context.weekOffset;
             }
+            if (context?.preferredDayOfWeek) {
+              preferredDayOfWeek = context.preferredDayOfWeek;
+            }
           }
         } catch (err) {
           console.error("[GET-AVAILABILITY] Error checking conversation context:", err);
@@ -953,14 +1296,38 @@ export function registerVoice(app: Express) {
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
 
-        // Calculate date range based on week offset
+        // Calculate date range based on week offset and preferred day
         const tzNow = dayjs().tz();
-        const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
-        const weekEnd = weekStart.endOf('week');
-        const fromDate = weekStart.format("YYYY-MM-DD");
-        const toDate = weekEnd.format("YYYY-MM-DD");
+        let fromDate: string;
+        let toDate: string;
 
-        console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset });
+        if (preferredDayOfWeek) {
+          // If they specified a day, find that specific day in the target week
+          const weekdayMap: { [key: string]: number } = {
+            "sunday": 0,
+            "monday": 1,
+            "tuesday": 2,
+            "wednesday": 3,
+            "thursday": 4,
+            "friday": 5,
+            "saturday": 6
+          };
+
+          const targetDayNumber = weekdayMap[preferredDayOfWeek.toLowerCase()];
+          const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+          const targetDate = weekStart.day(targetDayNumber);
+          fromDate = targetDate.format("YYYY-MM-DD");
+          toDate = fromDate; // Same day
+          console.log("[GET-AVAILABILITY] Targeting specific day:", preferredDayOfWeek, "on", fromDate);
+        } else {
+          // No preferred day - search the whole week
+          const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+          const weekEnd = weekStart.endOf('week');
+          fromDate = weekStart.format("YYYY-MM-DD");
+          toDate = weekEnd.format("YYYY-MM-DD");
+        }
+
+        console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
         // Add thinking filler
         saySafe(vr, "Thanks for waiting, I'm loading the schedule.");
@@ -1064,12 +1431,19 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
 
-        saySafe(
-          g,
-          s2
-            ? `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`
-            : `I have one option available: ${opt1}. Press 1 or say yes to book it.`
-        );
+        // Build prompt mentioning the day if it was specified
+        let prompt: string;
+        if (preferredDayOfWeek && s2) {
+          prompt = `I have two options for ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`;
+        } else if (preferredDayOfWeek && !s2) {
+          prompt = `I have one option available on ${preferredDayOfWeek}: ${opt1}. Press 1 or say yes to book it.`;
+        } else if (s2) {
+          prompt = `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`;
+        } else {
+          prompt = `I have one option available: ${opt1}. Press 1 or say yes to book it.`;
+        }
+
+        saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, timeoutUrl);
 
@@ -1096,6 +1470,19 @@ export function registerVoice(app: Express) {
         const interpretation = interpretSlotChoice(speechRaw, digits);
         console.log("[BOOK-CHOOSE] Interpretation:", interpretation);
 
+        // Get firstName for personalized responses
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[BOOK-CHOOSE] Error getting firstName:", err);
+        }
+
         // Handle rejection - ask for alternative
         if (interpretation.choice === "reject") {
           const g = vr.gather({
@@ -1106,7 +1493,10 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
             method: "POST",
           });
-          saySafe(g, "That's okay. Which day works better for you?");
+          const prompt = firstName
+            ? `No problem, ${firstName}. Which day and time works better for you?`
+            : "That's okay. Which day and time works better for you?";
+          saySafe(g, prompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
