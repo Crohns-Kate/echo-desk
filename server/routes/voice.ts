@@ -3,7 +3,14 @@ import twilio from "twilio";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
-import { getAvailability, createAppointmentForPatient } from "../services/cliniko";
+import {
+  getAvailability,
+  createAppointmentForPatient,
+  getNextUpcomingAppointment,
+  cancelAppointment,
+  rescheduleAppointment,
+  findPatientByPhoneRobust
+} from "../services/cliniko";
 import { saySafe, VOICE_NAME } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 import { labelForSpeech, AUST_TZ } from "../time";
@@ -174,17 +181,19 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 1) START → check if returning patient, then ask to book
+      // 1) START → detect intent and route accordingly
       if (route === "start") {
         // Check if this is a returning patient
         let isReturningPatient = false;
         let patientName: string | undefined;
+        let patientId: string | undefined;
 
         try {
           const phoneMapEntry = await storage.getPhoneMap(from);
           if (phoneMapEntry?.patientId) {
             isReturningPatient = true;
             patientName = phoneMapEntry.fullName || undefined;
+            patientId = phoneMapEntry.patientId || undefined;
             console.log("[VOICE] Returning patient detected:", { phone: from, name: patientName, patientId: phoneMapEntry.patientId });
           } else {
             console.log("[VOICE] New patient (not in phone_map):", from);
@@ -193,30 +202,460 @@ export function registerVoice(app: Express) {
           console.error("[VOICE] Error checking phone_map:", err);
         }
 
+        // Detect intent from speech
+        const intentResult = await classifyIntent(speechRaw);
+        console.log("[VOICE] Detected intent:", intentResult);
+
+        const intent = intentResult.action;
+
+        // Route based on intent
+        if (intent === "reschedule") {
+          if (!isReturningPatient) {
+            saySafe(vr, "I don't see an existing appointment for your number. Would you like to book a new appointment instead?");
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=reschedule-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId!)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        if (intent === "cancel") {
+          if (!isReturningPatient) {
+            saySafe(vr, "I don't see an existing appointment for your number. Is there anything else I can help you with?");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId!)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        if (intent === "book" || intent === "unknown") {
+          // For booking intent, ask if they've been to the office before
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Escalation for operator requests or complex questions
+        if (intent === "operator") {
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=escalate&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Default fallback
         const g = vr.gather({
           input: ["speech"],
-          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
+          action: abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-
-        // Natural greeting based on patient status
-        if (isReturningPatient && patientName) {
-          saySafe(g, `Okay. Would you like to book an appointment?`);
-        } else if (isReturningPatient) {
-          saySafe(g, "Okay. Would you like to book an appointment?");
-        } else {
-          saySafe(g, "Okay, one moment. Would you like to book an appointment?");
-        }
+        saySafe(g, "I can help you book, reschedule, or cancel an appointment. What would you like to do?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 2) BOOK-DAY → confirm intent then either ask for name or skip to day selection
+      // 2) CHECK-BEEN-BEFORE → Ask if they've been to the office before
+      if (route === "check-been-before") {
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-been-before&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafe(g, "Have you been to our office before?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 3) PROCESS-BEEN-BEFORE → Determine if new or returning, ask for name if needed
+      if (route === "process-been-before") {
+        const isNewPatient = speechRaw.includes("no") || speechRaw.includes("never") || speechRaw.includes("first");
+        const isReturning = speechRaw.includes("yes") || speechRaw.includes("returning") || speechRaw.includes("been");
+
+        // Store patient type in conversation context
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            await storage.updateConversation(call.conversationId, {
+              context: { isNewPatient, isReturning }
+            });
+          }
+        } catch (err) {
+          console.error("[PROCESS-BEEN-BEFORE] Error storing context:", err);
+        }
+
+        if (isNewPatient) {
+          // New patient flow - collect name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Great! May I have your full name please?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (isReturning) {
+          // Returning patient - skip to week selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-been-before&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Have you visited our office before? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 4) ASK-NAME-NEW → Collect name for new patient
+      if (route === "ask-name-new") {
+        const name = speechRaw || "";
+
+        // Store name in conversation context
+        if (name && name.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, fullName: name, isNewPatient: true }
+              });
+            }
+            console.log("[ASK-NAME-NEW] Stored name:", name);
+          } catch (err) {
+            console.error("[ASK-NAME-NEW] Failed to store name:", err);
+          }
+        }
+
+        // Ask for reason for visit
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafe(g, "Thank you. What's the main reason for your visit today?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 5) ASK-REASON → Collect reason and move to week selection
+      if (route === "ask-reason") {
+        const reason = speechRaw || "";
+
+        // Store reason in conversation context
+        if (reason && reason.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, reason }
+              });
+            }
+            console.log("[ASK-REASON] Stored reason:", reason);
+          } catch (err) {
+            console.error("[ASK-REASON] Failed to store reason:", err);
+          }
+        }
+
+        // Move to week selection with thinking filler
+        saySafe(vr, "Perfect. Let me check our availability for you.");
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 6) ASK-WEEK → Which week do they want?
+      if (route === "ask-week") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
+          method: "POST",
+        });
+        saySafe(g, "Which week works best for you? This week, next week, or another week?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 7) PROCESS-WEEK → Determine the week and ask for time preference
+      if (route === "process-week") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        let weekOffset = 0; // 0 = this week, 1 = next week
+        let specificWeek = "";
+
+        if (speechRaw.includes("this week") || speechRaw.includes("this") || speechRaw.includes("soon") || speechRaw.includes("asap")) {
+          weekOffset = 0;
+          specificWeek = "this week";
+        } else if (speechRaw.includes("next week") || speechRaw.includes("next")) {
+          weekOffset = 1;
+          specificWeek = "next week";
+        } else if (speechRaw.includes("another") || speechRaw.includes("later") || speechRaw.includes("different")) {
+          // For "another week", default to 2 weeks out
+          weekOffset = 2;
+          specificWeek = "in two weeks";
+        } else {
+          // Default to next week if unclear
+          weekOffset = 1;
+          specificWeek = "next week";
+        }
+
+        // Store week preference
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const existingContext = (conversation?.context as any) || {};
+            await storage.updateConversation(call.conversationId, {
+              context: { ...existingContext, weekOffset, specificWeek }
+            });
+          }
+        } catch (err) {
+          console.error("[PROCESS-WEEK] Error storing week:", err);
+        }
+
+        // Ask for time preference
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=get-availability&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
+          method: "POST",
+        });
+        saySafe(g, "And do you prefer morning, midday, or afternoon?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // ESCALATE → Handle complex questions
+      if (route === "escalate") {
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=capture-escalation&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafe(g, "I'd like to make sure you get the right information. Could you briefly describe what you need help with?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // CAPTURE-ESCALATION → Save the question and create alert
+      if (route === "capture-escalation") {
+        const question = speechRaw || "";
+
+        try {
+          const tenant = await storage.getTenant("default");
+          if (tenant) {
+            const alert = await storage.createAlert({
+              tenantId: tenant.id,
+              reason: "escalation",
+              payload: { question, callSid, from },
+            });
+            emitAlertCreated(alert);
+          }
+        } catch (err) {
+          console.error("[CAPTURE-ESCALATION] Failed to create alert:", err);
+        }
+
+        saySafe(vr, "Thank you. I've noted your question and Dr. Michael will get back to you. Is there anything else I can help with today?");
+        vr.hangup();
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // RESCHEDULE-START → Start reschedule flow
+      if (route === "reschedule-start") {
+        const patientId = (req.query.patientId as string) || "";
+
+        // Add thinking filler
+        saySafe(vr, "Just a moment while I bring up your appointment.");
+
+        // Look up their next appointment
+        try {
+          const appointment = await getNextUpcomingAppointment(patientId);
+          if (!appointment) {
+            saySafe(vr, "I don't see any upcoming appointments for you. Would you like to book a new one?");
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          // Confirm their current appointment
+          const currentTime = labelForSpeech(appointment.starts_at, AUST_TZ);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=reschedule-confirm&callSid=${encodeURIComponent(callSid)}&apptId=${encodeURIComponent(appointment.id)}&patientId=${encodeURIComponent(patientId)}`),
+            method: "POST",
+          });
+          saySafe(g, `I see you have an appointment on ${currentTime}. Would you like to reschedule this appointment?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } catch (err) {
+          console.error("[RESCHEDULE-START] Error:", err);
+          saySafe(vr, "Sorry, I'm having trouble accessing your appointment. Please call back or try again later.");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // RESCHEDULE-CONFIRM → Confirm they want to reschedule
+      if (route === "reschedule-confirm") {
+        const apptId = (req.query.apptId as string) || "";
+        const patientId = (req.query.patientId as string) || "";
+
+        if (speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("yeah")) {
+          // Store appointment ID in context for later
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              await storage.updateConversation(call.conversationId, {
+                context: { apptId, patientId, isReschedule: true }
+              });
+            }
+          } catch (err) {
+            console.error("[RESCHEDULE-CONFIRM] Error storing context:", err);
+          }
+
+          // Move to week selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          saySafe(vr, "Okay, no problem. Is there anything else I can help you with?");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CANCEL-START → Start cancel flow
+      if (route === "cancel-start") {
+        const patientId = (req.query.patientId as string) || "";
+
+        // Add thinking filler
+        saySafe(vr, "Just a moment while I bring up your appointment.");
+
+        try {
+          const appointment = await getNextUpcomingAppointment(patientId);
+          if (!appointment) {
+            saySafe(vr, "I don't see any upcoming appointments to cancel.");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          // Confirm cancellation
+          const currentTime = labelForSpeech(appointment.starts_at, AUST_TZ);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=cancel-confirm&callSid=${encodeURIComponent(callSid)}&apptId=${encodeURIComponent(appointment.id)}&patientId=${encodeURIComponent(patientId)}`),
+            method: "POST",
+          });
+          saySafe(g, `I see you have an appointment on ${currentTime}. Are you sure you want to cancel this appointment?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } catch (err) {
+          console.error("[CANCEL-START] Error:", err);
+          saySafe(vr, "Sorry, I'm having trouble accessing your appointment. Please call back or try again later.");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CANCEL-CONFIRM → Confirm cancellation and offer rebook
+      if (route === "cancel-confirm") {
+        const apptId = (req.query.apptId as string) || "";
+        const patientId = (req.query.patientId as string) || "";
+
+        if (speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("cancel")) {
+          try {
+            await cancelAppointment(apptId);
+
+            // Update call log
+            try {
+              const updated = await storage.updateCall(callSid, {
+                intent: "cancellation",
+                summary: `Appointment cancelled: ${apptId}`,
+              });
+              if (updated) emitCallUpdated(updated);
+            } catch (logErr) {
+              console.error("[LOG ERROR]", logErr);
+            }
+
+            // Offer to rebook
+            const g = vr.gather({
+              input: ["speech"],
+              timeout: 5,
+              speechTimeout: "auto",
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=cancel-rebook&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`),
+              method: "POST",
+            });
+            saySafe(g, "Your appointment has been cancelled. Would you like to book a new appointment?");
+            g.pause({ length: 1 });
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          } catch (err) {
+            console.error("[CANCEL-CONFIRM] Error cancelling:", err);
+            saySafe(vr, "Sorry, I couldn't cancel your appointment. Please call back or try again later.");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+        } else {
+          saySafe(vr, "Okay, I've kept your appointment as is. See you then!");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CANCEL-REBOOK → Handle rebooking after cancellation
+      if (route === "cancel-rebook") {
+        if (speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("book")) {
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          saySafe(vr, "Okay, have a great day!");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 2) BOOK-DAY → confirm intent then either ask for name or skip to day selection (LEGACY - keeping for compatibility)
       if (route === "book-day") {
         if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
           saySafe(vr, "Okay, goodbye.");
@@ -295,26 +734,23 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 4) ASK-DAY / BOOK-PART → fetch next available 1–2 slots with appropriate appointment type
-      if (route === "ask-day" || route === "book-part") {
-        const tzNow = dayjs().tz();
-        let fromDate = tzNow.format("YYYY-MM-DD");
-        let toDate = tzNow.add(7, "day").format("YYYY-MM-DD");
+      // GET-AVAILABILITY → Fetch slots based on week offset and time preference
+      if (route === "get-availability") {
+        const isReturningPatient = (req.query.returning as string) === '1';
+        const weekOffsetParam = parseInt((req.query.weekOffset as string) || "1", 10);
 
-        const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-        const saidWeekdayIdx = weekdays.findIndex((w) => speechRaw.includes(w));
-        if (saidWeekdayIdx >= 0) {
-          let d = tzNow;
-          for (let i = 0; i < 7 && d.day() !== saidWeekdayIdx; i++) d = d.add(1, "day");
-          fromDate = d.format("YYYY-MM-DD");
-          toDate = d.format("YYYY-MM-DD");
+        // Get time preference from speech
+        let timePart: 'morning' | 'afternoon' | undefined;
+        if (speechRaw.includes("morning") || speechRaw.includes("early")) {
+          timePart = 'morning';
+        } else if (speechRaw.includes("afternoon") || speechRaw.includes("midday") || speechRaw.includes("late")) {
+          timePart = 'afternoon';
         }
 
-        // Determine if new patient based on query param or conversation context
-        const isReturningPatient = (req.query.returning as string) === '1';
+        // Determine if new patient from conversation context
         let isNewPatient = !isReturningPatient;
+        let weekOffset = weekOffsetParam;
 
-        // Also check conversation context if available
         try {
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
@@ -323,9 +759,12 @@ export function registerVoice(app: Express) {
             if (context?.isNewPatient !== undefined) {
               isNewPatient = context.isNewPatient;
             }
+            if (context?.weekOffset !== undefined) {
+              weekOffset = context.weekOffset;
+            }
           }
         } catch (err) {
-          console.error("[ASK-DAY] Error checking conversation context:", err);
+          console.error("[GET-AVAILABILITY] Error checking conversation context:", err);
         }
 
         // Use appropriate appointment type
@@ -333,18 +772,29 @@ export function registerVoice(app: Express) {
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
 
-        console.log("[BOOK][LOOKUP]", { fromDate, toDate, isNewPatient, appointmentTypeId });
+        // Calculate date range based on week offset
+        const tzNow = dayjs().tz();
+        const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+        const weekEnd = weekStart.endOf('week');
+        const fromDate = weekStart.format("YYYY-MM-DD");
+        const toDate = weekEnd.format("YYYY-MM-DD");
+
+        console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset });
+
+        // Add thinking filler
+        saySafe(vr, "Thanks for waiting, I'm loading the schedule.");
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
-            appointmentTypeId
+            appointmentTypeId,
+            part: timePart
           });
           slots = result.slots || [];
         } catch (e: any) {
-          console.error("[BOOK-PART][getAvailability ERROR]", e);
+          console.error("[GET-AVAILABILITY][getAvailability ERROR]", e);
           try {
             const tenant = await storage.getTenant("default");
             if (tenant) {
@@ -370,15 +820,26 @@ export function registerVoice(app: Express) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
                 reason: "no_availability",
-                payload: { fromDate, toDate, callSid, from },
+                payload: { fromDate, toDate, timePart, callSid, from },
               });
               emitAlertCreated(alert);
             }
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafe(vr, "Sorry, there are no times available for that day. Would you like to try a different day?");
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=book-day&callSid=${encodeURIComponent(callSid)}`));
+
+          // Offer to try different time or week
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, there are no times available for that selection. Would you like to try a different week or time?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -396,7 +857,6 @@ export function registerVoice(app: Express) {
 
         const g = vr.gather({
           input: ["speech", "dtmf"],
-          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
@@ -404,7 +864,6 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
 
-        // ✅ Safe say
         saySafe(
           g,
           s2
@@ -414,6 +873,14 @@ export function registerVoice(app: Express) {
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, timeoutUrl);
 
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 4) ASK-DAY / BOOK-PART → LEGACY route for backward compatibility
+      if (route === "ask-day" || route === "book-part") {
+        // Redirect to new flow
+        const isReturningPatient = (req.query.returning as string) === '1';
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -436,6 +903,8 @@ export function registerVoice(app: Express) {
         let fullName: string | undefined;
         let email: string | undefined;
         let patientId: string | undefined;
+        let isReschedule = false;
+        let apptId: string | undefined;
 
         try {
           // First try phone_map for returning patients
@@ -460,7 +929,13 @@ export function registerVoice(app: Express) {
             if (context?.email && !email) {
               email = context.email;
             }
-            console.log("[BOOK-CHOOSE] Retrieved from conversation:", { fullName, email });
+            // Check if this is a reschedule operation
+            if (context?.isReschedule) {
+              isReschedule = true;
+              apptId = context.apptId;
+              patientId = context.patientId || patientId;
+            }
+            console.log("[BOOK-CHOOSE] Retrieved from conversation:", { fullName, email, isReschedule, apptId });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
@@ -469,23 +944,58 @@ export function registerVoice(app: Express) {
         try {
           const { env } = await import("../utils/env");
 
-          const appointmentNotes = isReturningPatient
-            ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
-            : `New patient appointment booked via voice call at ${new Date().toISOString()}`;
+          let appointment: any;
 
-          // Create appointment with captured identity and correct appointment type
-          const appointment = await createAppointmentForPatient(from, {
-            startsAt: chosen,
-            practitionerId: env.CLINIKO_PRACTITIONER_ID,
-            appointmentTypeId: appointmentTypeId,
-            notes: appointmentNotes,
-            fullName,
-            email,
-          });
+          if (isReschedule && apptId) {
+            // RESCHEDULE existing appointment
+            console.log("[BOOK-CHOOSE] Rescheduling appointment:", apptId, "to", chosen);
+            appointment = await rescheduleAppointment(apptId, chosen, patientId, env.CLINIKO_PRACTITIONER_ID, appointmentTypeId);
 
-          // Get the patientId from the created appointment
-          if (appointment && appointment.patient_id) {
-            patientId = appointment.patient_id;
+            try {
+              const updated = await storage.updateCall(callSid, {
+                intent: "reschedule",
+                summary: `Appointment rescheduled to ${chosen}`,
+              });
+              if (updated) emitCallUpdated(updated);
+            } catch (logErr) {
+              console.error("[LOG ERROR]", logErr);
+            }
+
+            const spokenTime = labelForSpeech(chosen, AUST_TZ);
+            try {
+              const tenant = await storage.getTenant("default");
+              if (tenant) {
+                await sendAppointmentConfirmation({
+                  to: from,
+                  appointmentDate: spokenTime,
+                  clinicName: tenant.clinicName,
+                });
+              }
+            } catch (smsErr) {
+              console.warn("[SMS] Failed to send confirmation:", smsErr);
+            }
+
+            saySafe(vr, `Perfect. Your appointment has been rescheduled to ${spokenTime}. See you then!`);
+            return res.type("text/xml").send(vr.toString());
+          } else {
+            // CREATE NEW appointment
+            const appointmentNotes = isReturningPatient
+              ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
+              : `New patient appointment booked via voice call at ${new Date().toISOString()}`;
+
+            appointment = await createAppointmentForPatient(from, {
+              startsAt: chosen,
+              practitionerId: env.CLINIKO_PRACTITIONER_ID,
+              appointmentTypeId: appointmentTypeId,
+              notes: appointmentNotes,
+              fullName,
+              email,
+            });
+
+            // Get the patientId from the created appointment
+            if (appointment && appointment.patient_id) {
+              patientId = appointment.patient_id;
+            }
           }
 
           // Store identity in phone_map for future use (including patientId)
