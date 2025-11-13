@@ -114,7 +114,7 @@ export function registerVoice(app: Express) {
 
     const g = vr.gather({
       input: ["speech"],
-      language: "en-AU",
+      // NOTE: language removed - Polly voices have built-in language and reject language parameter
       timeout: 5,
       speechTimeout: "auto",
       actionOnEmptyResult: true,
@@ -122,8 +122,8 @@ export function registerVoice(app: Express) {
       method: "POST",
     });
 
-    // ✅ Safe say
-    saySafe(g, "Hello and welcome to your clinic. How can I help you today?");
+    // ✅ Safe say - Ultra-simplified text to diagnose 13520 error
+    saySafe(g, "Hello. How can I help you today?");
     g.pause({ length: 1 });
     vr.redirect({ method: "POST" }, timeoutUrl);
 
@@ -148,7 +148,7 @@ export function registerVoice(app: Express) {
       if (route === "timeout") {
         const g = vr.gather({
           input: ["speech"],
-          language: "en-AU",
+          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
@@ -164,7 +164,7 @@ export function registerVoice(app: Express) {
       if (route === "start") {
         const g = vr.gather({
           input: ["speech"],
-          language: "en-AU",
+          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
@@ -184,7 +184,7 @@ export function registerVoice(app: Express) {
 
         const g = vr.gather({
           input: ["speech"],
-          language: "en-AU",
+          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
@@ -268,7 +268,7 @@ export function registerVoice(app: Express) {
 
         const g = vr.gather({
           input: ["speech", "dtmf"],
-          language: "en-AU",
+          // NOTE: language removed - Polly voices have built-in language
           timeout: 5,
           actionOnEmptyResult: true,
           action: nextUrl,

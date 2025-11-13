@@ -60,8 +60,11 @@ export function saySafe(node: any, text?: string, voice?: any) {
   const isPrimary = isPollyVoice(v);
   const isFallback = isPollyVoice(FALLBACK_VOICE);
 
+  console.log(`[VOICE][saySafe] voice="${v}" isPolly=${isPrimary} text="${cleaned}" chunks=${chunks.length}`);
+
   for (const c of chunks) {
     if (!c || c.trim().length === 0) continue;
+    console.log(`[VOICE][saySafe] Speaking chunk: "${c}" (length: ${c.length})`);
     try {
       // Polly voices: no language parameter. Standard voices: include language.
       if (isPrimary) {
