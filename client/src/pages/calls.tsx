@@ -136,9 +136,15 @@ export default function Calls() {
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2">
-                            {call.recordingUrl && (
-                              <Badge variant="outline" className="text-xs">
-                                Recorded
+                            {call.recordingSid && (
+                              <Badge
+                                variant={call.recordingStatus === 'completed' ? 'default' : 'outline'}
+                                className="text-xs"
+                                data-testid={`badge-recording-${call.id}`}
+                              >
+                                {call.recordingStatus === 'completed' ? 'Recorded' :
+                                 call.recordingStatus === 'in-progress' ? 'Recording...' :
+                                 call.recordingStatus === 'failed' ? 'Rec Failed' : 'Recording'}
                               </Badge>
                             )}
                             {call.transcript && (

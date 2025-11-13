@@ -10,9 +10,26 @@ export function sanitizeForSay(text?: string): string {
     .trim();
 }
 
+// Enhanced TTS cleaning - removes problematic characters that cause Twilio 13520 errors
+export function ttsClean(text?: string): string {
+  if (!text) return "";
+  return String(text)
+    // Remove all unicode including emojis, smart quotes, curly apostrophes
+    .replace(/[\u2018\u2019]/g, "'")  // smart single quotes → straight apostrophe
+    .replace(/[\u201C\u201D]/g, '"')  // smart double quotes → straight quotes
+    .replace(/[\u2013\u2014]/g, '-')  // en-dash, em-dash → hyphen
+    .replace(/[\u2026]/g, '...')      // ellipsis → three dots
+    .replace(/[^\x00-\x7F]/g, '')     // strip ALL remaining non-ASCII
+    .replace(/\s+/g, ' ')             // collapse whitespace
+    .replace(/[\x00-\x1F\x7F]/g, '')  // remove control characters
+    .trim();
+}
+
 // Optional: chunk very long strings to avoid provider limits (~3000 chars)
 export function chunkForSay(text: string, max = 1200): string[] {
-  const t = sanitizeForSay(text);
+  // Use ttsClean for enhanced sanitization
+  const t = ttsClean(text);
+  if (!t) return [];
   if (t.length <= max) return [t];
   const parts: string[] = [];
   let i = 0;
@@ -24,18 +41,45 @@ export function chunkForSay(text: string, max = 1200): string[] {
     parts.push(t.slice(i, end).trim());
     i = end;
   }
-  return parts;
+  return parts.filter(p => p.length > 0);
 }
 
 export function saySafe(node: any, text?: string, voice?: any) {
-  const chunks = chunkForSay(text ?? "");
+  // Double-clean the text through ttsClean (which is used in chunkForSay)
+  const cleaned = ttsClean(text);
+  if (!cleaned || cleaned.length === 0) {
+    console.warn("[VOICE] Attempted to speak empty/invalid text:", text);
+    return; // Never pass empty string to <Say>
+  }
+
+  const chunks = chunkForSay(cleaned);
   const v = (voice ?? VOICE_NAME) as any;
+
+  // Polly voices don't support the language parameter - it causes 13520 errors
+  const isPollyVoice = (voiceName: string) => String(voiceName).toLowerCase().includes('polly');
+  const isPrimary = isPollyVoice(v);
+  const isFallback = isPollyVoice(FALLBACK_VOICE);
+
   for (const c of chunks) {
-    if (!c) continue;
+    if (!c || c.trim().length === 0) continue;
     try {
-      node.say({ voice: v, language: "en-AU" }, c);
-    } catch {
-      node.say({ voice: FALLBACK_VOICE, language: "en-AU" }, c);
+      // Polly voices: no language parameter. Standard voices: include language.
+      if (isPrimary) {
+        node.say({ voice: v }, c);
+      } else {
+        node.say({ voice: v, language: "en-AU" }, c);
+      }
+    } catch (err) {
+      console.error("[VOICE] Say failed with primary voice, using fallback:", err);
+      try {
+        if (isFallback) {
+          node.say({ voice: FALLBACK_VOICE }, c);
+        } else {
+          node.say({ voice: FALLBACK_VOICE, language: "en-AU" }, c);
+        }
+      } catch (fallbackErr) {
+        console.error("[VOICE] Fallback voice also failed:", fallbackErr);
+      }
     }
   }
 }

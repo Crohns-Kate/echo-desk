@@ -30,7 +30,7 @@ export function validateTwilioSignature(req: Request, res: Response, next: NextF
 
     if (!valid) {
       const vr = new twilio.twiml.VoiceResponse();
-      vr.say("Sorry, we could not verify this call. Please try again later.");
+      vr.say({ voice: "alice", language: "en-AU" }, "Sorry, we could not verify this call. Please try again later.");
       return res.type("text/xml").send(vr.toString());
     }
 
@@ -38,7 +38,7 @@ export function validateTwilioSignature(req: Request, res: Response, next: NextF
   } catch (err) {
     console.error("[SIGCHK][ERROR]", err);
     const vr = new twilio.twiml.VoiceResponse();
-    vr.say("Sorry, there was a problem verifying your call.");
-    res.type("text/xml").send(vr.toString());
+    vr.say({ voice: "alice", language: "en-AU" }, "Sorry, there was a problem verifying your call.");
+    return res.type("text/xml").send(vr.toString());
   }
 }

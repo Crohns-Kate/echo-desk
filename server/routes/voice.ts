@@ -25,15 +25,36 @@ export function registerVoice(app: Express) {
       const callSid = (req.body.CallSid as string) || "";
       const recordingSid = (req.body.RecordingSid as string) || "";
       const status = (req.body.RecordingStatus as string) || ""; // in-progress | completed | failed
-      const recordingUrl = (req.body.RecordingUrl as string) || ""; // append ".mp3" when streaming
+      let recordingUrl = (req.body.RecordingUrl as string) || "";
 
-      if (callSid) {
-        await storage.updateCall(callSid, {
-          recordingSid,
-          recordingStatus: status,
-          recordingUrl,
-        });
+      console.log("[RECORDING_STATUS]", { callSid, recordingSid, status, recordingUrl });
+
+      // Validate callSid exists before updating
+      if (!callSid) {
+        console.warn("[RECORDING_STATUS] No callSid provided, cannot update");
+        return res.sendStatus(204);
       }
+
+      // Append .mp3 to recordingUrl for direct streaming
+      if (recordingUrl && !recordingUrl.endsWith('.mp3')) {
+        recordingUrl = recordingUrl + '.mp3';
+      }
+
+      // Update call record
+      const updated = await storage.updateCall(callSid, {
+        recordingSid,
+        recordingStatus: status,
+        recordingUrl,
+      });
+
+      if (!updated) {
+        console.warn("[RECORDING_STATUS] Call not found:", callSid);
+      } else {
+        console.log("[RECORDING_STATUS] Updated call:", callSid, "with recording:", recordingSid);
+        // Emit WebSocket update if needed
+        emitCallUpdated(updated);
+      }
+
       return res.sendStatus(204);
     } catch (e) {
       console.error("[RECORDING_STATUS][ERROR]", e);
@@ -73,13 +94,20 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Note: To enable call recording, use Twilio REST API to update the call:
-    // const client = twilio(accountSid, authToken);
-    // await client.calls(callSid).update({
-    //   record: true,
-    //   recordingStatusCallback: abs("/api/voice/recording-status"),
-    //   recordingStatusCallbackMethod: "POST",
-    // });
+    // Start recording if enabled
+    const { env } = await import("../utils/env");
+    if (env.CALL_RECORDING_ENABLED && callSid) {
+      try {
+        const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+        await client.calls(callSid).recordings.create({
+          recordingStatusCallback: abs("/api/voice/recording-status"),
+          recordingStatusCallbackMethod: "POST",
+        });
+        console.log("[VOICE][RECORDING] Started recording for call:", callSid);
+      } catch (recErr) {
+        console.error("[VOICE][RECORDING] Failed to start recording:", recErr);
+      }
+    }
 
     const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
     const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);

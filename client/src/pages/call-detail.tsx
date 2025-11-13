@@ -115,31 +115,62 @@ export default function CallDetail() {
                 <CardHeader>
                   <CardTitle className="text-base flex items-center justify-between gap-2">
                     <span>Recording</span>
-                    <a 
-                      href={`/api/recordings/${call.recordingSid}/download`}
-                      download
-                    >
-                      <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-download-recording">
-                        <Download className="h-4 w-4" />
-                      </Button>
-                    </a>
+                    <div className="flex items-center gap-2">
+                      {call.recordingStatus && (
+                        <Badge variant="outline" className="text-xs" data-testid="badge-recording-status">
+                          {call.recordingStatus}
+                        </Badge>
+                      )}
+                      <a
+                        href={`/api/recordings/${call.recordingSid}/download`}
+                        download
+                      >
+                        <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-download-recording">
+                          <Download className="h-4 w-4" />
+                        </Button>
+                      </a>
+                    </div>
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
-                    {call.duration && (
-                      <div className="text-xs text-muted-foreground font-mono" data-testid="text-recording-duration">
-                        Duration: {Math.floor(call.duration / 60).toString().padStart(2, '0')}:{(call.duration % 60).toString().padStart(2, '0')}
+                    <div className="text-xs text-muted-foreground space-y-1">
+                      {call.recordingSid && (
+                        <div className="font-mono" data-testid="text-recording-sid">
+                          Recording SID: {call.recordingSid}
+                        </div>
+                      )}
+                      {call.duration && (
+                        <div data-testid="text-recording-duration">
+                          Duration: {Math.floor(call.duration / 60).toString().padStart(2, '0')}:{(call.duration % 60).toString().padStart(2, '0')}
+                        </div>
+                      )}
+                      {call.recordingUrl && (
+                        <div className="truncate" data-testid="text-recording-url">
+                          URL: {call.recordingUrl}
+                        </div>
+                      )}
+                    </div>
+                    {call.recordingStatus === 'completed' && (
+                      <audio
+                        controls
+                        className="w-full"
+                        data-testid="audio-player"
+                        src={`/api/recordings/${call.recordingSid}/stream`}
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                    )}
+                    {call.recordingStatus === 'in-progress' && (
+                      <div className="text-xs text-muted-foreground italic">
+                        Recording in progress...
                       </div>
                     )}
-                    <audio 
-                      controls 
-                      className="w-full" 
-                      data-testid="audio-player"
-                      src={`/api/recordings/${call.recordingSid}/stream`}
-                    >
-                      Your browser does not support the audio element.
-                    </audio>
+                    {call.recordingStatus === 'failed' && (
+                      <div className="text-xs text-red-500">
+                        Recording failed
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>

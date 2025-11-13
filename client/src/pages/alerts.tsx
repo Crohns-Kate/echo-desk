@@ -188,7 +188,7 @@ export default function Alerts() {
                           )}
                         </div>
 
-                        {alert.payload && Object.keys(alert.payload).length > 0 && (
+                        {alert.payload && typeof alert.payload === 'object' && alert.payload !== null && Object.keys(alert.payload).length > 0 ? (
                           <details className="text-xs">
                             <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                               View payload
@@ -197,7 +197,7 @@ export default function Alerts() {
                               {JSON.stringify(alert.payload, null, 2)}
                             </pre>
                           </details>
-                        )}
+                        ) : null}
                       </div>
 
                       {alert.status === 'open' && (
