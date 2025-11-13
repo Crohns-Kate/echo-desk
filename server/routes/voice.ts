@@ -304,8 +304,8 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else if (isReturning) {
-          // Returning patient - skip to week selection
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          // Returning patient - confirm identity first
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-identity&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
@@ -324,7 +324,114 @@ export function registerVoice(app: Express) {
         }
       }
 
-      // 4) ASK-NAME-NEW → Collect name for new patient
+      // 4) CONFIRM-IDENTITY → Ask returning patient to confirm their identity
+      if (route === "confirm-identity") {
+        let recognizedName: string | undefined;
+
+        try {
+          const phoneMapEntry = await storage.getPhoneMap(from);
+          recognizedName = phoneMapEntry?.fullName || undefined;
+        } catch (err) {
+          console.error("[CONFIRM-IDENTITY] Error checking phone_map:", err);
+        }
+
+        if (recognizedName) {
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-confirm-identity&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, `Is this ${recognizedName} I'm speaking to?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // No recognized name - ask for name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-name-returning&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "May I have your full name please?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 4a) PROCESS-CONFIRM-IDENTITY → Handle identity confirmation response
+      if (route === "process-confirm-identity") {
+        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right");
+        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong");
+
+        if (confirmed) {
+          // Identity confirmed - proceed to week selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (denied) {
+          // Identity not confirmed - ask for correct name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-name-returning&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "I apologize. May I have your full name please?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-confirm-identity&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 4b) ASK-NAME-RETURNING → Collect name for returning patient with wrong identity
+      if (route === "ask-name-returning") {
+        const name = speechRaw || "";
+
+        // Store name in conversation context and mark as returning
+        if (name && name.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, fullName: name, isReturning: true }
+              });
+            }
+            console.log("[ASK-NAME-RETURNING] Stored name:", name);
+          } catch (err) {
+            console.error("[ASK-NAME-RETURNING] Failed to store name:", err);
+          }
+        }
+
+        // Proceed to week selection
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 5) ASK-NAME-NEW → Collect name for new patient
       if (route === "ask-name-new") {
         const name = speechRaw || "";
 
@@ -907,35 +1014,42 @@ export function registerVoice(app: Express) {
         let apptId: string | undefined;
 
         try {
-          // First try phone_map for returning patients
+          // First try phone_map as fallback for returning patients
           if (isReturningPatient) {
             const phoneMapEntry = await storage.getPhoneMap(from);
             if (phoneMapEntry) {
               fullName = phoneMapEntry.fullName || undefined;
               email = phoneMapEntry.email || undefined;
               patientId = phoneMapEntry.patientId || undefined;
-              console.log("[BOOK-CHOOSE] Retrieved from phone_map:", { fullName, email, patientId });
+              console.log("[BOOK-CHOOSE] Retrieved from phone_map (fallback):", { fullName, email, patientId });
             }
           }
 
-          // Then check conversation context (for new patients or if phone_map incomplete)
+          // Then check conversation context - this takes PRIORITY over phone_map
+          // because it's what the user provided during this call
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
-            if (context?.fullName && !fullName) {
+
+            // IMPORTANT: Conversation context overrides phone_map for name and email
+            // because it's more recent and accurate
+            if (context?.fullName) {
               fullName = context.fullName;
+              console.log("[BOOK-CHOOSE] Using name from conversation context:", fullName);
             }
-            if (context?.email && !email) {
+            if (context?.email) {
               email = context.email;
+              console.log("[BOOK-CHOOSE] Using email from conversation context:", email);
             }
+
             // Check if this is a reschedule operation
             if (context?.isReschedule) {
               isReschedule = true;
               apptId = context.apptId;
               patientId = context.patientId || patientId;
             }
-            console.log("[BOOK-CHOOSE] Retrieved from conversation:", { fullName, email, isReschedule, apptId });
+            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
