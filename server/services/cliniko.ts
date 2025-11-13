@@ -186,10 +186,64 @@ export async function getAvailability(opts?: {
 
     // Fetch appointment type details for duration
     const appointmentTypes = await getAppointmentTypes(practitionerId);
-    const appointmentType = appointmentTypes.find(at => at.id === appointmentTypeId) || appointmentTypes[0];
+    console.log(`[Cliniko] Found ${appointmentTypes.length} appointment types for practitioner ${practitionerId}`);
+    console.log(`[Cliniko] Looking for appointment type ID: ${appointmentTypeId}`);
+
+    const appointmentType = appointmentTypes.find(at => at.id === appointmentTypeId);
 
     if (!appointmentType) {
-      throw new Error('No appointment types found for practitioner');
+      console.error(`[Cliniko] Appointment type ${appointmentTypeId} not found in available types:`, appointmentTypes.map(at => ({ id: at.id, name: at.name })));
+
+      // Fallback to first available appointment type if the specified one isn't found
+      if (appointmentTypes.length > 0) {
+        console.warn(`[Cliniko] Falling back to first available appointment type: ${appointmentTypes[0].name} (${appointmentTypes[0].id})`);
+        const fallbackType = appointmentTypes[0];
+        const duration = fallbackType.duration_in_minutes;
+
+        // Continue with fallback type instead of throwing error
+        const from = opts?.fromISO || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const to = opts?.toISO || from;
+
+        console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'} with fallback type`);
+
+        const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
+          `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${from}&to=${to}&per_page=50`
+        );
+
+        const times = data.available_times || [];
+
+        // Filter by part of day
+        let filtered = times;
+        if (opts?.part) {
+          filtered = times.filter(t => {
+            const d = new Date(t.appointment_start);
+            const localHour = parseInt(
+              d.toLocaleString('en-AU', { timeZone: tz, hour: "2-digit", hour12: false }),
+              10
+            );
+
+            if (opts.part === 'morning' || opts.part === 'early') {
+              return localHour >= 8 && localHour < 12;
+            }
+            if (opts.part === 'afternoon' || opts.part === 'late') {
+              return localHour >= 12 && localHour <= 17;
+            }
+            return true;
+          });
+        }
+
+        console.log(`[Cliniko] Found ${times.length} total slots, ${filtered.length} after ${opts?.part || 'no'} filter (using fallback type)`);
+
+        const slots = filtered.slice(0, 50).map(t => ({
+          startISO: t.appointment_start,
+          endISO: dayjs(t.appointment_start).add(duration, 'minute').toISOString(),
+          label: undefined
+        }));
+
+        return { slots };
+      }
+
+      throw new Error(`No appointment types found for practitioner ${practitionerId}. Available types: ${appointmentTypes.length === 0 ? 'none' : appointmentTypes.map(at => at.name).join(', ')}`);
     }
 
     // Use provided date range or default to tomorrow

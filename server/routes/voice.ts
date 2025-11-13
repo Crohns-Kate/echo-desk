@@ -489,7 +489,7 @@ export function registerVoice(app: Express) {
         }
 
         // Move to week selection with thinking filler
-        saySafe(vr, "Perfect. Let me check our availability for you.");
+        saySafe(vr, "I'm sorry to hear that. Let me see what we have available to get you in…");
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         return res.type("text/xml").send(vr.toString());
       }
@@ -733,7 +733,7 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=cancel-rebook&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`),
               method: "POST",
             });
-            saySafe(g, "Your appointment has been cancelled. Would you like to book a new appointment?");
+            saySafe(g, "No problem — your appointment has been cancelled. Would you like to book a new one so you don't fall behind on your care?");
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
@@ -893,6 +893,7 @@ export function registerVoice(app: Express) {
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
+          console.log("[GET-AVAILABILITY] Calling getAvailability with:", { fromDate, toDate, appointmentTypeId, timePart, isNewPatient });
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
@@ -900,22 +901,40 @@ export function registerVoice(app: Express) {
             part: timePart
           });
           slots = result.slots || [];
+          console.log(`[GET-AVAILABILITY] Received ${slots.length} slots from getAvailability`);
         } catch (e: any) {
           console.error("[GET-AVAILABILITY][getAvailability ERROR]", e);
+          console.error("[GET-AVAILABILITY] Error details:", {
+            message: e.message,
+            stack: e.stack,
+            fromDate,
+            toDate,
+            appointmentTypeId,
+            timePart,
+            isNewPatient
+          });
           try {
             const tenant = await storage.getTenant("default");
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
                 reason: "cliniko_error",
-                payload: { error: e.message, endpoint: "getAvailability", callSid, from },
+                payload: {
+                  error: e.message,
+                  stack: e.stack,
+                  endpoint: "getAvailability",
+                  callSid,
+                  from,
+                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient }
+                },
               });
               emitAlertCreated(alert);
             }
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafe(vr, "Sorry, I couldn't load available times. Please try again later.");
+          saySafe(vr, "Sorry, I'm having trouble accessing the schedule right now. Please try calling back in a few minutes, or I can transfer you to our front desk.");
+          vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -1089,7 +1108,9 @@ export function registerVoice(app: Express) {
               console.warn("[SMS] Failed to send confirmation:", smsErr);
             }
 
-            saySafe(vr, `Perfect. Your appointment has been rescheduled to ${spokenTime}. See you then!`);
+            const lastFourDigits = from.slice(-3);
+            saySafe(vr, `All done. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with today?`);
+            vr.hangup();
             return res.type("text/xml").send(vr.toString());
           } else {
             // CREATE NEW appointment
@@ -1151,7 +1172,9 @@ export function registerVoice(app: Express) {
             console.warn("[SMS] Failed to send confirmation:", smsErr);
           }
 
-          saySafe(vr, `All set. Your appointment is confirmed for ${spokenTime}. Goodbye.`);
+          const lastFourDigits = from.slice(-3);
+          saySafe(vr, `All set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with today?`);
+          vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } catch (e: any) {
           console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
