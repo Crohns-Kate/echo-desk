@@ -330,7 +330,7 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. ${EMOTIONS.shortPause()} Am I speaking with ${knownPatientName}?`);
+      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. Am I speaking with ${knownPatientName}?`);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     } else {
@@ -347,7 +347,7 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. ${EMOTIONS.shortPause()} How can I help you today?`);
+      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. How can I help you today?`);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     }
@@ -381,10 +381,10 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         // ✅ Safe say
-        saySafeSSML(g, `${EMOTIONS.shortBreath()}Sorry, I didn't catch that. ${EMOTIONS.shortPause()} Please say book, reschedule, or cancel.`);
+        saySafeSSML(g, `Sorry, I didn't catch that. Please say book, reschedule, or cancel.`);
         g.pause({ length: 1 });
         // If timeout again, end call gracefully
-        saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "medium")}, ${EMOTIONS.breath()}I'm having trouble understanding you. ${EMOTIONS.mediumPause()} Please call back when you're ready. Goodbye.`);
+        saySafeSSML(vr, `I'm sorry... I'm having trouble understanding you. Please call back when you're ready. Goodbye.`);
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -614,6 +614,29 @@ export function registerVoice(app: Express) {
 
       // 2) CHECK-BEEN-BEFORE → Ask if they've been to the office before
       if (route === "check-been-before") {
+        // Check if we already know they're a returning patient (from phone recognition or previous booking)
+        let alreadyIdentified = false;
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            // If they were confirmed as a returning patient earlier, skip this question
+            if (context?.identityConfirmed || context?.isReturning) {
+              alreadyIdentified = true;
+            }
+          }
+        } catch (err) {
+          console.error("[CHECK-BEEN-BEFORE] Error checking context:", err);
+        }
+
+        if (alreadyIdentified) {
+          // Skip the question - we already know they're returning
+          console.log("[CHECK-BEEN-BEFORE] Skipping - patient already identified as returning");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-identity&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -655,7 +678,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafeSSML(g, `${EMOTIONS.excited("Great", "low")}! ${EMOTIONS.shortBreath()} May I have your full name please?`);
+          saySafeSSML(g, `Great! May I have your full name please?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1305,7 +1328,7 @@ export function registerVoice(app: Express) {
         const patientId = (req.query.patientId as string) || "";
 
         // Add thinking filler
-        saySafeSSML(vr, `${EMOTIONS.shortBreath()}Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
+        saySafeSSML(vr, `Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
         // Look up their next appointment
         try {
@@ -1332,7 +1355,7 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[RESCHEDULE-START] Error:", err);
-          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, ${EMOTIONS.breath()}I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "medium")}, I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1371,7 +1394,7 @@ export function registerVoice(app: Express) {
         const patientId = (req.query.patientId as string) || "";
 
         // Add thinking filler
-        saySafeSSML(vr, `${EMOTIONS.shortBreath()}Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
+        saySafeSSML(vr, `Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
         try {
           const appointment = await getNextUpcomingAppointment(patientId);
@@ -1397,7 +1420,7 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[CANCEL-START] Error:", err);
-          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, ${EMOTIONS.breath()}I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "medium")}, I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1432,13 +1455,13 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=cancel-rebook&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`),
               method: "POST",
             });
-            saySafeSSML(g, `${EMOTIONS.breath()}No problem, I understand. ${EMOTIONS.shortPause()} Your appointment has been cancelled. ${EMOTIONS.mediumPause()} Would you like to book a new one so you don't fall behind on your care?`);
+            saySafeSSML(g, `No problem, I understand. ${EMOTIONS.shortPause()} Your appointment has been cancelled. ${EMOTIONS.mediumPause()} Would you like to book a new one so you don't fall behind on your care?`);
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
           } catch (err) {
             console.error("[CANCEL-CONFIRM] Error cancelling:", err);
-            saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I'm sorry", "medium")}, ${EMOTIONS.breath()}I couldn't cancel your appointment. ${EMOTIONS.mediumPause()} Please call back or try our office directly.`);
+            saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "medium")}, I couldn't cancel your appointment. ${EMOTIONS.mediumPause()} Please call back or try our office directly.`);
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           }
@@ -1634,7 +1657,7 @@ export function registerVoice(app: Express) {
         console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
         // Add thinking filler
-        saySafeSSML(vr, `Thanks for waiting. ${EMOTIONS.shortBreath()}${EMOTIONS.shortPause()} Let me just pull up the schedule.`);
+        saySafeSSML(vr, `Thanks for waiting... Let me just pull up the schedule.`);
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
@@ -1703,7 +1726,7 @@ export function registerVoice(app: Express) {
             console.error("[GET-AVAILABILITY] Error getting clinic info:", err);
           }
 
-          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "high")}, ${EMOTIONS.breath()}I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "high")}, I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1726,7 +1749,7 @@ export function registerVoice(app: Express) {
           }
 
           // Build a specific message about what wasn't available
-          let noAvailMessage = `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, `;
+          let noAvailMessage = `${EMOTIONS.disappointed("I apologize", "medium")}, `;
           if (preferredDayOfWeek && timePart) {
             noAvailMessage += `there are no ${timePart} appointments available on ${preferredDayOfWeek}.`;
           } else if (preferredDayOfWeek) {
@@ -1777,13 +1800,13 @@ export function registerVoice(app: Express) {
         // Build prompt mentioning the day if it was specified
         let prompt: string;
         if (preferredDayOfWeek && s2) {
-          prompt = `${EMOTIONS.excited("Great news", "low")}! ${EMOTIONS.shortPause()} I have two options for ${preferredDayOfWeek}. ${EMOTIONS.shortPause()} Option one, ${opt1}. ${EMOTIONS.shortPause()} Or option two, ${opt2}. ${EMOTIONS.mediumPause()} Press 1 or 2, or say your choice.`;
+          prompt = `Great news! I have two options for ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}... Press 1 or 2, or say your choice.`;
         } else if (preferredDayOfWeek && !s2) {
-          prompt = `${EMOTIONS.excited("Perfect", "low")}! ${EMOTIONS.shortPause()} I have one option available on ${preferredDayOfWeek}: ${EMOTIONS.shortPause()} ${opt1}. ${EMOTIONS.mediumPause()} Press 1 or say yes to book it.`;
+          prompt = `Perfect! I have one option available on ${preferredDayOfWeek}: ${opt1}... Press 1 or say yes to book it.`;
         } else if (s2) {
-          prompt = `${EMOTIONS.excited("Great", "low")}! ${EMOTIONS.shortPause()} I have two options. ${EMOTIONS.shortPause()} Option one, ${opt1}. ${EMOTIONS.shortPause()} Or option two, ${opt2}. ${EMOTIONS.mediumPause()} Press 1 or 2, or say your choice.`;
+          prompt = `Great! I have two options. Option one, ${opt1}. Or option two, ${opt2}... Press 1 or 2, or say your choice.`;
         } else {
-          prompt = `${EMOTIONS.excited("Perfect", "low")}! ${EMOTIONS.shortPause()} I have one option available: ${EMOTIONS.shortPause()} ${opt1}. ${EMOTIONS.mediumPause()} Press 1 or say yes to book it.`;
+          prompt = `Perfect! I have one option available: ${opt1}... Press 1 or say yes to book it.`;
         }
 
         saySafeSSML(g, prompt);
@@ -1918,7 +1941,7 @@ export function registerVoice(app: Express) {
         const chosen = choiceIdx === 1 ? s2 : s1;
 
         if (!chosen) {
-          saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "low")}, ${EMOTIONS.shortBreath()}that option is no longer available. ${EMOTIONS.mediumPause()} Let's start again.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "low")}, that option is no longer available. ${EMOTIONS.mediumPause()} Let's start again.`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
           return res.type("text/xml").send(vr.toString());
         }
@@ -2152,7 +2175,7 @@ export function registerVoice(app: Express) {
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I'm very sorry", "high")}, ${EMOTIONS.breath()}I couldn't complete the booking. ${EMOTIONS.mediumPause()} Please try again later or call our office directly.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I'm very sorry", "high")}, I couldn't complete the booking. ${EMOTIONS.mediumPause()} Please try again later or call our office directly.`);
           return res.type("text/xml").send(vr.toString());
         }
       }
@@ -2260,7 +2283,7 @@ export function registerVoice(app: Express) {
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "high")}, ${EMOTIONS.breath()}I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "high")}, I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
