@@ -290,16 +290,26 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Start recording if enabled
+    // Start recording programmatically using Twilio API
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
       try {
         const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
-        await client.calls(callSid).recordings.create({
+
+        // Start recording with transcription if enabled
+        const recordingParams: any = {
           recordingStatusCallback: abs("/api/voice/recording-status"),
-          recordingStatusCallbackMethod: "POST" as any,
-        } as any);
-        console.log("[VOICE][RECORDING] Started recording for call:", callSid);
+          recordingStatusCallbackMethod: "POST"
+        };
+
+        // Add transcription if enabled
+        if (env.TRANSCRIPTION_ENABLED) {
+          recordingParams.transcribe = true;
+          recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
+        }
+
+        await client.calls(callSid).recordings.create(recordingParams);
+        console.log("[VOICE][RECORDING] Started recording" + (env.TRANSCRIPTION_ENABLED ? " with transcription" : "") + " for call:", callSid);
       } catch (recErr) {
         console.error("[VOICE][RECORDING] Failed to start recording:", recErr);
       }
