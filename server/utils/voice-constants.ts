@@ -97,83 +97,93 @@ export function pause(node: any, secs = 1) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * SSML-aware say function that preserves emotion tags and expressions
- * Use this for responses with emotional content, breathing, or special effects
+ * Enhanced say function with conversational improvements
+ * Strips SSML tags and uses natural language instead
  *
- * IMPORTANT: Do NOT wrap content in <speak> tags - Twilio's SDK adds them automatically.
- * Wrapping causes HTML encoding (e.g., &lt;speak&gt;) which triggers error 13520.
+ * Note: Direct SSML doesn't work well with Twilio's Node SDK as it gets escaped.
+ * Instead, we strip tags and rely on Polly's natural prosody and our word choices.
  */
 export function saySafeSSML(node: any, text?: string, voice?: any) {
   if (!text || text.trim().length === 0) {
-    console.warn("[VOICE] Attempted to speak empty SSML text:", text);
+    console.warn("[VOICE] Attempted to speak empty text:", text);
     return;
   }
 
-  // CRITICAL: Pass raw SSML content WITHOUT <speak> wrapper
-  // Twilio SDK automatically wraps it correctly
-  let ssmlText = text.trim();
+  // Strip all SSML tags and convert to natural speech
+  let cleanedText = text.trim();
 
-  // Remove <speak> tags if they were accidentally added
-  if (ssmlText.startsWith('<speak>') && ssmlText.endsWith('</speak>')) {
-    ssmlText = ssmlText.slice(7, -8).trim();
+  // Remove all SSML tags but keep the text content
+  cleanedText = cleanedText.replace(/<[^>]*>/g, '');
+
+  // Clean up extra whitespace created by tag removal
+  cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
+
+  if (!cleanedText || cleanedText.length === 0) {
+    console.warn("[VOICE] Text became empty after cleaning:", text);
+    return;
   }
 
   const v = (voice ?? VOICE_NAME) as any;
   const isPollyVoice = (voiceName: string) => String(voiceName).toLowerCase().includes('polly');
   const isPrimary = isPollyVoice(v);
 
-  console.log(`[VOICE][saySafeSSML] voice="${v}" isPolly=${isPrimary} ssml="${ssmlText.substring(0, 100)}..."`);
+  console.log(`[VOICE][saySafeSSML] voice="${v}" cleaned="${cleanedText.substring(0, 100)}..."`);
 
   try {
     if (isPrimary) {
-      node.say({ voice: v }, ssmlText);
+      node.say({ voice: v }, cleanedText);
     } else {
-      node.say({ voice: v, language: "en-AU" }, ssmlText);
+      node.say({ voice: v, language: "en-AU" }, cleanedText);
     }
   } catch (err) {
-    console.error("[VOICE] SSML say failed with primary voice:", err);
-    // Fallback: strip SSML and use regular say
-    const plainText = ssmlText.replace(/<[^>]*>/g, '').trim();
-    if (plainText) {
-      saySafe(node, plainText, FALLBACK_VOICE);
-    }
+    console.error("[VOICE] Say failed with primary voice:", err);
+    saySafe(node, cleanedText, FALLBACK_VOICE);
   }
 }
 
 /**
- * Emotion and expression helpers for AWS Polly Neural voices
- * These generate SSML markup for more natural, conversational speech
+ * Conversational helpers that use natural language cues
+ * Polly Neural voices interpret these naturally without explicit SSML
+ *
+ * Note: We use conversational fillers and punctuation instead of SSML
+ * because Twilio's Node SDK escapes SSML tags, making them unreadable.
  */
 export const EMOTIONS = {
-  // Emotional tones (intensity: low, medium, high)
-  empathetic: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
-    `<amazon:emotion name="empathetic" intensity="${intensity}">${text}</amazon:emotion>`,
+  // Emotional tones - use word choice and emphasis
+  empathetic: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
+    // Polly interprets empathetic language naturally
+    return text;
+  },
 
-  excited: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
-    `<amazon:emotion name="excited" intensity="${intensity}">${text}</amazon:emotion>`,
+  excited: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
+    // Exclamation marks help Polly understand excitement
+    return text;
+  },
 
-  disappointed: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
-    `<amazon:emotion name="disappointed" intensity="${intensity}">${text}</amazon:emotion>`,
+  disappointed: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
+    // Polly interprets apologetic language naturally
+    return text;
+  },
 
-  // Breathing and sighing
-  sigh: () => `<amazon:breath duration="long" volume="loud"/>`,
-  breath: () => `<amazon:breath duration="medium"/>`,
-  shortBreath: () => `<amazon:breath duration="short"/>`,
+  // Natural breathing/thinking sounds - use conversational fillers
+  sigh: () => '', // Remove - causes SSML issues
+  breath: () => '', // Remove - causes SSML issues
+  shortBreath: () => '', // Remove - causes SSML issues
 
-  // Pauses and breaks (in milliseconds)
-  pause: (ms: number) => `<break time="${ms}ms"/>`,
-  shortPause: () => `<break time="300ms"/>`,
-  mediumPause: () => `<break time="500ms"/>`,
-  longPause: () => `<break time="800ms"/>`,
+  // Pauses - use ellipsis and commas for natural pausing
+  pause: (ms: number) => ms > 500 ? '...' : ',',
+  shortPause: () => ',',
+  mediumPause: () => '...',
+  longPause: () => '...',
 
-  // Emphasis levels
+  // Emphasis - use caps or exclamation
   emphasize: (text: string, level: 'strong' | 'moderate' | 'reduced' = 'moderate') =>
-    `<emphasis level="${level}">${text}</emphasis>`,
+    level === 'strong' ? text.toUpperCase() : text,
 
-  // Speech rate
-  faster: (text: string) => `<prosody rate="fast">${text}</prosody>`,
-  slower: (text: string) => `<prosody rate="slow">${text}</prosody>`,
+  // Speech rate - just return text (can't control without SSML)
+  faster: (text: string) => text,
+  slower: (text: string) => text,
 
-  // Whisper effect
-  whisper: (text: string) => `<amazon:effect name="whispered">${text}</amazon:effect>`,
+  // Whisper - just return text (can't control without SSML)
+  whisper: (text: string) => text,
 };
