@@ -317,7 +317,8 @@ export function registerVoice(app: Express) {
     }
 
     if (knownPatientName) {
-      // Known patient - confirm identity
+      // Known patient - confirm identity using first name only
+      const firstName = extractFirstName(knownPatientName);
       const handleUrl = abs(`/api/voice/handle?route=confirm-caller-identity&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownPatientName)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
@@ -330,11 +331,18 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. Am I speaking with ${knownPatientName}?`);
+      // Warm Australian greeting with first name only
+      const greetings = [
+        `Hi there, thanks for calling ${clinicName}. Am I speaking with ${firstName}?`,
+        `G'day, you've called ${clinicName}. Is this ${firstName}?`,
+        `Hi, thanks for calling ${clinicName}. Am I chatting with ${firstName}?`
+      ];
+      const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+      saySafeSSML(g, randomGreeting);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     } else {
-      // Unknown number - generic greeting
+      // Unknown number - warm generic greeting
       const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
@@ -347,7 +355,13 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. How can I help you today?`);
+      const greetings = [
+        `Hi there, thanks for calling ${clinicName}. How can I help you today?`,
+        `G'day, you've called ${clinicName}. What can I do for you?`,
+        `Hi, thanks for calling ${clinicName}. What brings you in?`
+      ];
+      const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+      saySafeSSML(g, randomGreeting);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     }
@@ -369,7 +383,7 @@ export function registerVoice(app: Express) {
 
       console.log("[VOICE][HANDLE IN]", { route, callSid, speechRaw, digits, from });
 
-      // Timeout fallback
+      // Timeout fallback with Australian charm and light humor
       if (route === "timeout") {
         const g = vr.gather({
           input: ["speech"],
@@ -380,21 +394,33 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        // ✅ Safe say
-        saySafeSSML(g, `Sorry, I didn't catch that. Please say book, reschedule, or cancel.`);
+        // Light humor and warmth for audio issues
+        const retryMessages = [
+          "Sorry, I think we've got a dodgy line there. Can you say that again?",
+          "You're breaking up a bit - can you repeat that for me?",
+          "Ahh sorry, I didn't quite catch that. What was it you needed?"
+        ];
+        const randomRetry = retryMessages[Math.floor(Math.random() * retryMessages.length)];
+        saySafeSSML(g, randomRetry);
         g.pause({ length: 1 });
-        // If timeout again, end call gracefully
-        saySafeSSML(vr, `I'm sorry... I'm having trouble understanding you. Please call back when you're ready. Goodbye.`);
+        // If timeout again, end call gracefully with empathy
+        const farewellMessages = [
+          "I'm really sorry, I'm having trouble hearing you. Give us a call back when you can, and we'll sort you out. Take care!",
+          "Ahh the line's not great today. No worries, just call us back when you get a chance. Bye for now!",
+          "Sorry about this - must be the connection. Feel free to call back anytime. Goodbye!"
+        ];
+        const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
+        saySafeSSML(vr, randomFarewell);
         return res.type("text/xml").send(vr.toString());
       }
 
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
       if (route === "anything-else") {
-        const wantsMore = speechRaw.includes("yes") || speechRaw.includes("yeah") || speechRaw.includes("book") ||
+        const wantsMore = speechRaw.includes("yes") || speechRaw.includes("yeah") || speechRaw.includes("yep") || speechRaw.includes("book") ||
                           speechRaw.includes("reschedule") || speechRaw.includes("cancel") || speechRaw.includes("question");
 
         if (wantsMore) {
-          // They want more help - send back to main menu
+          // They want more help - send back to main menu with warmth
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -403,16 +429,23 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "Of course! What else can I help you with? You can say book, reschedule, or cancel.");
+          const moreHelpMessages = [
+            "Of course! What else can I help you with?",
+            "No worries at all. What else do you need?",
+            "Sure thing! How else can I help?"
+          ];
+          const randomMoreHelp = moreHelpMessages[Math.floor(Math.random() * moreHelpMessages.length)];
+          saySafe(g, randomMoreHelp);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // They're done - say goodbye
+          // They're done - warm, reassuring goodbye
           const goodbyeMessages = [
-            "Alright, have a great day! Goodbye.",
-            "Perfect! Take care, goodbye.",
-            "Great! We'll see you at your appointment. Goodbye."
+            "Beautiful! Have a lovely day, and we'll see you soon. Take care!",
+            "Perfect! If anything changes, just give us a buzz. See you soon!",
+            "All sorted then! We're looking forward to seeing you. Take care!",
+            "Lovely! You're all set. See you at your appointment. Bye for now!"
           ];
           const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
           saySafe(vr, randomGoodbye);
@@ -424,8 +457,8 @@ export function registerVoice(app: Express) {
       // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
       if (route === "confirm-caller-identity") {
         const knownName = (req.query.knownName as string) || "";
-        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's me");
-        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong");
+        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's me") || speechRaw.includes("yep") || speechRaw.includes("yeah");
+        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong") || speechRaw.includes("nah");
 
         if (confirmed) {
           // Identity confirmed - store name and first name in context
@@ -442,7 +475,7 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-CALLER-IDENTITY] Error storing context:", err);
           }
 
-          // Proceed to intent detection
+          // Proceed to intent detection with warm Australian greeting
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -451,11 +484,12 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          // Add warmth with varied greetings
+          // Warm, friendly Australian greetings
           const greetings = [
-            `${EMOTIONS.excited("Great", "low")}, ${firstName}! How can I help you today?`,
-            `${EMOTIONS.excited("Perfect", "low")}, hi ${firstName}. What can I do for you?`,
-            `${EMOTIONS.excited("Wonderful", "low")}, thanks ${firstName}. How can I help?`
+            `${EMOTIONS.excited("Lovely", "low")}, thanks ${firstName}! What can I help you with today?`,
+            `${EMOTIONS.excited("Beautiful", "low")}, hi ${firstName}. How can I help?`,
+            `${EMOTIONS.excited("Perfect", "low")}, good on ya ${firstName}. What brings you in?`,
+            `Great, thanks ${firstName}. What can I do for you today?`
           ];
           const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
           saySafeSSML(g, randomGreeting);
@@ -463,7 +497,7 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else if (denied) {
-          // Identity not confirmed - ask for correct name
+          // Identity not confirmed - ask for correct name warmly
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -472,7 +506,13 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=capture-caller-name&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "No problem. Who am I speaking with today?");
+          const apologies = [
+            "No worries at all. Who am I chatting with today?",
+            "No problem at all. What's your name?",
+            "All good. Who am I speaking with?"
+          ];
+          const randomApology = apologies[Math.floor(Math.random() * apologies.length)];
+          saySafe(g, randomApology);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -669,7 +709,7 @@ export function registerVoice(app: Express) {
         }
 
         if (isNewPatient) {
-          // New patient flow - collect name
+          // New patient flow - collect name with warm, friendly prompt
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -678,7 +718,13 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafeSSML(g, `Great! May I have your full name please?`);
+          const namePrompts = [
+            `Lovely! Because it's your first visit, I just need to get your name into the system properly. What's your full name, and feel free to spell it out so I get it spot-on for you.`,
+            `Perfect! Since you're new, I'll need your full name for our records. Go ahead and spell it out if you like, so I don't muck it up.`,
+            `Great! I just need your full name for the booking. You can spell it out slowly if it helps - I want to make sure I get it right.`
+          ];
+          const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
+          saySafeSSML(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -832,7 +878,7 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Move to email collection
+        // Move to email collection with SMS link option
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -841,14 +887,16 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        // Vary the phrasing - don't always use name
-        const emailPrompts = [
-          `Perfect. And what's the best email address for your confirmation?`,
-          `Great, thanks. What email should I send the confirmation to?`,
-          `Wonderful. What's your preferred email address for the confirmation?`
+        // Warm prompts offering email spelling or SMS link option
+        const emailPrompts = firstName ? [
+          `Perfect ${firstName}! And for your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.`,
+          `Lovely! What email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.`,
+          `Great! I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link.`
+        ] : [
+          `And what's your email address? You can spell it out slowly, or I can text you a link to type it in - whichever works better.`
         ];
         const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
-        saySafeSSML(g, firstName ? randomPrompt : `Thank you. What's the best email address to send your appointment confirmation to?`);
+        saySafeSSML(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -1027,10 +1075,15 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
 
-          const reasonPrompts = [
+          // Warm, conversational prompts for reason
+          const reasonPrompts = firstName ? [
+            `Alright ${firstName}, what's brought you in today?`,
+            `So ${firstName}, what can we help you with?`,
+            `Okay ${firstName}, what's going on?`
+          ] : [
             `And what brings you in today?`,
             `What can we help you with?`,
-            `What's going on that you'd like to see us about?`
+            `What's going on that you'd like us to look at?`
           ];
           const randomPrompt = reasonPrompts[Math.floor(Math.random() * reasonPrompts.length)];
           saySafe(g, randomPrompt);
@@ -1054,13 +1107,15 @@ export function registerVoice(app: Express) {
           console.error("[ASK-REASON] Failed to store reason:", err);
         }
 
-        // Move to week selection with empathetic filler - add variety
+        // Move to week selection with warm, empathetic Australian responses
         const empathyLines = firstName ? [
-          `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. Let me see what we have available to get you in quickly.`,
-          `${EMOTIONS.empathetic("Oh no", "high")}, I'm sorry ${firstName}. Let me find you something soon.`,
-          `${EMOTIONS.empathetic("That's not good", "high")}. Let me get you in as soon as possible.`
+          `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
+          `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Let me see what's available to get you in soon.`,
+          `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
+          `Ahh ${firstName}, that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
         ] : [
-          `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. Let me see what we have available to get you in quickly.`
+          `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
+          `${EMOTIONS.empathetic("Ahh that's not great", "high")}. We'll take care of you. Hang on while I check the schedule.`
         ];
         const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
         saySafeSSML(vr, randomEmpathy);
@@ -1093,11 +1148,17 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
-        // Vary how we ask - don't overuse the name
-        const prompt = firstName
-          ? `Okay, which week works best for you? This week, next week, or another week?`
-          : "Which week works best for you? This week, next week, or another week?";
-        saySafe(g, prompt);
+        // Warm Australian prompts for week selection
+        const weekPrompts = firstName ? [
+          `Alright ${firstName}, which week works best - this week, next week, or another one?`,
+          `Okay ${firstName}, when are you hoping to come in? This week, next week, or later?`,
+          `So ${firstName}, which week suits you? This week, next week, or another time?`
+        ] : [
+          "Which week works best for you? This week, next week, or another one?",
+          "When are you hoping to come in? This week, next week, or later?"
+        ];
+        const randomPrompt = weekPrompts[Math.floor(Math.random() * weekPrompts.length)];
+        saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -1185,11 +1246,17 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
           method: "POST",
         });
-        // Use conversational transitions instead of repeating name
-        const prompt = firstName
-          ? `And is there a particular day that works best? For example, Monday, Wednesday, or Friday?`
-          : "Is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?";
-        saySafe(g, prompt);
+        // Warm Australian prompts for day selection
+        const dayPrompts = firstName ? [
+          `Beautiful. And what day that week suits you best, ${firstName}? Monday, Wednesday, or something else?`,
+          `Perfect. Which day works for you - Monday, Wednesday, Friday?`,
+          `Lovely. And what day that week are you thinking?`
+        ] : [
+          "Beautiful. And what day that week works best for you? Monday, Wednesday, or another day?",
+          "Perfect. Which day suits you? Monday, Wednesday, Friday, or another one?"
+        ];
+        const randomPrompt = dayPrompts[Math.floor(Math.random() * dayPrompts.length)];
+        saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -1270,15 +1337,18 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=get-availability&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
           method: "POST",
         });
-        // Add variety - use adjectives or skip the name
-        const greetings = [
-          `Perfect. Do you prefer morning, midday, or afternoon?`,
-          `Great. Morning, midday, or afternoon - which works better?`,
-          `Alright. What time of day suits you best? Morning, midday, or afternoon?`
+        // Warm Australian time selection prompts
+        const timePrompts = firstName ? [
+          `Sweet. And do you prefer morning, midday, or afternoon, ${firstName}?`,
+          `Perfect. What time of day works best - morning, midday, or afternoon?`,
+          `Lovely. Are you thinking morning, midday, or afternoon?`,
+          `Great. Morning, midday, or afternoon - which suits you better?`
+        ] : [
+          "And what time of day works best? Morning, midday, or afternoon?",
+          "Do you prefer morning, midday, or afternoon?"
         ];
-        const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-        const prompt = firstName ? randomGreeting : "Do you prefer morning, midday, or afternoon?";
-        saySafe(g, prompt);
+        const randomPrompt = timePrompts[Math.floor(Math.random() * timePrompts.length)];
+        saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -1781,6 +1851,19 @@ export function registerVoice(app: Express) {
         const opt1 = labelForSpeech(s1, AUST_TZ);
         const opt2 = s2 ? labelForSpeech(s2, AUST_TZ) : "";
 
+        // Get firstName for personalized slot offering
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[GET-AVAILABILITY] Error getting firstName:", err);
+        }
+
         const nextUrl = abs(
           `/api/voice/handle?route=book-choose&callSid=${encodeURIComponent(callSid)}&s1=${encodeURIComponent(s1)}${
             s2 ? `&s2=${encodeURIComponent(s2)}` : ""
@@ -1797,16 +1880,40 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
 
-        // Build prompt mentioning the day if it was specified
+        // Build warm Australian prompts with firstName
         let prompt: string;
         if (preferredDayOfWeek && s2) {
-          prompt = `Great news! I have two options for ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}... Press 1 or 2, or say your choice.`;
+          const prompts = firstName ? [
+            `Alright ${firstName}, I've got two good options for you on ${preferredDayOfWeek}. Option one is ${opt1}, or option two is ${opt2}. Just say option one or option two, or press 1 or 2.`,
+            `Great news ${firstName}! I've found two spots on ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}. Which one suits you?`
+          ] : [
+            `Great! I have two options for ${preferredDayOfWeek}. Option one is ${opt1}, or option two is ${opt2}. Say option one or option two, or press 1 or 2.`
+          ];
+          prompt = prompts[Math.floor(Math.random() * prompts.length)];
         } else if (preferredDayOfWeek && !s2) {
-          prompt = `Perfect! I have one option available on ${preferredDayOfWeek}: ${opt1}... Press 1 or say yes to book it.`;
+          const prompts = firstName ? [
+            `Perfect ${firstName}! I've got one spot on ${preferredDayOfWeek} at ${opt1}. Press 1 or say yes to book it.`,
+            `Great news! I have ${opt1} available on ${preferredDayOfWeek}. Does that work for you, ${firstName}?`
+          ] : [
+            `Perfect! I have one option on ${preferredDayOfWeek}: ${opt1}. Press 1 or say yes to book it.`
+          ];
+          prompt = prompts[Math.floor(Math.random() * prompts.length)];
         } else if (s2) {
-          prompt = `Great! I have two options. Option one, ${opt1}. Or option two, ${opt2}... Press 1 or 2, or say your choice.`;
+          const prompts = firstName ? [
+            `Alright ${firstName}, I've got two good options. Option one is ${opt1}, or option two is ${opt2}. Which one works better?`,
+            `Great! I found two spots for you. Option one, ${opt1}. Or option two, ${opt2}. Just say which one you'd like.`
+          ] : [
+            `Great! I have two options. Option one is ${opt1}, or option two is ${opt2}. Say option one or option two, or press 1 or 2.`
+          ];
+          prompt = prompts[Math.floor(Math.random() * prompts.length)];
         } else {
-          prompt = `Perfect! I have one option available: ${opt1}... Press 1 or say yes to book it.`;
+          const prompts = firstName ? [
+            `Perfect! I've got ${opt1} available. Does that work for you, ${firstName}?`,
+            `Great news! I have one spot at ${opt1}. Shall I book that for you?`
+          ] : [
+            `Perfect! I have one option: ${opt1}. Press 1 or say yes to book it.`
+          ];
+          prompt = prompts[Math.floor(Math.random() * prompts.length)];
         }
 
         saySafeSSML(g, prompt);
@@ -1849,7 +1956,7 @@ export function registerVoice(app: Express) {
           console.error("[BOOK-CHOOSE] Error getting firstName:", err);
         }
 
-        // Handle rejection - ask for alternative
+        // Handle rejection - ask for alternative with warm Australian tone
         if (interpretation.choice === "reject") {
           const g = vr.gather({
             input: ["speech"],
@@ -1859,16 +1966,22 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
             method: "POST",
           });
-          const prompt = firstName
-            ? `No problem, ${firstName}. Which day and time works better for you?`
-            : "That's okay. Which day and time works better for you?";
-          saySafe(g, prompt);
+          const rejectionPrompts = firstName ? [
+            `No stress at all, ${firstName}. Which day works better for you?`,
+            `No worries! What other day suits you, ${firstName}?`,
+            `That's okay! Let me find something else for you. Which day would you prefer?`
+          ] : [
+            "No stress at all. Which day works better for you?",
+            "No worries! What other day suits you?"
+          ];
+          const randomPrompt = rejectionPrompts[Math.floor(Math.random() * rejectionPrompts.length)];
+          saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
 
-        // Handle alternative day request
+        // Handle alternative day request with warm Australian tone
         if (interpretation.choice === "alt_day" && interpretation.requestedDayOfWeek) {
           const requestedDay = interpretation.requestedDayOfWeek;
           console.log("[BOOK-CHOOSE] User requested alternative day:", requestedDay);
@@ -1887,7 +2000,7 @@ export function registerVoice(app: Express) {
             console.error("[BOOK-CHOOSE] Error storing requested day:", err);
           }
 
-          // Ask for time preference for the new day
+          // Ask for time preference for the new day with conversational filler
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -1896,7 +2009,13 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=get-availability-specific-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&day=${encodeURIComponent(requestedDay)}`),
             method: "POST",
           });
-          saySafe(g, `No worries, let me check ${requestedDay}. Do you prefer morning or afternoon?`);
+          const altDayPrompts = [
+            `No worries at all! Let me have a quick look at ${requestedDay}. Do you prefer morning or afternoon?`,
+            `Sure thing! Let me check ${requestedDay} for you. Morning or afternoon?`,
+            `Alrighty, let me see what we've got for ${requestedDay}. Morning or afternoon work better?`
+          ];
+          const randomPrompt = altDayPrompts[Math.floor(Math.random() * altDayPrompts.length)];
+          saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1921,10 +2040,13 @@ export function registerVoice(app: Express) {
               action: nextUrl,
               method: "POST",
             });
-            saySafe(
-              g,
-              `Sorry, I didn't quite catch that. If you'd like one of those times, you can say 'option one' or 'option two'. Or you can tell me another day and time that works better for you.`
-            );
+            const retryPrompts = [
+              `Sorry, I didn't quite catch that. If you'd like one of those times, just say option one or option two. Or tell me a different day that works better.`,
+              `Ahh sorry, I missed that. You can say option one, option two, or let me know another day that suits you better.`,
+              `I think the line's a bit dodgy - didn't quite get that. Say option one, option two, or tell me which other day works for you.`
+            ];
+            const randomRetry = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
+            saySafe(g, randomRetry);
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
@@ -2058,11 +2180,26 @@ export function registerVoice(app: Express) {
               method: "POST",
             });
 
-            saySafeSSML(g, `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}... Is there anything else I can help you with today?`);
+            // Warm, reassuring confirmation messages
+            const confirmationMessages = firstName ? [
+              `${EMOTIONS.excited("Beautiful", "medium")}, you're all set ${firstName}! You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+              `${EMOTIONS.excited("Perfect", "medium")}! You're all booked, ${firstName} - ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+              `${EMOTIONS.excited("Lovely", "medium")}! All sorted ${firstName}. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+            ] : [
+              `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
+            ];
+            const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
+            saySafeSSML(g, randomConfirmation);
             g.pause({ length: 1 });
 
-            // If no response, say goodbye
-            saySafe(vr, "Alright, have a great day! Goodbye.");
+            // If no response, warm farewell
+            const farewellMessages = [
+              "Lovely! We're looking forward to seeing you. Take care!",
+              "Beautiful! See you at your appointment. Bye for now!",
+              "Perfect! If anything changes, just give us a buzz. See you soon!"
+            ];
+            const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
+            saySafe(vr, randomFarewell);
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           } else {
@@ -2153,11 +2290,26 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
 
-          saySafeSSML(g, `${EMOTIONS.excited("Wonderful", "medium")}! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}... Is there anything else I can help you with today?`);
+          // Warm, reassuring confirmation messages
+          const confirmationMessages = firstName ? [
+            `${EMOTIONS.excited("Beautiful", "medium")}, you're all set ${firstName}! You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+            `${EMOTIONS.excited("Perfect", "medium")}! You're all booked, ${firstName} - ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+            `${EMOTIONS.excited("Lovely", "medium")}! All sorted ${firstName}. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+          ] : [
+            `${EMOTIONS.excited("Wonderful", "medium")}! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
+          ];
+          const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
+          saySafeSSML(g, randomConfirmation);
           g.pause({ length: 1 });
 
-          // If no response, say goodbye
-          saySafe(vr, "Alright, have a great day! Goodbye.");
+          // If no response, warm farewell
+          const farewellMessages = [
+            "Lovely! We're looking forward to seeing you. Take care!",
+            "Beautiful! See you at your appointment. Bye for now!",
+            "Perfect! If anything changes, just give us a buzz. See you soon!"
+          ];
+          const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
+          saySafe(vr, randomFarewell);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } catch (e: any) {

@@ -8,7 +8,10 @@
       "Bash(cat:*)",
       "Bash(npm run check:*)",
       "Bash(npm run build:*)",
-      "Bash(pgrep:*)"
+      "Bash(pgrep:*)",
+      "Bash(env)",
+      "Bash(python3:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []
