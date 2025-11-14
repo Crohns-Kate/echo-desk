@@ -297,12 +297,9 @@ export function registerVoice(app: Express) {
         const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
         await client.calls(callSid).recordings.create({
           recordingStatusCallback: abs("/api/voice/recording-status"),
-          recordingStatusCallbackMethod: "POST",
-          // Enable transcription
-          transcribe: true,
-          transcribeCallback: abs("/api/voice/transcription-status"),
-        });
-        console.log("[VOICE][RECORDING] Started recording with transcription for call:", callSid);
+          recordingStatusCallbackMethod: "POST" as any,
+        } as any);
+        console.log("[VOICE][RECORDING] Started recording for call:", callSid);
       } catch (recErr) {
         console.error("[VOICE][RECORDING] Failed to start recording:", recErr);
       }
@@ -594,8 +591,14 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
           });
-          // Ask if this appointment is for the caller or someone else
-          saySafe(g, `Great! Is this appointment for you, ${firstName}, or for someone else?`);
+          // Ask if this appointment is for the caller or someone else - be very clear
+          const appointmentForPrompts = [
+            `Perfect! And is this appointment for you, or is it for someone else?`,
+            `Great! Just to confirm - is the appointment for you, ${firstName}, or for another person?`,
+            `Lovely! Who's the appointment for - yourself, or someone else?`
+          ];
+          const randomPrompt = appointmentForPrompts[Math.floor(Math.random() * appointmentForPrompts.length)];
+          saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -640,14 +643,20 @@ export function registerVoice(app: Express) {
       if (route === "check-appointment-for") {
         const knownName = (req.query.knownName as string) || "";
         const forSelf = speechRaw.includes("me") || speechRaw.includes("myself") || speechRaw.includes("yes") || speechRaw.includes("for me");
-        const forOther = speechRaw.includes("someone else") || speechRaw.includes("other") || speechRaw.includes("no");
+        const forOther = speechRaw.includes("someone else") || speechRaw.includes("other") || speechRaw.includes("else") || speechRaw.includes("no") ||
+                         speechRaw.includes("another person") || speechRaw.includes("different person");
+
+        console.log("[CHECK-APPOINTMENT-FOR] Speech:", speechRaw);
+        console.log("[CHECK-APPOINTMENT-FOR] forSelf:", forSelf, "forOther:", forOther);
 
         if (forSelf) {
           // Appointment is for the caller - proceed to intent detection
+          console.log("[CHECK-APPOINTMENT-FOR] Appointment is for caller, proceeding to start");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else if (forOther) {
           // Appointment is for someone else - ask for their name
+          console.log("[CHECK-APPOINTMENT-FOR] Appointment is for someone else, asking for name");
           const g = vr.gather({
             input: ["speech"],
             timeout: 10,
@@ -662,6 +671,7 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
+          console.log("[CHECK-APPOINTMENT-FOR] Unclear response, asking again");
           const firstName = extractFirstName(knownName);
           const g = vr.gather({
             input: ["speech"],
@@ -683,34 +693,48 @@ export function registerVoice(app: Express) {
         const otherPersonName = speechRaw || "";
         const firstName = extractFirstName(otherPersonName);
 
+        console.log("[CAPTURE-OTHER-PERSON-NAME] Received name:", otherPersonName);
+        console.log("[CAPTURE-OTHER-PERSON-NAME] Extracted first name:", firstName);
+
         // Store the other person's name in context
         if (otherPersonName && otherPersonName.length > 0) {
           try {
             const call = await storage.getCallByCallSid(callSid);
             if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
               await storage.updateConversation(call.conversationId, {
-                context: { fullName: otherPersonName, firstName, appointmentForOther: true }
+                context: { ...existingContext, fullName: otherPersonName, firstName, appointmentForOther: true }
               });
             }
-            console.log("[CAPTURE-OTHER-PERSON-NAME] Appointment for:", otherPersonName);
+            console.log("[CAPTURE-OTHER-PERSON-NAME] Stored appointment for:", otherPersonName);
           } catch (err) {
             console.error("[CAPTURE-OTHER-PERSON-NAME] Error storing context:", err);
           }
 
-          // Proceed to intent detection
+          // Acknowledge and proceed to intent detection
+          const acknowledgments = [
+            `Thank you. I'll book the appointment for ${firstName}.`,
+            `Perfect, booking this for ${firstName}.`,
+            `Lovely, I've got that - appointment for ${firstName}.`
+          ];
+          const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+          saySafe(vr, randomAck);
+          vr.pause({ length: 0.5 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
           // No name captured - ask again
+          console.log("[CAPTURE-OTHER-PERSON-NAME] No name captured, asking again");
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=capture-other-person-name&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "Sorry, I didn't catch that. What's the name of the person the appointment is for?");
+          saySafe(g, "Sorry, I didn't catch that. Could you please spell out the full name for me?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1923,6 +1947,7 @@ export function registerVoice(app: Express) {
         let isNewPatient = !isReturningPatient;
         let weekOffset = weekOffsetParam;
         let preferredDayOfWeek: string | undefined;
+        let specificWeek: string | undefined;
 
         try {
           const call = await storage.getCallByCallSid(callSid);
@@ -1935,8 +1960,11 @@ export function registerVoice(app: Express) {
             if (context?.weekOffset !== undefined) {
               weekOffset = context.weekOffset;
             }
-            if (context?.preferredDayOfWeek) {
+            if (context?.preferredDayOfWeek !== undefined) {
               preferredDayOfWeek = context.preferredDayOfWeek;
+            }
+            if (context?.specificWeek) {
+              specificWeek = context.specificWeek;
             }
           }
         } catch (err) {
@@ -1953,8 +1981,38 @@ export function registerVoice(app: Express) {
         let fromDate: string;
         let toDate: string;
 
-        if (preferredDayOfWeek) {
-          // If they specified a day, find that specific day in the target week
+        // Special handling for "today" - use current date directly
+        if (specificWeek === "today") {
+          fromDate = tzNow.format("YYYY-MM-DD");
+          toDate = fromDate;
+          console.log("[GET-AVAILABILITY] Today requested, using:", fromDate);
+        } else if (preferredDayOfWeek !== undefined && typeof preferredDayOfWeek === 'number') {
+          // If they specified a day NUMBER (0-6), find that specific day in the target week
+          const targetDayNumber = preferredDayOfWeek;
+
+          // For weekOffset = 0 (this week), check if the requested day is today or in the future
+          if (weekOffset === 0 && targetDayNumber === tzNow.day()) {
+            // They want today specifically
+            fromDate = tzNow.format("YYYY-MM-DD");
+            toDate = fromDate;
+            console.log("[GET-AVAILABILITY] Today (via day number) requested, using:", fromDate);
+          } else {
+            const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+            let targetDate = weekStart.day(targetDayNumber);
+
+            // CRITICAL FIX: Ensure target date is not in the past
+            // If the calculated date is before today, it means we need to look at next week's occurrence
+            if (targetDate.isBefore(tzNow, 'day')) {
+              console.log("[GET-AVAILABILITY] Target date", targetDate.format("YYYY-MM-DD"), "is in the past, moving to next week");
+              targetDate = targetDate.add(1, 'week');
+            }
+
+            fromDate = targetDate.format("YYYY-MM-DD");
+            toDate = fromDate; // Same day
+            console.log("[GET-AVAILABILITY] Targeting specific day number:", targetDayNumber, "on", fromDate);
+          }
+        } else if (preferredDayOfWeek && typeof preferredDayOfWeek === 'string') {
+          // If they specified a day NAME (string), find that specific day in the target week
           const weekdayMap: { [key: string]: number } = {
             "sunday": 0,
             "monday": 1,
