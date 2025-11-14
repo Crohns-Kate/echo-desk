@@ -48,3 +48,16 @@ PostgreSQL, accessed via Neon serverless driver and Drizzle ORM, serves as the d
 -   **Neon:** Provides serverless PostgreSQL database hosting.
 -   **connect-pg-simple:** Used for PostgreSQL-based session management.
 -   **Vite:** Frontend build tool and development server.
+
+## Deployment
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for comprehensive deployment instructions, including:
+- Required production environment variables and secrets
+- Port configuration for Autoscale deployments
+- Twilio webhook configuration
+- Troubleshooting common deployment issues
+
+**Key deployment requirements:**
+- Single port mapping (5000 → 80) for Autoscale
+- All production secrets configured (DATABASE_URL, Twilio, Cliniko, etc.)
+- Startup error handling with graceful failures and informative logging

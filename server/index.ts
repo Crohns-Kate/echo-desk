@@ -51,8 +51,8 @@ app.use((req, res, next) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";
 
+      console.error('[ERROR]', err);
       res.status(status).json({ message });
-      throw err;
     });
 
     // importantly only setup vite in development and after
@@ -80,7 +80,11 @@ app.use((req, res, next) => {
         'TWILIO_ACCOUNT_SID',
         'TWILIO_AUTH_TOKEN',
         'TWILIO_PHONE_NUMBER',
-        'CLINIKO_API_KEY'
+        'CLINIKO_API_KEY',
+        'CLINIKO_REGION',
+        'CLINIKO_BUSINESS_ID',
+        'CLINIKO_PRACTITIONER_ID',
+        'CLINIKO_APPT_TYPE_ID'
       ];
       
       const missingSecrets = requiredSecrets.filter(secret => !process.env[secret]);
