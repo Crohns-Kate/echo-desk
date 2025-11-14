@@ -99,6 +99,9 @@ export function pause(node: any, secs = 1) {
 /**
  * SSML-aware say function that preserves emotion tags and expressions
  * Use this for responses with emotional content, breathing, or special effects
+ *
+ * IMPORTANT: Do NOT wrap content in <speak> tags - Twilio's SDK adds them automatically.
+ * Wrapping causes HTML encoding (e.g., &lt;speak&gt;) which triggers error 13520.
  */
 export function saySafeSSML(node: any, text?: string, voice?: any) {
   if (!text || text.trim().length === 0) {
@@ -106,10 +109,13 @@ export function saySafeSSML(node: any, text?: string, voice?: any) {
     return;
   }
 
-  // Ensure text is wrapped in <speak> tags for SSML
+  // CRITICAL: Pass raw SSML content WITHOUT <speak> wrapper
+  // Twilio SDK automatically wraps it correctly
   let ssmlText = text.trim();
-  if (!ssmlText.startsWith('<speak>')) {
-    ssmlText = `<speak>${ssmlText}</speak>`;
+
+  // Remove <speak> tags if they were accidentally added
+  if (ssmlText.startsWith('<speak>') && ssmlText.endsWith('</speak>')) {
+    ssmlText = ssmlText.slice(7, -8).trim();
   }
 
   const v = (voice ?? VOICE_NAME) as any;
