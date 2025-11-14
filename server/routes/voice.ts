@@ -388,6 +388,39 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
+      // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
+      if (route === "anything-else") {
+        const wantsMore = speechRaw.includes("yes") || speechRaw.includes("yeah") || speechRaw.includes("book") ||
+                          speechRaw.includes("reschedule") || speechRaw.includes("cancel") || speechRaw.includes("question");
+
+        if (wantsMore) {
+          // They want more help - send back to main menu
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Of course! What else can I help you with? You can say book, reschedule, or cancel.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // They're done - say goodbye
+          const goodbyeMessages = [
+            "Alright, have a great day! Goodbye.",
+            "Perfect! Take care, goodbye.",
+            "Great! We'll see you at your appointment. Goodbye."
+          ];
+          const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
+          saySafe(vr, randomGoodbye);
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
       // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
       if (route === "confirm-caller-identity") {
         const knownName = (req.query.knownName as string) || "";
@@ -418,7 +451,14 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafeSSML(g, `${EMOTIONS.excited("Great", "low")}, ${firstName}. ${EMOTIONS.shortPause()} How can I help you today?`);
+          // Add warmth with varied greetings
+          const greetings = [
+            `${EMOTIONS.excited("Great", "low")}, ${firstName}! How can I help you today?`,
+            `${EMOTIONS.excited("Perfect", "low")}, hi ${firstName}. What can I do for you?`,
+            `${EMOTIONS.excited("Wonderful", "low")}, thanks ${firstName}. How can I help?`
+          ];
+          const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+          saySafeSSML(g, randomGreeting);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -482,7 +522,16 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafe(g, firstName ? `Thanks, ${firstName}. How can I help you today?` : "Thank you. How can I help you today?");
+        // Vary the greeting when we first learn their name
+        const nameGreetings = [
+          `Thanks, ${firstName}! What brings you in today?`,
+          `Perfect, nice to meet you ${firstName}. How can I help?`,
+          `Great, thanks ${firstName}. What can I do for you today?`
+        ];
+        const randomNameGreeting = firstName
+          ? nameGreetings[Math.floor(Math.random() * nameGreetings.length)]
+          : "Thank you. How can I help you today?";
+        saySafe(g, randomNameGreeting);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -769,7 +818,14 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafeSSML(g, firstName ? `Thanks, ${firstName}. ${EMOTIONS.shortPause()} What's the best email address to send your appointment confirmation to?` : `Thank you. ${EMOTIONS.shortPause()} What's the best email address to send your appointment confirmation to?`);
+        // Vary the phrasing - don't always use name
+        const emailPrompts = [
+          `Perfect. And what's the best email address for your confirmation?`,
+          `Great, thanks. What email should I send the confirmation to?`,
+          `Wonderful. What's your preferred email address for the confirmation?`
+        ];
+        const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
+        saySafeSSML(g, firstName ? randomPrompt : `Thank you. What's the best email address to send your appointment confirmation to?`);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -841,8 +897,15 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-phone-confirm&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
+        // Add variety - sometimes use name with flavor, sometimes skip it
+        const phonePrompts = [
+          `Perfect, ${firstName}. Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you?`,
+          `Great. Is the number ending in ${lastThreeDigits} the best one to reach you on?`,
+          `And just to confirm, is the number ending in ${lastThreeDigits} the best way to contact you?`
+        ];
+        const randomPhonePrompt = phonePrompts[Math.floor(Math.random() * phonePrompts.length)];
         const prompt = firstName
-          ? `${firstName}, is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`
+          ? randomPhonePrompt
           : `Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`;
         saySafe(g, prompt);
         g.pause({ length: 1 });
@@ -930,28 +993,54 @@ export function registerVoice(app: Express) {
           console.error("[ASK-REASON] Error getting firstName:", err);
         }
 
-        // Store reason in conversation context
-        if (reason && reason.length > 0) {
-          try {
-            const call = await storage.getCallByCallSid(callSid);
-            if (call?.conversationId) {
-              const conversation = await storage.getConversation(call.conversationId);
-              const existingContext = (conversation?.context as any) || {};
-              await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, reason }
-              });
-            }
-            console.log("[ASK-REASON] Stored reason:", reason);
-          } catch (err) {
-            console.error("[ASK-REASON] Failed to store reason:", err);
-          }
+        // If no reason yet, ASK the question first
+        if (!reason || reason.length === 0) {
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+
+          const reasonPrompts = [
+            `And what brings you in today?`,
+            `What can we help you with?`,
+            `What's going on that you'd like to see us about?`
+          ];
+          const randomPrompt = reasonPrompts[Math.floor(Math.random() * reasonPrompts.length)];
+          saySafe(g, randomPrompt);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
         }
 
-        // Move to week selection with empathetic filler using first name
-        const empathyLine = firstName
-          ? `${EMOTIONS.empathetic(`I'm sorry to hear that, ${firstName}`, "high")}. ${EMOTIONS.shortBreath()} Let me see what we have available to get you in quickly.`
-          : `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. ${EMOTIONS.shortBreath()} Let me see what we have available to get you in quickly.`;
-        saySafeSSML(vr, empathyLine);
+        // Store reason in conversation context
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const existingContext = (conversation?.context as any) || {};
+            await storage.updateConversation(call.conversationId, {
+              context: { ...existingContext, reason }
+            });
+          }
+          console.log("[ASK-REASON] Stored reason:", reason);
+        } catch (err) {
+          console.error("[ASK-REASON] Failed to store reason:", err);
+        }
+
+        // Move to week selection with empathetic filler - add variety
+        const empathyLines = firstName ? [
+          `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. Let me see what we have available to get you in quickly.`,
+          `${EMOTIONS.empathetic("Oh no", "high")}, I'm sorry ${firstName}. Let me find you something soon.`,
+          `${EMOTIONS.empathetic("That's not good", "high")}. Let me get you in as soon as possible.`
+        ] : [
+          `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. Let me see what we have available to get you in quickly.`
+        ];
+        const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
+        saySafeSSML(vr, randomEmpathy);
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         return res.type("text/xml").send(vr.toString());
       }
@@ -981,8 +1070,9 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
+        // Vary how we ask - don't overuse the name
         const prompt = firstName
-          ? `${firstName}, which week works best for you? This week, next week, or another week?`
+          ? `Okay, which week works best for you? This week, next week, or another week?`
           : "Which week works best for you? This week, next week, or another week?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
@@ -1072,8 +1162,9 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
           method: "POST",
         });
+        // Use conversational transitions instead of repeating name
         const prompt = firstName
-          ? `${firstName}, is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?`
+          ? `And is there a particular day that works best? For example, Monday, Wednesday, or Friday?`
           : "Is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
@@ -1156,9 +1247,14 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=get-availability&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`),
           method: "POST",
         });
-        const prompt = firstName
-          ? `${firstName}, do you prefer morning, midday, or afternoon?`
-          : "Do you prefer morning, midday, or afternoon?";
+        // Add variety - use adjectives or skip the name
+        const greetings = [
+          `Perfect. Do you prefer morning, midday, or afternoon?`,
+          `Great. Morning, midday, or afternoon - which works better?`,
+          `Alright. What time of day suits you best? Morning, midday, or afternoon?`
+        ];
+        const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+        const prompt = firstName ? randomGreeting : "Do you prefer morning, midday, or afternoon?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
@@ -1928,7 +2024,22 @@ export function registerVoice(app: Express) {
             }
 
             const lastFourDigits = from.slice(-3);
-            saySafeSSML(vr, `${EMOTIONS.excited("Perfect", "medium")}! ${EMOTIONS.shortPause()} You're all booked for ${spokenTime} with Dr. Michael. ${EMOTIONS.shortPause()} We'll send a confirmation to your mobile ending in ${lastFourDigits}. ${EMOTIONS.mediumPause()} Is there anything else I can help you with today?`);
+
+            // Ask if they need anything else and WAIT for response
+            const g = vr.gather({
+              input: ["speech"],
+              timeout: 5,
+              speechTimeout: "auto",
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`),
+              method: "POST",
+            });
+
+            saySafeSSML(g, `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}... Is there anything else I can help you with today?`);
+            g.pause({ length: 1 });
+
+            // If no response, say goodbye
+            saySafe(vr, "Alright, have a great day! Goodbye.");
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           } else {
@@ -2008,7 +2119,22 @@ export function registerVoice(app: Express) {
           }
 
           const lastFourDigits = from.slice(-3);
-          saySafeSSML(vr, `${EMOTIONS.excited("Wonderful", "medium")}! ${EMOTIONS.shortPause()} You're all set for ${spokenTime} with Dr. Michael. ${EMOTIONS.shortPause()} We'll send a confirmation to your mobile ending in ${lastFourDigits}. ${EMOTIONS.mediumPause()} Is there anything else I can help you with today?`);
+
+          // Ask if they need anything else and WAIT for response
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+
+          saySafeSSML(g, `${EMOTIONS.excited("Wonderful", "medium")}! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}... Is there anything else I can help you with today?`);
+          g.pause({ length: 1 });
+
+          // If no response, say goodbye
+          saySafe(vr, "Alright, have a great day! Goodbye.");
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } catch (e: any) {
