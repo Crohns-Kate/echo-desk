@@ -11,7 +11,7 @@ import {
   rescheduleAppointment,
   findPatientByPhoneRobust
 } from "../services/cliniko";
-import { saySafe, VOICE_NAME } from "../utils/voice-constants";
+import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 import { labelForSpeech, AUST_TZ } from "../time";
 import { storage } from "../storage";
@@ -195,6 +195,55 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
+  // Transcription status callback (Twilio posts here)
+  // Stores transcription text against the call row.
+  app.post("/api/voice/transcription-status", async (req: Request, res: Response) => {
+    try {
+      const callSid = (req.body.CallSid as string) || "";
+      const recordingSid = (req.body.RecordingSid as string) || "";
+      const transcriptionSid = (req.body.TranscriptionSid as string) || "";
+      const transcriptionText = (req.body.TranscriptionText as string) || "";
+      const transcriptionStatus = (req.body.TranscriptionStatus as string) || "";
+
+      console.log("[TRANSCRIPTION_STATUS]", {
+        callSid,
+        recordingSid,
+        transcriptionSid,
+        status: transcriptionStatus,
+        textLength: transcriptionText.length
+      });
+
+      // Validate callSid exists before updating
+      if (!callSid) {
+        console.warn("[TRANSCRIPTION_STATUS] No callSid provided, cannot update");
+        return res.sendStatus(204);
+      }
+
+      // Only update if transcription was successful
+      if (transcriptionStatus === "completed" && transcriptionText) {
+        const updated = await storage.updateCall(callSid, {
+          transcript: transcriptionText,
+        });
+
+        if (!updated) {
+          console.warn("[TRANSCRIPTION_STATUS] Call not found:", callSid);
+        } else {
+          console.log("[TRANSCRIPTION_STATUS] Updated call:", callSid, "with transcription (", transcriptionText.length, "chars)");
+          // Emit WebSocket update to refresh dashboard
+          emitCallUpdated(updated);
+        }
+      } else if (transcriptionStatus === "failed") {
+        console.warn("[TRANSCRIPTION_STATUS] Transcription failed for call:", callSid);
+      }
+
+      return res.sendStatus(204);
+    } catch (e) {
+      console.error("[TRANSCRIPTION_STATUS][ERROR]", e);
+      return res.sendStatus(204);
+    }
+  });
+
+  // ───────────────────────────────────────────────
   // Entry point for each call
   app.post("/api/voice/incoming", async (req: Request, res: Response) => {
     const callSid =
@@ -234,8 +283,11 @@ export function registerVoice(app: Express) {
         await client.calls(callSid).recordings.create({
           recordingStatusCallback: abs("/api/voice/recording-status"),
           recordingStatusCallbackMethod: "POST",
+          // Enable transcription
+          transcribe: true,
+          transcribeCallback: abs("/api/voice/transcription-status"),
         });
-        console.log("[VOICE][RECORDING] Started recording for call:", callSid);
+        console.log("[VOICE][RECORDING] Started recording with transcription for call:", callSid);
       } catch (recErr) {
         console.error("[VOICE][RECORDING] Failed to start recording:", recErr);
       }
@@ -278,7 +330,7 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafe(g, `Hi, thanks for calling ${clinicName}. Am I speaking with ${knownPatientName}?`);
+      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. ${EMOTIONS.shortPause()} Am I speaking with ${knownPatientName}?`);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     } else {
@@ -295,7 +347,7 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      saySafe(g, `Hi, thanks for calling ${clinicName}. How can I help you today?`);
+      saySafeSSML(g, `Hi, thanks for calling ${clinicName}. ${EMOTIONS.shortPause()} How can I help you today?`);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     }
@@ -329,10 +381,10 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         // ✅ Safe say
-        saySafe(g, "Sorry, I didn't catch that. Please say book, reschedule, or cancel.");
+        saySafeSSML(g, `${EMOTIONS.shortBreath()}Sorry, I didn't catch that. ${EMOTIONS.shortPause()} Please say book, reschedule, or cancel.`);
         g.pause({ length: 1 });
         // If timeout again, end call gracefully
-        saySafe(vr, "I'm sorry, I'm having trouble understanding you. Please call back when you're ready. Goodbye.");
+        saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "medium")}, ${EMOTIONS.breath()}I'm having trouble understanding you. ${EMOTIONS.mediumPause()} Please call back when you're ready. Goodbye.`);
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -366,7 +418,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, `Great, ${firstName}. How can I help you today?`);
+          saySafeSSML(g, `${EMOTIONS.excited("Great", "low")}, ${firstName}. ${EMOTIONS.shortPause()} How can I help you today?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -554,7 +606,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "Great! May I have your full name please?");
+          saySafeSSML(g, `${EMOTIONS.excited("Great", "low")}! ${EMOTIONS.shortBreath()} May I have your full name please?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -708,19 +760,157 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Ask for reason for visit
+        // Move to email collection
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`),
+          action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafe(g, firstName ? `Thank you, ${firstName}. What's the main reason for your visit today?` : "Thank you. What's the main reason for your visit today?");
+        saySafeSSML(g, firstName ? `Thanks, ${firstName}. ${EMOTIONS.shortPause()} What's the best email address to send your appointment confirmation to?` : `Thank you. ${EMOTIONS.shortPause()} What's the best email address to send your appointment confirmation to?`);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
+      }
+
+      // 5a) ASK-EMAIL-NEW → Collect email for new patient
+      if (route === "ask-email-new") {
+        const emailRaw = speechRaw || "";
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-EMAIL-NEW] Error getting firstName:", err);
+        }
+
+        // Voice-captured emails are often unreliable, so we'll store it but note it may need verification
+        // Store email in conversation context
+        if (emailRaw && emailRaw.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, email: emailRaw }
+              });
+            }
+            console.log("[ASK-EMAIL-NEW] Stored email (from voice):", emailRaw);
+          } catch (err) {
+            console.error("[ASK-EMAIL-NEW] Failed to store email:", err);
+          }
+        }
+
+        // Move to phone confirmation
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 5b) CONFIRM-PHONE-NEW → Confirm phone number for new patient
+      if (route === "confirm-phone-new") {
+        // Get the last 3 digits of the calling number
+        const lastThreeDigits = from.slice(-3);
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[CONFIRM-PHONE-NEW] Error getting firstName:", err);
+        }
+
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-phone-confirm&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        const prompt = firstName
+          ? `${firstName}, is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`
+          : `Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`;
+        saySafe(g, prompt);
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 5c) PROCESS-PHONE-CONFIRM → Handle phone confirmation response
+      if (route === "process-phone-confirm") {
+        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's right");
+        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("different");
+
+        if (confirmed) {
+          // Phone confirmed - store it in context
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, phoneConfirmed: true, confirmedPhone: from }
+              });
+            }
+            console.log("[PROCESS-PHONE-CONFIRM] Phone confirmed:", from);
+          } catch (err) {
+            console.error("[PROCESS-PHONE-CONFIRM] Error storing phone confirmation:", err);
+          }
+
+          // Move to reason for visit
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (denied) {
+          // Phone not confirmed - ask for different number
+          // Note: Voice systems can't reliably capture phone numbers, so we'll note it and ask them to provide it another way
+          saySafe(vr, "No problem. We'll make a note that you need to provide a different contact number, and our reception team will call you after your appointment is booked to confirm your details. Let's continue with your booking.");
+
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, phoneConfirmed: false, needsDifferentPhone: true }
+              });
+            }
+          } catch (err) {
+            console.error("[PROCESS-PHONE-CONFIRM] Error storing phone denial:", err);
+          }
+
+          // Move to reason for visit
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear - ask again
+          const lastThreeDigits = from.slice(-3);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-phone-confirm&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, `Sorry, I didn't catch that. Is the number ending in ${lastThreeDigits} the best number to reach you? Please say yes or no.`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
       }
 
       // 5) ASK-REASON → Collect reason and move to week selection
@@ -759,9 +949,9 @@ export function registerVoice(app: Express) {
 
         // Move to week selection with empathetic filler using first name
         const empathyLine = firstName
-          ? `I'm sorry to hear that, ${firstName}. Let me see what we have available to get you in…`
-          : "I'm sorry to hear that. Let me see what we have available to get you in…";
-        saySafe(vr, empathyLine);
+          ? `${EMOTIONS.empathetic(`I'm sorry to hear that, ${firstName}`, "high")}. ${EMOTIONS.shortBreath()} Let me see what we have available to get you in quickly.`
+          : `${EMOTIONS.empathetic("I'm sorry to hear that", "high")}. ${EMOTIONS.shortBreath()} Let me see what we have available to get you in quickly.`;
+        saySafeSSML(vr, empathyLine);
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         return res.type("text/xml").send(vr.toString());
       }
@@ -792,7 +982,7 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         const prompt = firstName
-          ? `Which week works best for you, ${firstName}? This week, next week, or another week?`
+          ? `${firstName}, which week works best for you? This week, next week, or another week?`
           : "Which week works best for you? This week, next week, or another week?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
@@ -883,8 +1073,8 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         const prompt = firstName
-          ? `Great. Is there a particular day of that week that works best for you, ${firstName}? For example, Monday, Wednesday, or Friday?`
-          : "Great. Is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?";
+          ? `${firstName}, is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?`
+          : "Is there a particular day of that week that works best for you? For example, Monday, Wednesday, or Friday?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
@@ -967,8 +1157,8 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         const prompt = firstName
-          ? `And do you prefer morning, midday, or afternoon, ${firstName}?`
-          : "And do you prefer morning, midday, or afternoon?";
+          ? `${firstName}, do you prefer morning, midday, or afternoon?`
+          : "Do you prefer morning, midday, or afternoon?";
         saySafe(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
@@ -1019,7 +1209,7 @@ export function registerVoice(app: Express) {
         const patientId = (req.query.patientId as string) || "";
 
         // Add thinking filler
-        saySafe(vr, "Just a moment while I bring up your appointment.");
+        saySafeSSML(vr, `${EMOTIONS.shortBreath()}Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
         // Look up their next appointment
         try {
@@ -1046,7 +1236,7 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[RESCHEDULE-START] Error:", err);
-          saySafe(vr, "Sorry, I'm having trouble accessing your appointment. Please call back or try again later.");
+          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, ${EMOTIONS.breath()}I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1074,7 +1264,7 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          saySafe(vr, "Okay, no problem. Is there anything else I can help you with?");
+          saySafeSSML(vr, `Okay, no problem. ${EMOTIONS.mediumPause()} Is there anything else I can help you with?`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1085,7 +1275,7 @@ export function registerVoice(app: Express) {
         const patientId = (req.query.patientId as string) || "";
 
         // Add thinking filler
-        saySafe(vr, "Just a moment while I bring up your appointment.");
+        saySafeSSML(vr, `${EMOTIONS.shortBreath()}Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
         try {
           const appointment = await getNextUpcomingAppointment(patientId);
@@ -1111,7 +1301,7 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[CANCEL-START] Error:", err);
-          saySafe(vr, "Sorry, I'm having trouble accessing your appointment. Please call back or try again later.");
+          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, ${EMOTIONS.breath()}I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1146,13 +1336,13 @@ export function registerVoice(app: Express) {
               action: abs(`/api/voice/handle?route=cancel-rebook&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`),
               method: "POST",
             });
-            saySafe(g, "No problem — your appointment has been cancelled. Would you like to book a new one so you don't fall behind on your care?");
+            saySafeSSML(g, `${EMOTIONS.breath()}No problem, I understand. ${EMOTIONS.shortPause()} Your appointment has been cancelled. ${EMOTIONS.mediumPause()} Would you like to book a new one so you don't fall behind on your care?`);
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
           } catch (err) {
             console.error("[CANCEL-CONFIRM] Error cancelling:", err);
-            saySafe(vr, "Sorry, I couldn't cancel your appointment. Please call back or try again later.");
+            saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I'm sorry", "medium")}, ${EMOTIONS.breath()}I couldn't cancel your appointment. ${EMOTIONS.mediumPause()} Please call back or try our office directly.`);
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           }
@@ -1169,7 +1359,7 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          saySafe(vr, "Okay, have a great day!");
+          saySafeSSML(vr, `${EMOTIONS.excited("Alright", "low")}, have a great day!`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
@@ -1178,7 +1368,7 @@ export function registerVoice(app: Express) {
       // 2) BOOK-DAY → confirm intent then either ask for name or skip to day selection (LEGACY - keeping for compatibility)
       if (route === "book-day") {
         if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
-          saySafe(vr, "Okay, goodbye.");
+          saySafeSSML(vr, `Okay. ${EMOTIONS.shortPause()} Take care, goodbye.`);
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -1314,11 +1504,29 @@ export function registerVoice(app: Express) {
           };
 
           const targetDayNumber = weekdayMap[preferredDayOfWeek.toLowerCase()];
-          const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
-          const targetDate = weekStart.day(targetDayNumber);
-          fromDate = targetDate.format("YYYY-MM-DD");
-          toDate = fromDate; // Same day
-          console.log("[GET-AVAILABILITY] Targeting specific day:", preferredDayOfWeek, "on", fromDate);
+
+          if (targetDayNumber === undefined) {
+            console.error("[GET-AVAILABILITY] Invalid day:", preferredDayOfWeek);
+            // Fallback to whole week
+            const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+            const weekEnd = weekStart.endOf('week');
+            fromDate = weekStart.format("YYYY-MM-DD");
+            toDate = weekEnd.format("YYYY-MM-DD");
+          } else {
+            const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
+            let targetDate = weekStart.day(targetDayNumber);
+
+            // CRITICAL FIX: Ensure target date is not in the past
+            // If the calculated date is before today, it means we need to look at next week's occurrence
+            if (targetDate.isBefore(tzNow, 'day')) {
+              console.log("[GET-AVAILABILITY] Target date", targetDate.format("YYYY-MM-DD"), "is in the past, moving to next week");
+              targetDate = targetDate.add(1, 'week');
+            }
+
+            fromDate = targetDate.format("YYYY-MM-DD");
+            toDate = fromDate; // Same day
+            console.log("[GET-AVAILABILITY] Targeting specific day:", preferredDayOfWeek, "on", fromDate);
+          }
         } else {
           // No preferred day - search the whole week
           const weekStart = tzNow.add(weekOffset, 'week').startOf('week');
@@ -1330,11 +1538,21 @@ export function registerVoice(app: Express) {
         console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
         // Add thinking filler
-        saySafe(vr, "Thanks for waiting, I'm loading the schedule.");
+        saySafeSSML(vr, `Thanks for waiting. ${EMOTIONS.shortBreath()}${EMOTIONS.shortPause()} Let me just pull up the schedule.`);
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
-          console.log("[GET-AVAILABILITY] Calling getAvailability with:", { fromDate, toDate, appointmentTypeId, timePart, isNewPatient });
+          console.log("[GET-AVAILABILITY] ========================================");
+          console.log("[GET-AVAILABILITY] Calling getAvailability with:");
+          console.log("[GET-AVAILABILITY]   fromDate:", fromDate);
+          console.log("[GET-AVAILABILITY]   toDate:", toDate);
+          console.log("[GET-AVAILABILITY]   appointmentTypeId:", appointmentTypeId);
+          console.log("[GET-AVAILABILITY]   timePart:", timePart);
+          console.log("[GET-AVAILABILITY]   isNewPatient:", isNewPatient);
+          console.log("[GET-AVAILABILITY]   weekOffset:", weekOffset);
+          console.log("[GET-AVAILABILITY]   preferredDayOfWeek:", preferredDayOfWeek);
+          console.log("[GET-AVAILABILITY] ========================================");
+
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
@@ -1342,7 +1560,10 @@ export function registerVoice(app: Express) {
             part: timePart
           });
           slots = result.slots || [];
-          console.log(`[GET-AVAILABILITY] Received ${slots.length} slots from getAvailability`);
+          console.log(`[GET-AVAILABILITY] SUCCESS: Received ${slots.length} slots from getAvailability`);
+          if (slots.length > 0) {
+            console.log("[GET-AVAILABILITY] First slot:", slots[0]);
+          }
         } catch (e: any) {
           console.error("[GET-AVAILABILITY][getAvailability ERROR]", e);
           console.error("[GET-AVAILABILITY] Error details:", {
@@ -1374,26 +1595,52 @@ export function registerVoice(app: Express) {
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafe(vr, "Sorry, I'm having trouble accessing the schedule right now. Please try calling back in a few minutes, or I can transfer you to our front desk.");
+          // Get clinic phone number for fallback
+          let clinicPhone = "";
+          try {
+            const tenant = await storage.getTenant("default");
+            if (tenant?.clinicName) {
+              // If we have a clinic phone, we could get it here
+              // For now, we'll ask them to call back
+            }
+          } catch (err) {
+            console.error("[GET-AVAILABILITY] Error getting clinic info:", err);
+          }
+
+          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "high")}, ${EMOTIONS.breath()}I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }
 
         const available = slots.slice(0, 2);
         if (available.length === 0) {
+          console.log("[GET-AVAILABILITY] No slots found - creating alert");
           try {
             const tenant = await storage.getTenant("default");
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
                 reason: "no_availability",
-                payload: { fromDate, toDate, timePart, callSid, from },
+                payload: { fromDate, toDate, timePart, preferredDayOfWeek, callSid, from },
               });
               emitAlertCreated(alert);
             }
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
+
+          // Build a specific message about what wasn't available
+          let noAvailMessage = `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "medium")}, `;
+          if (preferredDayOfWeek && timePart) {
+            noAvailMessage += `there are no ${timePart} appointments available on ${preferredDayOfWeek}.`;
+          } else if (preferredDayOfWeek) {
+            noAvailMessage += `there are no appointments available on ${preferredDayOfWeek}.`;
+          } else if (timePart) {
+            noAvailMessage += `there are no ${timePart} appointments available for that week.`;
+          } else {
+            noAvailMessage += "there are no appointments available for that selection.";
+          }
+          noAvailMessage += ` ${EMOTIONS.mediumPause()} Would you like to try a different day or time?`;
 
           // Offer to try different time or week
           const g = vr.gather({
@@ -1404,7 +1651,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
             method: "POST",
           });
-          saySafe(g, "Sorry, there are no times available for that selection. Would you like to try a different week or time?");
+          saySafeSSML(g, noAvailMessage);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1434,16 +1681,16 @@ export function registerVoice(app: Express) {
         // Build prompt mentioning the day if it was specified
         let prompt: string;
         if (preferredDayOfWeek && s2) {
-          prompt = `I have two options for ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`;
+          prompt = `${EMOTIONS.excited("Great news", "low")}! ${EMOTIONS.shortPause()} I have two options for ${preferredDayOfWeek}. ${EMOTIONS.shortPause()} Option one, ${opt1}. ${EMOTIONS.shortPause()} Or option two, ${opt2}. ${EMOTIONS.mediumPause()} Press 1 or 2, or say your choice.`;
         } else if (preferredDayOfWeek && !s2) {
-          prompt = `I have one option available on ${preferredDayOfWeek}: ${opt1}. Press 1 or say yes to book it.`;
+          prompt = `${EMOTIONS.excited("Perfect", "low")}! ${EMOTIONS.shortPause()} I have one option available on ${preferredDayOfWeek}: ${EMOTIONS.shortPause()} ${opt1}. ${EMOTIONS.mediumPause()} Press 1 or say yes to book it.`;
         } else if (s2) {
-          prompt = `I have two options. Option one, ${opt1}. Or option two, ${opt2}. Press 1 or 2, or say your choice.`;
+          prompt = `${EMOTIONS.excited("Great", "low")}! ${EMOTIONS.shortPause()} I have two options. ${EMOTIONS.shortPause()} Option one, ${opt1}. ${EMOTIONS.shortPause()} Or option two, ${opt2}. ${EMOTIONS.mediumPause()} Press 1 or 2, or say your choice.`;
         } else {
-          prompt = `I have one option available: ${opt1}. Press 1 or say yes to book it.`;
+          prompt = `${EMOTIONS.excited("Perfect", "low")}! ${EMOTIONS.shortPause()} I have one option available: ${EMOTIONS.shortPause()} ${opt1}. ${EMOTIONS.mediumPause()} Press 1 or say yes to book it.`;
         }
 
-        saySafe(g, prompt);
+        saySafeSSML(g, prompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, timeoutUrl);
 
@@ -1575,7 +1822,7 @@ export function registerVoice(app: Express) {
         const chosen = choiceIdx === 1 ? s2 : s1;
 
         if (!chosen) {
-          saySafe(vr, "Sorry, that option is no longer available. Let's start again.");
+          saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "low")}, ${EMOTIONS.shortBreath()}that option is no longer available. ${EMOTIONS.mediumPause()} Let's start again.`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
           return res.type("text/xml").send(vr.toString());
         }
@@ -1587,6 +1834,8 @@ export function registerVoice(app: Express) {
         let isReschedule = false;
         let apptId: string | undefined;
         let reasonForVisit: string | undefined;
+        let phoneConfirmed = false;
+        let needsDifferentPhone = false;
 
         try {
           // First try phone_map as fallback for returning patients
@@ -1624,13 +1873,21 @@ export function registerVoice(app: Express) {
               console.log("[BOOK-CHOOSE] Retrieved reason for visit:", reasonForVisit);
             }
 
+            // Extract phone confirmation status
+            if (context?.phoneConfirmed !== undefined) {
+              phoneConfirmed = context.phoneConfirmed;
+            }
+            if (context?.needsDifferentPhone) {
+              needsDifferentPhone = context.needsDifferentPhone;
+            }
+
             // Check if this is a reschedule operation
             if (context?.isReschedule) {
               isReschedule = true;
               apptId = context.apptId;
               patientId = context.patientId || patientId;
             }
-            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId, reasonForVisit });
+            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId, reasonForVisit, phoneConfirmed, needsDifferentPhone });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
@@ -1671,7 +1928,7 @@ export function registerVoice(app: Express) {
             }
 
             const lastFourDigits = from.slice(-3);
-            saySafe(vr, `All done. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with today?`);
+            saySafeSSML(vr, `${EMOTIONS.excited("Perfect", "medium")}! ${EMOTIONS.shortPause()} You're all booked for ${spokenTime} with Dr. Michael. ${EMOTIONS.shortPause()} We'll send a confirmation to your mobile ending in ${lastFourDigits}. ${EMOTIONS.mediumPause()} Is there anything else I can help you with today?`);
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           } else {
@@ -1683,6 +1940,17 @@ export function registerVoice(app: Express) {
 
             if (reasonForVisit) {
               appointmentNotes += `\n\nReason for visit: ${reasonForVisit}`;
+            }
+
+            // Add contact info notes
+            if (needsDifferentPhone) {
+              appointmentNotes += `\n\n⚠️ Patient indicated they need a different contact number. Please follow up to confirm contact details.`;
+            } else if (phoneConfirmed) {
+              appointmentNotes += `\n\n✓ Patient confirmed phone number: ${from}`;
+            }
+
+            if (email) {
+              appointmentNotes += `\n\nEmail provided (via voice - may need verification): ${email}`;
             }
 
             appointment = await createAppointmentForPatient(from, {
@@ -1740,7 +2008,7 @@ export function registerVoice(app: Express) {
           }
 
           const lastFourDigits = from.slice(-3);
-          saySafe(vr, `All set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with today?`);
+          saySafeSSML(vr, `${EMOTIONS.excited("Wonderful", "medium")}! ${EMOTIONS.shortPause()} You're all set for ${spokenTime} with Dr. Michael. ${EMOTIONS.shortPause()} We'll send a confirmation to your mobile ending in ${lastFourDigits}. ${EMOTIONS.mediumPause()} Is there anything else I can help you with today?`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } catch (e: any) {
@@ -1758,7 +2026,7 @@ export function registerVoice(app: Express) {
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafe(vr, "Sorry, I couldn't complete the booking. Please try again later.");
+          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I'm very sorry", "high")}, ${EMOTIONS.breath()}I couldn't complete the booking. ${EMOTIONS.mediumPause()} Please try again later or call our office directly.`);
           return res.type("text/xml").send(vr.toString());
         }
       }
@@ -1866,7 +2134,7 @@ export function registerVoice(app: Express) {
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
           }
-          saySafe(vr, "Sorry, I'm having trouble accessing the schedule right now. Please try calling back in a few minutes.");
+          saySafeSSML(vr, `${EMOTIONS.sigh()}${EMOTIONS.disappointed("I apologize", "high")}, ${EMOTIONS.breath()}I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         }

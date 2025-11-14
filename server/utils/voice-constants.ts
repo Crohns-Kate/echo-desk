@@ -91,3 +91,83 @@ export function pause(node: any, secs = 1) {
   const n = Number.isFinite(secs) && secs > 0 ? Math.min(10, Math.floor(secs)) : 1;
   node.pause({ length: n });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSML & Emotional Expression Support
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * SSML-aware say function that preserves emotion tags and expressions
+ * Use this for responses with emotional content, breathing, or special effects
+ */
+export function saySafeSSML(node: any, text?: string, voice?: any) {
+  if (!text || text.trim().length === 0) {
+    console.warn("[VOICE] Attempted to speak empty SSML text:", text);
+    return;
+  }
+
+  // Ensure text is wrapped in <speak> tags for SSML
+  let ssmlText = text.trim();
+  if (!ssmlText.startsWith('<speak>')) {
+    ssmlText = `<speak>${ssmlText}</speak>`;
+  }
+
+  const v = (voice ?? VOICE_NAME) as any;
+  const isPollyVoice = (voiceName: string) => String(voiceName).toLowerCase().includes('polly');
+  const isPrimary = isPollyVoice(v);
+
+  console.log(`[VOICE][saySafeSSML] voice="${v}" isPolly=${isPrimary} ssml="${ssmlText.substring(0, 100)}..."`);
+
+  try {
+    if (isPrimary) {
+      node.say({ voice: v }, ssmlText);
+    } else {
+      node.say({ voice: v, language: "en-AU" }, ssmlText);
+    }
+  } catch (err) {
+    console.error("[VOICE] SSML say failed with primary voice:", err);
+    // Fallback: strip SSML and use regular say
+    const plainText = ssmlText.replace(/<[^>]*>/g, '').trim();
+    if (plainText) {
+      saySafe(node, plainText, FALLBACK_VOICE);
+    }
+  }
+}
+
+/**
+ * Emotion and expression helpers for AWS Polly Neural voices
+ * These generate SSML markup for more natural, conversational speech
+ */
+export const EMOTIONS = {
+  // Emotional tones (intensity: low, medium, high)
+  empathetic: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
+    `<amazon:emotion name="empathetic" intensity="${intensity}">${text}</amazon:emotion>`,
+
+  excited: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
+    `<amazon:emotion name="excited" intensity="${intensity}">${text}</amazon:emotion>`,
+
+  disappointed: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') =>
+    `<amazon:emotion name="disappointed" intensity="${intensity}">${text}</amazon:emotion>`,
+
+  // Breathing and sighing
+  sigh: () => `<amazon:breath duration="long" volume="loud"/>`,
+  breath: () => `<amazon:breath duration="medium"/>`,
+  shortBreath: () => `<amazon:breath duration="short"/>`,
+
+  // Pauses and breaks (in milliseconds)
+  pause: (ms: number) => `<break time="${ms}ms"/>`,
+  shortPause: () => `<break time="300ms"/>`,
+  mediumPause: () => `<break time="500ms"/>`,
+  longPause: () => `<break time="800ms"/>`,
+
+  // Emphasis levels
+  emphasize: (text: string, level: 'strong' | 'moderate' | 'reduced' = 'moderate') =>
+    `<emphasis level="${level}">${text}</emphasis>`,
+
+  // Speech rate
+  faster: (text: string) => `<prosody rate="fast">${text}</prosody>`,
+  slower: (text: string) => `<prosody rate="slow">${text}</prosody>`,
+
+  // Whisper effect
+  whisper: (text: string) => `<amazon:effect name="whispered">${text}</amazon:effect>`,
+};
