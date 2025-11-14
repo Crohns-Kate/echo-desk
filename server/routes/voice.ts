@@ -290,29 +290,48 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Start recording programmatically using Twilio API
+    // Start recording asynchronously - don't await to avoid blocking the response
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
-      try {
-        const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+      // Start recording in background without blocking the response
+      setImmediate(async () => {
+        try {
+          const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
-        // Start recording with transcription if enabled
-        const recordingParams: any = {
-          recordingStatusCallback: abs("/api/voice/recording-status"),
-          recordingStatusCallbackMethod: "POST"
-        };
+          const recordingParams: any = {
+            recordingStatusCallback: abs("/api/voice/recording-status"),
+            recordingStatusCallbackMethod: "POST",
+          };
 
-        // Add transcription if enabled
-        if (env.TRANSCRIPTION_ENABLED) {
-          recordingParams.transcribe = true;
-          recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
+          if (env.TRANSCRIPTION_ENABLED) {
+            recordingParams.transcribe = true;
+            recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
+          }
+
+          const recording = await client.calls(callSid).recordings.create(recordingParams);
+          console.log("[VOICE][RECORDING] ✅ Started recording" + (env.TRANSCRIPTION_ENABLED ? " with transcription" : ""), "SID:", recording.sid, "for call:", callSid);
+        } catch (recErr: any) {
+          console.error("[VOICE][RECORDING] ❌ Failed to start recording for call:", callSid, "Error:", recErr.message);
+          // Create alert for failed recording
+          try {
+            const tenant = await storage.getTenant("default");
+            if (tenant) {
+              await storage.createAlert({
+                tenantId: tenant.id,
+                reason: "recording_failed",
+                payload: {
+                  error: recErr.message,
+                  callSid,
+                  timestamp: new Date().toISOString()
+                },
+                status: "open"
+              });
+            }
+          } catch (alertErr) {
+            console.error("[VOICE][RECORDING] Failed to create alert:", alertErr);
+          }
         }
-
-        await client.calls(callSid).recordings.create(recordingParams);
-        console.log("[VOICE][RECORDING] Started recording" + (env.TRANSCRIPTION_ENABLED ? " with transcription" : "") + " for call:", callSid);
-      } catch (recErr) {
-        console.error("[VOICE][RECORDING] Failed to start recording:", recErr);
-      }
+      });
     }
 
     // Check if we have a known patient for this number
