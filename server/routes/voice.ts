@@ -26,10 +26,25 @@ dayjs.tz.setDefault("Australia/Brisbane");
 
 /**
  * Helper function to extract first name from full name
+ * Handles both normal names and spelled-out names (e.g., "M i c h a e l")
  */
 function extractFirstName(fullName: string): string {
   if (!fullName) return "";
-  const parts = fullName.trim().split(/\s+/);
+
+  const trimmed = fullName.trim();
+
+  // Check if this looks like a spelled-out name (single letters separated by spaces)
+  // Pattern: single char, space, single char, etc.
+  const spelledOutPattern = /^([a-z]\s+)+[a-z]$/i;
+  if (spelledOutPattern.test(trimmed)) {
+    // Reconstruct the name by removing spaces between single letters
+    const reconstructed = trimmed.replace(/\s+/g, '');
+    console.log("[extractFirstName] Detected spelled-out name, reconstructed:", reconstructed);
+    return reconstructed;
+  }
+
+  // Normal name parsing: split on whitespace and take first part
+  const parts = trimmed.split(/\s+/);
   return parts[0] || "";
 }
 
@@ -493,7 +508,7 @@ export function registerVoice(app: Express) {
           // Identity not confirmed - ask for correct name warmly
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=capture-caller-name&callSid=${encodeURIComponent(callSid)}`),
@@ -540,7 +555,7 @@ export function registerVoice(app: Express) {
           // Appointment is for someone else - ask for their name
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=capture-other-person-name&callSid=${encodeURIComponent(callSid)}`),
@@ -786,16 +801,16 @@ export function registerVoice(app: Express) {
           // New patient flow - collect name with warm, friendly prompt
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
           const namePrompts = [
-            `Lovely! Because it's your first visit, I just need to get your name into the system properly. What's your full name, and feel free to spell it out so I get it spot-on for you.`,
-            `Perfect! Since you're new, I'll need your full name for our records. Go ahead and spell it out if you like, so I don't muck it up.`,
-            `Great! I just need your full name for the booking. You can spell it out slowly if it helps - I want to make sure I get it right.`
+            `Lovely! Because it's your first visit, I just need to get your name into the system properly. What's your full name?`,
+            `Perfect! Since you're new, I'll need your full name for our records.`,
+            `Great! I just need your full name for the booking.`
           ];
           const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
           saySafeSSML(g, randomPrompt);
@@ -827,31 +842,42 @@ export function registerVoice(app: Express) {
       if (route === "confirm-identity") {
         let recognizedName: string | undefined;
 
+        // First check if we already have their name from earlier identity confirmation
         try {
-          const phoneMapEntry = await storage.getPhoneMap(from);
-          recognizedName = phoneMapEntry?.fullName || undefined;
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            // If identity was already confirmed earlier, we have their name
+            if (context?.identityConfirmed && context?.fullName) {
+              recognizedName = context.fullName;
+              console.log("[CONFIRM-IDENTITY] Using name from conversation context:", recognizedName);
+            }
+          }
         } catch (err) {
-          console.error("[CONFIRM-IDENTITY] Error checking phone_map:", err);
+          console.error("[CONFIRM-IDENTITY] Error checking conversation context:", err);
+        }
+
+        // If not in context, check phone_map
+        if (!recognizedName) {
+          try {
+            const phoneMapEntry = await storage.getPhoneMap(from);
+            recognizedName = phoneMapEntry?.fullName || undefined;
+          } catch (err) {
+            console.error("[CONFIRM-IDENTITY] Error checking phone_map:", err);
+          }
         }
 
         if (recognizedName) {
-          const g = vr.gather({
-            input: ["speech"],
-            timeout: 5,
-            speechTimeout: "auto",
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=process-confirm-identity&callSid=${encodeURIComponent(callSid)}`),
-            method: "POST",
-          });
-          saySafe(g, `Is this ${recognizedName} I'm speaking to?`);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // We already have their name - skip to booking
+          console.log("[CONFIRM-IDENTITY] Name already confirmed, proceeding to booking for:", recognizedName);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
           return res.type("text/xml").send(vr.toString());
         } else {
           // No recognized name - ask for name
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=ask-name-returning&callSid=${encodeURIComponent(callSid)}`),

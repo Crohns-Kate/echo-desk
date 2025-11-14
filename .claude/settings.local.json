@@ -11,7 +11,8 @@
       "Bash(pgrep:*)",
       "Bash(env)",
       "Bash(python3:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(node:*)"
     ],
     "deny": [],
     "ask": []
