@@ -475,24 +475,17 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-CALLER-IDENTITY] Error storing context:", err);
           }
 
-          // Proceed to intent detection with warm Australian greeting
+          // Ask if appointment is for them or someone else
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
+            action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
           });
-          // Warm, friendly Australian greetings
-          const greetings = [
-            `${EMOTIONS.excited("Lovely", "low")}, thanks ${firstName}! What can I help you with today?`,
-            `${EMOTIONS.excited("Beautiful", "low")}, hi ${firstName}. How can I help?`,
-            `${EMOTIONS.excited("Perfect", "low")}, good on ya ${firstName}. What brings you in?`,
-            `Great, thanks ${firstName}. What can I do for you today?`
-          ];
-          const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-          saySafeSSML(g, randomGreeting);
+          // Ask if this appointment is for the caller or someone else
+          saySafe(g, `Great! Is this appointment for you, ${firstName}, or for someone else?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -527,6 +520,87 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           saySafe(g, "Sorry, I didn't catch that. Am I speaking with " + knownName + "? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CHECK-APPOINTMENT-FOR → Check if appointment is for caller or someone else
+      if (route === "check-appointment-for") {
+        const knownName = (req.query.knownName as string) || "";
+        const forSelf = speechRaw.includes("me") || speechRaw.includes("myself") || speechRaw.includes("yes") || speechRaw.includes("for me");
+        const forOther = speechRaw.includes("someone else") || speechRaw.includes("other") || speechRaw.includes("no");
+
+        if (forSelf) {
+          // Appointment is for the caller - proceed to intent detection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (forOther) {
+          // Appointment is for someone else - ask for their name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=capture-other-person-name&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "No worries. What's the name of the person the appointment is for?");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const firstName = extractFirstName(knownName);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            method: "POST",
+          });
+          saySafe(g, `Sorry, I didn't catch that. Is this appointment for you, ${firstName}, or for someone else?`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CAPTURE-OTHER-PERSON-NAME → Capture name when appointment is for someone else
+      if (route === "capture-other-person-name") {
+        const otherPersonName = speechRaw || "";
+        const firstName = extractFirstName(otherPersonName);
+
+        // Store the other person's name in context
+        if (otherPersonName && otherPersonName.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              await storage.updateConversation(call.conversationId, {
+                context: { fullName: otherPersonName, firstName, appointmentForOther: true }
+              });
+            }
+            console.log("[CAPTURE-OTHER-PERSON-NAME] Appointment for:", otherPersonName);
+          } catch (err) {
+            console.error("[CAPTURE-OTHER-PERSON-NAME] Error storing context:", err);
+          }
+
+          // Proceed to intent detection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // No name captured - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=capture-other-person-name&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. What's the name of the person the appointment is for?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1397,6 +1471,13 @@ export function registerVoice(app: Express) {
       if (route === "reschedule-start") {
         const patientId = (req.query.patientId as string) || "";
 
+        if (!patientId) {
+          console.error("[RESCHEDULE-START] No patientId provided");
+          saySafe(vr, "I'm having trouble finding your patient record. Would you like to book a new appointment instead?");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
         // Add thinking filler
         saySafeSSML(vr, `Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
@@ -1404,8 +1485,18 @@ export function registerVoice(app: Express) {
         try {
           const appointment = await getNextUpcomingAppointment(patientId);
           if (!appointment) {
-            saySafe(vr, "I don't see any upcoming appointments for you. Would you like to book a new one?");
-            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+            console.log(`[RESCHEDULE-START] No upcoming appointments found for patient ${patientId}`);
+            const g = vr.gather({
+              input: ["speech"],
+              timeout: 5,
+              speechTimeout: "auto",
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=process-no-appointment&callSid=${encodeURIComponent(callSid)}&intent=reschedule`),
+              method: "POST",
+            });
+            saySafe(g, "I don't see any upcoming appointments for you. Would you like to book a new one?");
+            g.pause({ length: 1 });
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
           }
 
@@ -1427,6 +1518,37 @@ export function registerVoice(app: Express) {
           console.error("[RESCHEDULE-START] Error:", err);
           saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "medium")}, I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // PROCESS-NO-APPOINTMENT → Handle response when no appointment is found
+      if (route === "process-no-appointment") {
+        const intent = (req.query.intent as string) || "";
+        const wantsToBook = speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("yeah") || speechRaw.includes("book");
+        const doesNotWant = speechRaw.includes("no") || speechRaw.includes("nah") || speechRaw.includes("not");
+
+        if (wantsToBook) {
+          // Redirect to booking flow
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (doesNotWant) {
+          saySafe(vr, "No worries. Thanks for calling, have a great day!");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-no-appointment&callSid=${encodeURIComponent(callSid)}&intent=${encodeURIComponent(intent)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Would you like to book a new appointment? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
       }
@@ -1463,14 +1585,31 @@ export function registerVoice(app: Express) {
       if (route === "cancel-start") {
         const patientId = (req.query.patientId as string) || "";
 
+        if (!patientId) {
+          console.error("[CANCEL-START] No patientId provided");
+          saySafe(vr, "I'm having trouble finding your patient record. Can I help you with anything else?");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+
         // Add thinking filler
         saySafeSSML(vr, `Just a moment ${EMOTIONS.shortPause()} while I bring up your appointment.`);
 
         try {
           const appointment = await getNextUpcomingAppointment(patientId);
           if (!appointment) {
-            saySafe(vr, "I don't see any upcoming appointments to cancel.");
-            vr.hangup();
+            console.log(`[CANCEL-START] No upcoming appointments found for patient ${patientId}`);
+            const g = vr.gather({
+              input: ["speech"],
+              timeout: 5,
+              speechTimeout: "auto",
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=process-no-appointment&callSid=${encodeURIComponent(callSid)}&intent=cancel`),
+              method: "POST",
+            });
+            saySafe(g, "I don't see any upcoming appointments to cancel. Would you like to book a new appointment instead?");
+            g.pause({ length: 1 });
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
             return res.type("text/xml").send(vr.toString());
           }
 
