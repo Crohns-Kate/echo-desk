@@ -54,12 +54,13 @@ export interface IStorage {
 
   // Stats
   getStats(tenantId?: number): Promise<{
-    callsToday: number;
+    activeCalls: number;
+    pendingAlerts: number;
+    todayCalls: number;
     calls7d: number;
     bookings: number;
     cancels: number;
     errors: number;
-    pendingAlerts: number;
   }>;
 
   // Seed
@@ -192,12 +193,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getStats(tenantId?: number): Promise<{
-    callsToday: number;
+    activeCalls: number;
+    pendingAlerts: number;
+    todayCalls: number;
     calls7d: number;
     bookings: number;
     cancels: number;
     errors: number;
-    pendingAlerts: number;
   }> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -267,12 +269,13 @@ export class DatabaseStorage implements IStorage {
       );
 
     return {
-      callsToday: Number(callsTodayResult?.count ?? 0),
+      activeCalls: 0, // Active calls would require real-time tracking via Twilio API
+      pendingAlerts: Number(pendingAlertsResult?.count ?? 0),
+      todayCalls: Number(callsTodayResult?.count ?? 0),
       calls7d: Number(calls7dResult?.count ?? 0),
       bookings: Number(bookingsResult?.count ?? 0),
       cancels: Number(cancelsResult?.count ?? 0),
       errors: Number(errorsResult?.count ?? 0),
-      pendingAlerts: Number(pendingAlertsResult?.count ?? 0),
     };
   }
 

@@ -309,15 +309,31 @@ export function registerVoice(app: Express) {
     }
 
     // Check if we have a known patient for this number
+    // First check Cliniko, then fall back to local phone_map
     let knownPatientName: string | undefined;
+
+    // 1. Try Cliniko lookup first
     try {
-      const phoneMapEntry = await storage.getPhoneMap(from);
-      if (phoneMapEntry?.fullName) {
-        knownPatientName = phoneMapEntry.fullName;
-        console.log("[VOICE] Known patient detected:", knownPatientName);
+      const clinikoPatient = await findPatientByPhoneRobust(from);
+      if (clinikoPatient) {
+        knownPatientName = `${clinikoPatient.first_name} ${clinikoPatient.last_name}`.trim();
+        console.log("[VOICE] Known patient from Cliniko:", knownPatientName, "ID:", clinikoPatient.id);
       }
     } catch (err) {
-      console.error("[VOICE] Error checking phone_map for greeting:", err);
+      console.error("[VOICE] Error checking Cliniko for patient:", err);
+    }
+
+    // 2. If not found in Cliniko, check local phone_map as fallback
+    if (!knownPatientName) {
+      try {
+        const phoneMapEntry = await storage.getPhoneMap(from);
+        if (phoneMapEntry?.fullName) {
+          knownPatientName = phoneMapEntry.fullName;
+          console.log("[VOICE] Known patient from phone_map:", knownPatientName);
+        }
+      } catch (err) {
+        console.error("[VOICE] Error checking phone_map for greeting:", err);
+      }
     }
 
     // Get clinic name for greeting
@@ -431,30 +447,12 @@ export function registerVoice(app: Express) {
 
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
       if (route === "anything-else") {
-        const wantsMore = speechRaw.includes("yes") || speechRaw.includes("yeah") || speechRaw.includes("yep") || speechRaw.includes("book") ||
-                          speechRaw.includes("reschedule") || speechRaw.includes("cancel") || speechRaw.includes("question");
+        const sayingNo = speechRaw.includes("no") || speechRaw.includes("nope") || speechRaw.includes("nah") ||
+                         speechRaw.includes("that's all") || speechRaw.includes("that's it") || speechRaw.includes("i'm good");
 
-        if (wantsMore) {
-          // They want more help - send back to main menu with warmth
-          const g = vr.gather({
-            input: ["speech"],
-            timeout: 5,
-            speechTimeout: "auto",
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
-            method: "POST",
-          });
-          const moreHelpMessages = [
-            "Of course! What else can I help you with?",
-            "No worries at all. What else do you need?",
-            "Sure thing! How else can I help?"
-          ];
-          const randomMoreHelp = moreHelpMessages[Math.floor(Math.random() * moreHelpMessages.length)];
-          saySafe(g, randomMoreHelp);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(vr.toString());
-        } else {
+        const wantsToBook = speechRaw.includes("book") || speechRaw.includes("reschedule") || speechRaw.includes("cancel");
+
+        if (sayingNo) {
           // They're done - warm, reassuring goodbye
           const goodbyeMessages = [
             "Beautiful! Have a lovely day, and we'll see you soon. Take care!",
@@ -466,7 +464,104 @@ export function registerVoice(app: Express) {
           saySafe(vr, randomGoodbye);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
+        } else if (wantsToBook) {
+          // They want to manage appointments - send to start
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // They have a question or said "yes" - gather the question and create an alert
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=capture-question&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          const questionPrompts = [
+            "Of course! What would you like to know?",
+            "Sure thing! What's your question?",
+            "No worries! How can I help?"
+          ];
+          const randomPrompt = questionPrompts[Math.floor(Math.random() * questionPrompts.length)];
+          saySafe(g, randomPrompt);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
         }
+      }
+
+      // CAPTURE-QUESTION → Capture their question and create an alert for reception
+      if (route === "capture-question") {
+        const question = speechRaw || "";
+
+        // Create an alert for the reception team
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          const tenant = await storage.getTenant("default");
+
+          if (tenant && call) {
+            await storage.createAlert({
+              tenantId: tenant.id,
+              conversationId: call.conversationId || undefined,
+              reason: "caller_question",
+              payload: {
+                question: question,
+                fromNumber: from,
+                callSid: callSid,
+                timestamp: new Date().toISOString()
+              },
+              status: "open"
+            });
+            console.log("[CAPTURE-QUESTION] Created alert for question:", question);
+          }
+        } catch (err) {
+          console.error("[CAPTURE-QUESTION] Failed to create alert:", err);
+        }
+
+        // Acknowledge and let them know the team will follow up
+        saySafe(vr, "Thanks for that! I've noted your question and one of our team will get back to you with the details. Is there anything else I can help with?");
+
+        // Give them a chance to ask another question or say no
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 3,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=final-anything-else&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=final-goodbye&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // FINAL-ANYTHING-ELSE → Handle final response after capturing question
+      if (route === "final-anything-else") {
+        const sayingNo = speechRaw.includes("no") || speechRaw.includes("nope") || speechRaw.includes("nah") ||
+                         speechRaw.includes("that's all") || speechRaw.includes("that's it") || speechRaw.includes("i'm good");
+
+        if (sayingNo) {
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=final-goodbye&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // They have another question
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=capture-question&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // FINAL-GOODBYE → End call with warm goodbye
+      if (route === "final-goodbye") {
+        const goodbyeMessages = [
+          "Perfect! We'll be in touch soon. Have a lovely day!",
+          "Beautiful! Talk to you soon. Take care!",
+          "Lovely! We'll get back to you shortly. Bye for now!"
+        ];
+        const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
+        saySafe(vr, randomGoodbye);
+        vr.hangup();
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
@@ -642,27 +737,19 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Proceed to intent detection
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 5,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // Vary the greeting when we first learn their name
-        const nameGreetings = [
-          `Thanks, ${firstName}! What brings you in today?`,
-          `Perfect, nice to meet you ${firstName}. How can I help?`,
-          `Great, thanks ${firstName}. What can I do for you today?`
+        // Proceed to intent detection - just redirect without asking again
+        // The start route will ask what they need
+        const simpleGreetings = [
+          `Thanks, ${firstName}!`,
+          `Perfect, nice to meet you ${firstName}.`,
+          `Great, thanks ${firstName}.`
         ];
-        const randomNameGreeting = firstName
-          ? nameGreetings[Math.floor(Math.random() * nameGreetings.length)]
-          : "Thank you. How can I help you today?";
-        saySafe(g, randomNameGreeting);
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        const randomGreeting = firstName
+          ? simpleGreetings[Math.floor(Math.random() * simpleGreetings.length)]
+          : "Thank you.";
+        saySafe(vr, randomGreeting);
+        vr.pause({ length: 0.5 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -1248,14 +1335,14 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
           method: "POST",
         });
-        // Warm Australian prompts for week selection
+        // Warm Australian prompts for week selection - including "today" as an option
         const weekPrompts = firstName ? [
-          `Alright ${firstName}, which week works best - this week, next week, or another one?`,
-          `Okay ${firstName}, when are you hoping to come in? This week, next week, or later?`,
-          `So ${firstName}, which week suits you? This week, next week, or another time?`
+          `Alright ${firstName}, when would you like to come in? Today, this week, next week, or another time?`,
+          `Okay ${firstName}, when works best for you? We might have something today, this week, next week, or later if you prefer.`,
+          `So ${firstName}, when suits you? I can check today, this week, next week, or another time.`
         ] : [
-          "Which week works best for you? This week, next week, or another one?",
-          "When are you hoping to come in? This week, next week, or later?"
+          "When would you like to come in? Today, this week, next week, or another time?",
+          "When works best for you? We might have spots today, this week, next week, or later."
         ];
         const randomPrompt = weekPrompts[Math.floor(Math.random() * weekPrompts.length)];
         saySafe(g, randomPrompt);
@@ -1270,7 +1357,28 @@ export function registerVoice(app: Express) {
         let weekOffset = 0; // 0 = this week, 1 = next week
         let specificWeek = "";
 
-        if (speechRaw.includes("this week") || speechRaw.includes("this") || speechRaw.includes("soon") || speechRaw.includes("asap")) {
+        // Check for "today" first (highest priority)
+        if (speechRaw.includes("today") || speechRaw.includes("right now") || speechRaw.includes("immediately")) {
+          weekOffset = 0;
+          specificWeek = "today";
+          // Store today as the specific day and skip day selection
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              const todayDayNumber = dayjs().tz().day(); // 0 = Sunday, 1 = Monday, etc.
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, weekOffset: 0, specificWeek: "today", preferredDayOfWeek: todayDayNumber }
+              });
+            }
+          } catch (err) {
+            console.error("[PROCESS-WEEK] Error storing today preference:", err);
+          }
+          // Skip to time-of-day selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=0`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (speechRaw.includes("this week") || speechRaw.includes("this") || speechRaw.includes("soon") || speechRaw.includes("asap")) {
           weekOffset = 0;
           specificWeek = "this week";
         } else if (speechRaw.includes("next week") || speechRaw.includes("next")) {
@@ -2297,6 +2405,33 @@ export function registerVoice(app: Express) {
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
+        }
+
+        // CRITICAL: Warn if fullName is missing for new patients
+        if (!fullName && !isReturningPatient) {
+          console.error("[BOOK-CHOOSE] WARNING: fullName is missing for new patient! This should have been captured in the new patient flow.");
+          console.error("[BOOK-CHOOSE] Patient will be created in Cliniko with default name. Phone:", from);
+          // Create an alert for the reception team
+          try {
+            const tenant = await storage.getTenant("default");
+            const call = await storage.getCallByCallSid(callSid);
+            if (tenant && call) {
+              await storage.createAlert({
+                tenantId: tenant.id,
+                conversationId: call.conversationId || undefined,
+                reason: "missing_patient_name",
+                payload: {
+                  message: "Patient name was not captured during booking",
+                  fromNumber: from,
+                  callSid: callSid,
+                  timestamp: new Date().toISOString()
+                },
+                status: "open"
+              });
+            }
+          } catch (alertErr) {
+            console.error("[BOOK-CHOOSE] Failed to create alert for missing name:", alertErr);
+          }
         }
 
         try {

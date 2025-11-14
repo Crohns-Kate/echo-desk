@@ -12,7 +12,8 @@
       "Bash(env)",
       "Bash(python3:*)",
       "Bash(test:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(psql:*)"
     ],
     "deny": [],
     "ask": []
