@@ -28,11 +28,13 @@ The backend is built with Express.js and TypeScript on Node.js. It features REST
 - **Enhanced Logging:** [AVAIL], [OFFER], [CHOOSE], [BOOK], [CONFIRM-YESNO] events for debugging booking flow.
 
 **Production Guardrails (Nov 2025):**
-- **Automatic Call Recording:** Implemented via Twilio REST API (non-blocking) - recording starts asynchronously after TwiML response, capturing dual-channel audio with callbacks to `/api/voice/recording`.
+- **Automatic Call Recording:** Implemented via Twilio REST API (non-blocking) - recording starts asynchronously after TwiML response, capturing dual-channel audio with callbacks to `/api/voice/recording-status`.
+- **Automatic Transcription:** When enabled, Twilio sends completed transcriptions to `/api/voice/transcription-status` for storage and dashboard display.
+- **Recording Configuration:** Requires `PUBLIC_BASE_URL` to be set to actual deployment URL (e.g., `https://your-app.replit.app`) in Replit Secrets - NOT an encoded string. Enable/disable via `CALL_RECORDING_ENABLED` and `TRANSCRIPTION_ENABLED` environment variables (both default to `true`).
 - **Slot Re-Validation:** Before confirming any booking, the system re-fetches availability for that specific day to detect race conditions (slot taken by another caller).
 - **Automatic Fallback Flow:** If chosen slot is unavailable, system automatically offers next 2 available slots; if 1 slot remains, offers that single option; if 0 slots, gracefully offers to try different day or leave message.
 - **Error Resilience:** Three-tier fallback for API failures: specific day query → all availability query → helpful error message. No crashes or dead-ends.
-- **Logging:** Added [RECORDING] and [REVALIDATE] events for debugging production issues.
+- **Logging:** Added [RECORDING], [TRANSCRIPTION_STATUS], [RECORDING_STATUS], and [REVALIDATE] events for debugging production issues.
 
 ### Data Storage & Schema
 
