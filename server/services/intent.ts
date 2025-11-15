@@ -1,7 +1,7 @@
 import { env } from '../utils/env';
 
 export interface IntentResult {
-  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'unknown';
+  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'unknown';
   day?: string;
   part?: 'morning' | 'afternoon';
   confidence?: number;
@@ -34,11 +34,20 @@ async function classifyWithLLM(text: string): Promise<IntentResult> {
 
   const prompt = `Classify the caller's intent from their utterance. Return ONLY a JSON object with this schema:
 {
-  "action": "book" | "reschedule" | "cancel" | "operator" | "unknown",
+  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "unknown",
   "day": string (optional - e.g., "monday", "tomorrow", "today"),
   "part": "morning" | "afternoon" (optional),
   "confidence": number (0-1)
 }
+
+Actions:
+- "info": Asking what happens in a first visit, what to expect, what they get
+- "fees": Asking about cost, price, how much, fees
+- "book": Wants to book an appointment
+- "reschedule": Wants to change an existing appointment
+- "cancel": Wants to cancel an appointment
+- "operator": Wants to speak to a person
+- "unknown": None of the above
 
 Utterance: "${text}"
 
@@ -86,8 +95,27 @@ function classifyWithKeywords(text: string): IntentResult {
   let day: string | undefined;
   let part: 'morning' | 'afternoon' | undefined;
 
-  // Action detection
-  if (text.includes('book') || text.includes('appointment') || text.includes('schedule')) {
+  // Action detection (order matters - check specific intents before general ones)
+  if (
+    text.includes('how much') ||
+    text.includes('what does it cost') ||
+    text.includes('cost') ||
+    text.includes('price') ||
+    text.includes('fee') ||
+    text.includes('pay') ||
+    text.includes('charge')
+  ) {
+    action = 'fees';
+  } else if (
+    text.includes('what happens') ||
+    text.includes('what do i get') ||
+    text.includes('what to expect') ||
+    text.includes('first visit') ||
+    text.includes('first appointment') ||
+    text.includes('what will happen')
+  ) {
+    action = 'info';
+  } else if (text.includes('book') || text.includes('appointment') || text.includes('schedule')) {
     action = 'book';
   } else if (text.includes('reschedule') || text.includes('change') || text.includes('move')) {
     action = 'reschedule';

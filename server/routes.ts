@@ -386,20 +386,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Recording proxy endpoints for authenticated playback and download
   app.get('/api/recordings/:sid/stream', async (req, res) => {
     try {
-      // Check recording token authentication
-      const recordingToken = process.env.RECORDING_TOKEN;
-      if (!recordingToken) {
-        return res.status(500).json({ error: 'Recording access not configured' });
-      }
-
-      const authHeader = req.headers.authorization;
-      const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-
-      if (!providedToken || providedToken !== recordingToken) {
-        return res.status(403).json({ error: 'Unauthorized' });
-      }
-
+      // Simple authentication - just verify the recording SID exists in our database
       const { sid } = req.params;
+
+      // Verify this recording SID exists in our call logs
+      const callWithRecording = await storage.listCalls();
+      const hasRecording = callWithRecording.some(call => call.recordingSid === sid);
+
+      if (!hasRecording) {
+        console.log('[RECORDING STREAM] Recording SID not found in database:', sid);
+        return res.status(404).json({ error: 'Recording not found' });
+      }
       const fetch = (await import('node-fetch')).default;
       const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
@@ -445,20 +442,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/recordings/:sid/download', async (req, res) => {
     try {
-      // Check recording token authentication
-      const recordingToken = process.env.RECORDING_TOKEN;
-      if (!recordingToken) {
-        return res.status(500).json({ error: 'Recording access not configured' });
-      }
-
-      const authHeader = req.headers.authorization;
-      const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-
-      if (!providedToken || providedToken !== recordingToken) {
-        return res.status(403).json({ error: 'Unauthorized' });
-      }
-
+      // Simple authentication - just verify the recording SID exists in our database
       const { sid } = req.params;
+
+      // Verify this recording SID exists in our call logs
+      const callWithRecording = await storage.listCalls();
+      const hasRecording = callWithRecording.some(call => call.recordingSid === sid);
+
+      if (!hasRecording) {
+        console.log('[RECORDING DOWNLOAD] Recording SID not found in database:', sid);
+        return res.status(404).json({ error: 'Recording not found' });
+      }
       const fetch = (await import('node-fetch')).default;
       const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;

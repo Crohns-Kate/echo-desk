@@ -293,6 +293,7 @@ export function registerVoice(app: Express) {
     // Start recording asynchronously - don't await to avoid blocking the response
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
+      console.log("[VOICE][RECORDING] 🎙️  Recording is ENABLED for call:", callSid);
       // Start recording in background without blocking the response
       setImmediate(async () => {
         try {
@@ -303,15 +304,26 @@ export function registerVoice(app: Express) {
             recordingStatusCallbackMethod: "POST",
           };
 
+          console.log("[VOICE][RECORDING] 📞 Callback URLs:");
+          console.log("[VOICE][RECORDING]   - Status: " + abs("/api/voice/recording-status"));
           if (env.TRANSCRIPTION_ENABLED) {
             recordingParams.transcribe = true;
             recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
+            console.log("[VOICE][RECORDING]   - Transcription: " + abs("/api/voice/transcription-status"));
           }
 
+          console.log("[VOICE][RECORDING] 🔄 Calling Twilio API to start recording for call:", callSid);
           const recording = await client.calls(callSid).recordings.create(recordingParams);
-          console.log("[VOICE][RECORDING] ✅ Started recording" + (env.TRANSCRIPTION_ENABLED ? " with transcription" : ""), "SID:", recording.sid, "for call:", callSid);
+          console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
+          console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
+          console.log("[VOICE][RECORDING]   - Call SID:", callSid);
+          console.log("[VOICE][RECORDING]   - Status:", recording.status);
+          console.log("[VOICE][RECORDING]   - Transcription:", env.TRANSCRIPTION_ENABLED ? "ENABLED" : "DISABLED");
         } catch (recErr: any) {
-          console.error("[VOICE][RECORDING] ❌ Failed to start recording for call:", callSid, "Error:", recErr.message);
+          console.error("[VOICE][RECORDING] ❌ FAILED to start recording");
+          console.error("[VOICE][RECORDING]   - Call SID:", callSid);
+          console.error("[VOICE][RECORDING]   - Error:", recErr.message);
+          console.error("[VOICE][RECORDING]   - Full error:", recErr);
           // Create alert for failed recording
           try {
             const tenant = await storage.getTenant("default");
@@ -321,17 +333,26 @@ export function registerVoice(app: Express) {
                 reason: "recording_failed",
                 payload: {
                   error: recErr.message,
+                  stack: recErr.stack,
                   callSid,
                   timestamp: new Date().toISOString()
                 },
                 status: "open"
               });
+              console.log("[VOICE][RECORDING] 📬 Created alert for recording failure");
             }
           } catch (alertErr) {
-            console.error("[VOICE][RECORDING] Failed to create alert:", alertErr);
+            console.error("[VOICE][RECORDING] ⚠️  Failed to create alert:", alertErr);
           }
         }
       });
+    } else {
+      if (!env.CALL_RECORDING_ENABLED) {
+        console.log("[VOICE][RECORDING] ⏭️  Recording is DISABLED (CALL_RECORDING_ENABLED=false)");
+      }
+      if (!callSid) {
+        console.log("[VOICE][RECORDING] ⚠️  No callSid provided, cannot start recording");
+      }
     }
 
     // Check if we have a known patient for this number
@@ -725,7 +746,7 @@ export function registerVoice(app: Express) {
         console.log("[CAPTURE-OTHER-PERSON-NAME] Received name:", otherPersonName);
         console.log("[CAPTURE-OTHER-PERSON-NAME] Extracted first name:", firstName);
 
-        // Store the other person's name in context
+        // Store the other person's name in context and mark as NEW PATIENT
         if (otherPersonName && otherPersonName.length > 0) {
           try {
             const call = await storage.getCallByCallSid(callSid);
@@ -733,24 +754,40 @@ export function registerVoice(app: Express) {
               const conversation = await storage.getConversation(call.conversationId);
               const existingContext = (conversation?.context as any) || {};
               await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, fullName: otherPersonName, firstName, appointmentForOther: true }
+                context: {
+                  ...existingContext,
+                  fullName: otherPersonName,
+                  firstName,
+                  appointmentForOther: true,
+                  isNewPatient: true,  // CRITICAL: Mark as new patient since we don't have their details
+                  isReturning: false
+                }
               });
             }
-            console.log("[CAPTURE-OTHER-PERSON-NAME] Stored appointment for:", otherPersonName);
+            console.log("[CAPTURE-OTHER-PERSON-NAME] Stored NEW PATIENT appointment for:", otherPersonName);
+            console.log("[CAPTURE-OTHER-PERSON-NAME] ✅ Marked as NEW PATIENT (will use new patient appointment type)");
           } catch (err) {
             console.error("[CAPTURE-OTHER-PERSON-NAME] Error storing context:", err);
           }
 
-          // Acknowledge and proceed to intent detection
-          const acknowledgments = [
-            `Thank you. I'll book the appointment for ${firstName}.`,
-            `Perfect, booking this for ${firstName}.`,
-            `Lovely, I've got that - appointment for ${firstName}.`
+          // Ask for email (optional for new patients booked by someone else)
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-other-person-email&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          const emailPrompts = [
+            `Perfect! And do you have an email address for ${firstName}? You can spell it out, or just say 'no email' if you don't have it.`,
+            `Great! What's ${firstName}'s email address? Or say 'skip' if you don't know it.`,
+            `Lovely! Can you provide ${firstName}'s email? Just say 'none' if you don't have one.`
           ];
-          const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
-          saySafe(vr, randomAck);
-          vr.pause({ length: 0.5 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+          const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
+          saySafeSSML(g, randomPrompt);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
           // No name captured - ask again
@@ -768,6 +805,119 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
+      }
+
+      // ASK-OTHER-PERSON-EMAIL → Ask for email of person appointment is for
+      if (route === "ask-other-person-email") {
+        const emailRaw = speechRaw || "";
+        const skipEmail = speechRaw.includes("no email") || speechRaw.includes("skip") ||
+                          speechRaw.includes("none") || speechRaw.includes("don't have") ||
+                          speechRaw.includes("don't know");
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-OTHER-PERSON-EMAIL] Error getting firstName:", err);
+        }
+
+        // Store email if provided (voice capture is unreliable, so we note it for verification)
+        if (!skipEmail && emailRaw && emailRaw.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, email: emailRaw }
+              });
+            }
+            console.log("[ASK-OTHER-PERSON-EMAIL] Stored email (from voice, may need verification):", emailRaw);
+          } catch (err) {
+            console.error("[ASK-OTHER-PERSON-EMAIL] Failed to store email:", err);
+          }
+        } else {
+          console.log("[ASK-OTHER-PERSON-EMAIL] No email provided or skipped");
+        }
+
+        // Ask for phone number confirmation
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=ask-other-person-phone&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        const phonePrompts = firstName ? [
+          `Perfect! And what's the best phone number to reach ${firstName}?`,
+          `Great! What phone number should we use for ${firstName}?`,
+          `Lovely! Can you give me ${firstName}'s phone number?`
+        ] : [
+          "Perfect! And what's the best phone number to reach them?",
+          "Great! What phone number should we use?"
+        ];
+        const randomPrompt = phonePrompts[Math.floor(Math.random() * phonePrompts.length)];
+        saySafe(g, randomPrompt);
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // ASK-OTHER-PERSON-PHONE → Ask for phone number of person appointment is for
+      if (route === "ask-other-person-phone") {
+        const phoneRaw = speechRaw || "";
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[ASK-OTHER-PERSON-PHONE] Error getting firstName:", err);
+        }
+
+        // Store phone if provided
+        if (phoneRaw && phoneRaw.length > 0) {
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, otherPersonPhone: phoneRaw }
+              });
+            }
+            console.log("[ASK-OTHER-PERSON-PHONE] Stored phone (from voice):", phoneRaw);
+          } catch (err) {
+            console.error("[ASK-OTHER-PERSON-PHONE] Failed to store phone:", err);
+          }
+        }
+
+        // Acknowledge and proceed to booking
+        const acknowledgments = firstName ? [
+          `Perfect! I'll book the appointment for ${firstName}.`,
+          `Lovely! Booking this for ${firstName} now.`,
+          `Great! Let's get ${firstName} booked in.`
+        ] : [
+          "Perfect! Let's book that appointment.",
+          "Great! Let's get them booked in."
+        ];
+        const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+        saySafe(vr, randomAck);
+        vr.pause({ length: 0.5 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CAPTURE-CALLER-NAME → Capture name when identity wasn't confirmed
@@ -851,6 +1001,18 @@ export function registerVoice(app: Express) {
             return res.type("text/xml").send(vr.toString());
           }
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId!)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        if (intent === "info") {
+          // Asking about what happens in first visit
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-info&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        if (intent === "fees") {
+          // Asking about cost/fees
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-fees&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -972,6 +1134,101 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           saySafe(g, "Sorry, I didn't catch that. Have you visited our office before? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 3a) EXPLAIN-NEW-PATIENT-INFO → Explain what happens in a first visit
+      if (route === "explain-new-patient-info") {
+        const { getNewPatientInfoBlurb, splitBlurbIntoSaySegments } = await import("../utils/clinicInfo");
+
+        const infoBlurb = getNewPatientInfoBlurb();
+        const segments = splitBlurbIntoSaySegments(infoBlurb);
+
+        // Warm intro
+        saySafeSSML(vr, "Great question, good on you for asking — here's what you can expect on your first visit.");
+        vr.pause({ length: 1 });
+
+        // Say each segment
+        for (const segment of segments) {
+          saySafeSSML(vr, segment);
+          vr.pause({ length: 1 });
+        }
+
+        // Offer to book
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafeSSML(g, "If that sounds good, I can grab your details and find a time that suits you. Would you like to book your first visit now?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 3b) EXPLAIN-NEW-PATIENT-FEES → Explain fees and costs
+      if (route === "explain-new-patient-fees") {
+        const { getNewPatientFeesBlurb, splitBlurbIntoSaySegments } = await import("../utils/clinicInfo");
+
+        const feesBlurb = getNewPatientFeesBlurb();
+        const segments = splitBlurbIntoSaySegments(feesBlurb);
+
+        // Warm intro
+        saySafeSSML(vr, "No worries, I'll run you through the fees so there are no surprises.");
+        vr.pause({ length: 1 });
+
+        // Say each segment
+        for (const segment of segments) {
+          saySafeSSML(vr, segment);
+          vr.pause({ length: 1 });
+        }
+
+        // Offer to book
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafeSSML(g, "If that sounds good, I can grab your details and find a time that suits you. Would you like to book a visit?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 3c) PROCESS-INFO-RESPONSE → Handle response after explaining info/fees
+      if (route === "process-info-response") {
+        const wantsToBook = speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("okay") || speechRaw.includes("book");
+        const doesntWantToBook = speechRaw.includes("no") || speechRaw.includes("not now");
+
+        if (wantsToBook) {
+          // Proceed to booking flow
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (doesntWantToBook) {
+          // Thank them and hang up
+          saySafeSSML(vr, "No worries! Feel free to give us a call anytime when you're ready. Have a great day!");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear - ask again
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          saySafe(g, "Sorry, I didn't catch that. Would you like to book an appointment? Please say yes or no.");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1347,18 +1604,82 @@ export function registerVoice(app: Express) {
           console.error("[ASK-REASON] Failed to store reason:", err);
         }
 
-        // Move to week selection with warm, empathetic Australian responses
-        const empathyLines = firstName ? [
-          `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
-          `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Let me see what's available to get you in soon.`,
-          `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
-          `Ahh ${firstName}, that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
+        // Check if this is a new patient to decide whether to give proactive explanation
+        let isNewPatient = false;
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            isNewPatient = context?.isNewPatient || false;
+          }
+        } catch (err) {
+          console.error("[ASK-REASON] Error checking if new patient:", err);
+        }
+
+        if (isNewPatient) {
+          // New patient - give proactive explanation before booking
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-visit-proactive&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Returning patient - proceed to week selection with empathy
+          const empathyLines = firstName ? [
+            `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
+            `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Let me see what's available to get you in soon.`,
+            `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
+            `Ahh ${firstName}, that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
+          ] : [
+            `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
+            `${EMOTIONS.empathetic("Ahh that's not great", "high")}. We'll take care of you. Hang on while I check the schedule.`
+          ];
+          const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
+          saySafeSSML(vr, randomEmpathy);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // 5d) EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE → Proactively explain first visit for new patients
+      if (route === "explain-new-patient-visit-proactive") {
+        const { getNewPatientInfoBlurb, splitBlurbIntoSaySegments } = await import("../utils/clinicInfo");
+
+        // Get firstName from context
+        let firstName = "";
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+            firstName = context?.firstName || "";
+          }
+        } catch (err) {
+          console.error("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Error getting firstName:", err);
+        }
+
+        const infoBlurb = getNewPatientInfoBlurb();
+        const segments = splitBlurbIntoSaySegments(infoBlurb);
+
+        // Warm intro - because it's their first visit
+        const introLines = firstName ? [
+          `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
+          `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Since you haven't been before, let me run you through what happens on your first visit.`,
+          `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Before we book you in, let me just explain what to expect on your first visit.`
         ] : [
-          `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
-          `${EMOTIONS.empathetic("Ahh that's not great", "high")}. We'll take care of you. Hang on while I check the schedule.`
+          `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Because it's your first visit, let me quickly tell you what to expect.`,
+          `${EMOTIONS.empathetic("Ahh that's not great", "high")}. Before we book you in, let me run you through what happens on your first visit.`
         ];
-        const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
-        saySafeSSML(vr, randomEmpathy);
+        const randomIntro = introLines[Math.floor(Math.random() * introLines.length)];
+        saySafeSSML(vr, randomIntro);
+        vr.pause({ length: 1 });
+
+        // Say each segment of the info blurb
+        for (const segment of segments) {
+          saySafeSSML(vr, segment);
+          vr.pause({ length: 1 });
+        }
+
+        // Transition to booking with empathy
+        saySafeSSML(vr, "Alright, let me get you sorted - hang on a sec while I check what we've got.");
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         return res.type("text/xml").send(vr.toString());
       }
@@ -2299,6 +2620,12 @@ export function registerVoice(app: Express) {
         const appointmentTypeId = (req.query.apptTypeId as string) || env.CLINIKO_APPT_TYPE_ID;
         const retryCount = parseInt((req.query.retry as string) || "0", 10);
 
+        console.log("[BOOK-CHOOSE] 📋 Appointment Type ID:", appointmentTypeId);
+        console.log("[BOOK-CHOOSE] 🔍 Checking appointment type:");
+        console.log("[BOOK-CHOOSE]   - NEW_PATIENT type:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
+        console.log("[BOOK-CHOOSE]   - STANDARD type:", env.CLINIKO_APPT_TYPE_ID);
+        console.log("[BOOK-CHOOSE]   - Using:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID ? "NEW PATIENT ✅" : "STANDARD");
+
         // Use helper function to interpret the choice
         const interpretation = interpretSlotChoice(speechRaw, digits);
         console.log("[BOOK-CHOOSE] Interpretation:", interpretation);
@@ -2437,6 +2764,8 @@ export function registerVoice(app: Express) {
         let reasonForVisit: string | undefined;
         let phoneConfirmed = false;
         let needsDifferentPhone = false;
+        let appointmentForOther = false;
+        let otherPersonPhone = "";
 
         try {
           // First try phone_map as fallback for returning patients
@@ -2482,13 +2811,21 @@ export function registerVoice(app: Express) {
               needsDifferentPhone = context.needsDifferentPhone;
             }
 
+            // Check if booking for someone else
+            if (context?.appointmentForOther) {
+              appointmentForOther = true;
+              otherPersonPhone = context?.otherPersonPhone || "";
+              console.log("[BOOK-CHOOSE] 📞 Appointment is for someone else:", fullName);
+              console.log("[BOOK-CHOOSE]   - Their phone:", otherPersonPhone || "not provided");
+            }
+
             // Check if this is a reschedule operation
             if (context?.isReschedule) {
               isReschedule = true;
               apptId = context.apptId;
               patientId = context.patientId || patientId;
             }
-            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId, reasonForVisit, phoneConfirmed, needsDifferentPhone });
+            console.log("[BOOK-CHOOSE] Final identity:", { fullName, email, isReschedule, apptId, reasonForVisit, phoneConfirmed, needsDifferentPhone, appointmentForOther });
           }
         } catch (err) {
           console.error("[BOOK-CHOOSE] Failed to retrieve identity:", err);
@@ -2596,6 +2933,16 @@ export function registerVoice(app: Express) {
               ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
               : `New patient appointment booked via voice call at ${new Date().toISOString()}`;
 
+            // Add special note if booking for someone else
+            if (appointmentForOther) {
+              appointmentNotes += `\n\n📞 BOOKED BY ANOTHER PERSON`;
+              appointmentNotes += `\n   - Caller booked this appointment on behalf of: ${fullName || 'patient'}`;
+              appointmentNotes += `\n   - Caller's phone: ${from}`;
+              if (otherPersonPhone) {
+                appointmentNotes += `\n   - Patient's phone: ${otherPersonPhone}`;
+              }
+            }
+
             if (reasonForVisit) {
               appointmentNotes += `\n\nReason for visit: ${reasonForVisit}`;
             }
@@ -2603,7 +2950,7 @@ export function registerVoice(app: Express) {
             // Add contact info notes
             if (needsDifferentPhone) {
               appointmentNotes += `\n\n⚠️ Patient indicated they need a different contact number. Please follow up to confirm contact details.`;
-            } else if (phoneConfirmed) {
+            } else if (phoneConfirmed && !appointmentForOther) {
               appointmentNotes += `\n\n✓ Patient confirmed phone number: ${from}`;
             }
 

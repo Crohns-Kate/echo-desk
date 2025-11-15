@@ -25,6 +25,9 @@ export const env = {
   PRIMARY_VOICE: process.env.PRIMARY_VOICE || 'Polly.Olivia-Neural',
   CALL_RECORDING_ENABLED: (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true',
   TRANSCRIPTION_ENABLED: (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true',
+  // Clinic-specific new patient information (optional)
+  ECHO_NEW_PATIENT_INFO: process.env.ECHO_NEW_PATIENT_INFO,
+  ECHO_NEW_PATIENT_FEES: process.env.ECHO_NEW_PATIENT_FEES,
 };
 
 const required = [
