@@ -3,7 +3,7 @@ import { useRoute, Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, Clock, MapPin, User, Mail, ArrowLeft, Download, Play } from "lucide-react";
+import { Phone, Clock, MapPin, User, Mail, ArrowLeft, Download, Play, AlertCircle } from "lucide-react";
 import type { CallLog } from "@shared/schema";
 
 export default function CallDetail() {
