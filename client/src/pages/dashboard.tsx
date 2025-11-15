@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, AlertCircle, Clock, TrendingUp } from "lucide-react";
+import { Phone, AlertCircle, Clock, TrendingUp, Mic, FileText } from "lucide-react";
 import { Link } from "wouter";
 import type { CallLog, Alert } from "@shared/schema";
 
@@ -119,13 +119,31 @@ export default function Dashboard() {
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 space-y-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-mono text-sm font-medium" data-testid={`text-from-number-${call.id}`}>
                               {call.fromNumber}
                             </span>
                             {call.intent && (
                               <Badge variant="secondary" data-testid={`badge-intent-${call.id}`}>
                                 {call.intent}
+                              </Badge>
+                            )}
+                            {call.recordingSid && (
+                              <Badge 
+                                variant={call.recordingStatus === 'completed' ? 'default' : 'outline'} 
+                                className="text-xs"
+                                data-testid={`badge-recording-${call.id}`}
+                              >
+                                <Mic className="h-3 w-3 mr-1" />
+                                {call.recordingStatus === 'completed' ? 'Recorded' :
+                                 call.recordingStatus === 'in-progress' ? 'Recording...' :
+                                 call.recordingStatus === 'failed' ? 'Failed' : 'Recording'}
+                              </Badge>
+                            )}
+                            {call.transcript && (
+                              <Badge variant="outline" className="text-xs" data-testid={`badge-transcript-${call.id}`}>
+                                <FileText className="h-3 w-3 mr-1" />
+                                Transcribed
                               </Badge>
                             )}
                           </div>
