@@ -174,7 +174,12 @@ export function registerVoice(app: Express) {
       const status = (req.body.RecordingStatus as string) || ""; // in-progress | completed | failed
       let recordingUrl = (req.body.RecordingUrl as string) || "";
 
-      console.log("[RECORDING_STATUS]", { callSid, recordingSid, status, recordingUrl });
+      console.log("[RECORDING_STATUS] 📥 Callback received from Twilio");
+      console.log("[RECORDING_STATUS]   - Call SID:", callSid);
+      console.log("[RECORDING_STATUS]   - Recording SID:", recordingSid);
+      console.log("[RECORDING_STATUS]   - Status:", status);
+      console.log("[RECORDING_STATUS]   - URL:", recordingUrl);
+      console.log("[RECORDING_STATUS]   - Full payload:", JSON.stringify(req.body, null, 2));
 
       // Validate callSid exists before updating
       if (!callSid) {
@@ -220,13 +225,13 @@ export function registerVoice(app: Express) {
       const transcriptionText = (req.body.TranscriptionText as string) || "";
       const transcriptionStatus = (req.body.TranscriptionStatus as string) || "";
 
-      console.log("[TRANSCRIPTION_STATUS]", {
-        callSid,
-        recordingSid,
-        transcriptionSid,
-        status: transcriptionStatus,
-        textLength: transcriptionText.length
-      });
+      console.log("[TRANSCRIPTION_STATUS] 📥 Callback received from Twilio");
+      console.log("[TRANSCRIPTION_STATUS]   - Call SID:", callSid);
+      console.log("[TRANSCRIPTION_STATUS]   - Recording SID:", recordingSid);
+      console.log("[TRANSCRIPTION_STATUS]   - Transcription SID:", transcriptionSid);
+      console.log("[TRANSCRIPTION_STATUS]   - Status:", transcriptionStatus);
+      console.log("[TRANSCRIPTION_STATUS]   - Text length:", transcriptionText.length, "chars");
+      console.log("[TRANSCRIPTION_STATUS]   - Full payload:", JSON.stringify(req.body, null, 2));
 
       // Validate callSid exists before updating
       if (!callSid) {

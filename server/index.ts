@@ -71,6 +71,21 @@ app.use((req, res, next) => {
     console.log(`  Practitioner ID: ${process.env.CLINIKO_PRACTITIONER_ID ? '...' + process.env.CLINIKO_PRACTITIONER_ID.slice(-4) : 'NOT SET'}`);
     console.log(`  Appointment Type ID: ${process.env.CLINIKO_APPT_TYPE_ID ? '...' + process.env.CLINIKO_APPT_TYPE_ID.slice(-4) : 'NOT SET'}`);
 
+    // Log Recording configuration on startup
+    const recordingEnabled = (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true';
+    const transcriptionEnabled = (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true';
+    console.log('[Recording] Configuration:');
+    console.log(`  Recording: ${recordingEnabled ? '✅ ENABLED' : '❌ DISABLED'}`);
+    console.log(`  Transcription: ${transcriptionEnabled ? '✅ ENABLED' : '❌ DISABLED'}`);
+    console.log(`  Public Base URL: ${process.env.PUBLIC_BASE_URL || 'NOT SET'}`);
+    if (recordingEnabled) {
+      console.log(`  Callback URLs will use: ${process.env.PUBLIC_BASE_URL}`);
+      console.log(`    - Recording status: ${process.env.PUBLIC_BASE_URL}/api/voice/recording-status`);
+      if (transcriptionEnabled) {
+        console.log(`    - Transcription status: ${process.env.PUBLIC_BASE_URL}/api/voice/transcription-status`);
+      }
+    }
+
     // Validate critical environment variables in production
     const isProduction = app.get("env") === "production";
     if (isProduction) {
