@@ -72,17 +72,17 @@ app.use((req, res, next) => {
     console.log(`  Appointment Type ID: ${process.env.CLINIKO_APPT_TYPE_ID ? '...' + process.env.CLINIKO_APPT_TYPE_ID.slice(-4) : 'NOT SET'}`);
 
     // Log Recording configuration on startup
-    const recordingEnabled = (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true';
-    const transcriptionEnabled = (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true';
+    const { env } = await import('./utils/env');
     console.log('[Recording] Configuration:');
-    console.log(`  Recording: ${recordingEnabled ? '✅ ENABLED' : '❌ DISABLED'}`);
-    console.log(`  Transcription: ${transcriptionEnabled ? '✅ ENABLED' : '❌ DISABLED'}`);
-    console.log(`  Public Base URL: ${process.env.PUBLIC_BASE_URL || 'NOT SET'}`);
-    if (recordingEnabled) {
-      console.log(`  Callback URLs will use: ${process.env.PUBLIC_BASE_URL}`);
-      console.log(`    - Recording status: ${process.env.PUBLIC_BASE_URL}/api/voice/recording-status`);
-      if (transcriptionEnabled) {
-        console.log(`    - Transcription status: ${process.env.PUBLIC_BASE_URL}/api/voice/transcription-status`);
+    console.log(`  Recording: ${env.CALL_RECORDING_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
+    console.log(`  Transcription: ${env.TRANSCRIPTION_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
+    console.log(`  Public Base URL (raw): ${process.env.PUBLIC_BASE_URL || 'NOT SET'}`);
+    console.log(`  Public Base URL (corrected): ${env.PUBLIC_BASE_URL || 'NOT SET'}`);
+    if (env.CALL_RECORDING_ENABLED) {
+      console.log(`  Callback URLs will use: ${env.PUBLIC_BASE_URL}`);
+      console.log(`    - Recording status: ${env.PUBLIC_BASE_URL}/api/voice/recording-status`);
+      if (env.TRANSCRIPTION_ENABLED) {
+        console.log(`    - Transcription status: ${env.PUBLIC_BASE_URL}/api/voice/transcription-status`);
       }
     }
 

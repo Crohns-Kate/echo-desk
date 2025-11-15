@@ -2,9 +2,14 @@
 const CLINIKO_REGION = process.env.CLINIKO_REGION || 'au4';
 const CLINIKO_BASE_URL = `https://api.${CLINIKO_REGION}.cliniko.com/v1`;
 
+// WORKAROUND: Force PUBLIC_BASE_URL if it's corrupted by Replit Secret
+const PUBLIC_BASE_URL_OVERRIDE = 'https://echo-desk-mbjltd70.replit.app';
+const rawPublicBaseUrl = process.env.PUBLIC_BASE_URL;
+const isPublicBaseUrlCorrupted = rawPublicBaseUrl && !rawPublicBaseUrl.startsWith('http');
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
-  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL!,
+  PUBLIC_BASE_URL: (isPublicBaseUrlCorrupted ? PUBLIC_BASE_URL_OVERRIDE : rawPublicBaseUrl)!,
   TZ: process.env.TZ || 'Australia/Brisbane',
   TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID!,
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN!,

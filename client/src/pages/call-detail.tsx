@@ -109,18 +109,23 @@ export default function CallDetail() {
               </CardContent>
             </Card>
 
-            {/* Recording Player */}
-            {call.recordingSid && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center justify-between gap-2">
-                    <span>Recording</span>
-                    <div className="flex items-center gap-2">
-                      {call.recordingStatus && (
-                        <Badge variant="outline" className="text-xs" data-testid="badge-recording-status">
-                          {call.recordingStatus}
-                        </Badge>
-                      )}
+            {/* Recording Player - ALWAYS SHOWN */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center justify-between gap-2">
+                  <span>Call Recording</span>
+                  <div className="flex items-center gap-2">
+                    {call.recordingSid && call.recordingStatus && (
+                      <Badge variant="outline" className="text-xs" data-testid="badge-recording-status">
+                        {call.recordingStatus}
+                      </Badge>
+                    )}
+                    {!call.recordingSid && (
+                      <Badge variant="secondary" className="text-xs">
+                        Not Available
+                      </Badge>
+                    )}
+                    {call.recordingSid && (
                       <a
                         href={`/api/recordings/${call.recordingSid}/download`}
                         download
@@ -129,17 +134,17 @@ export default function CallDetail() {
                           <Download className="h-4 w-4" />
                         </Button>
                       </a>
-                    </div>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
+                    )}
+                  </div>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {call.recordingSid ? (
                   <div className="space-y-3">
                     <div className="text-xs text-muted-foreground space-y-1">
-                      {call.recordingSid && (
-                        <div className="font-mono" data-testid="text-recording-sid">
-                          Recording SID: {call.recordingSid}
-                        </div>
-                      )}
+                      <div className="font-mono" data-testid="text-recording-sid">
+                        Recording SID: {call.recordingSid}
+                      </div>
                       {call.duration && (
                         <div data-testid="text-recording-duration">
                           Duration: {Math.floor(call.duration / 60).toString().padStart(2, '0')}:{(call.duration % 60).toString().padStart(2, '0')}
@@ -172,9 +177,42 @@ export default function CallDetail() {
                       </div>
                     )}
                   </div>
-                </CardContent>
-              </Card>
-            )}
+                ) : (
+                  <div className="space-y-3">
+                    <div className="p-4 bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-900 rounded-lg">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-500 flex-shrink-0 mt-0.5" />
+                        <div className="space-y-2 text-sm">
+                          <p className="font-medium text-yellow-900 dark:text-yellow-100">
+                            Recording Not Available
+                          </p>
+                          <p className="text-yellow-800 dark:text-yellow-200">
+                            This call was not recorded. This usually happens when:
+                          </p>
+                          <ul className="list-disc list-inside space-y-1 text-yellow-700 dark:text-yellow-300 ml-2">
+                            <li>Recording was disabled in environment settings</li>
+                            <li>The PUBLIC_BASE_URL is incorrect in Replit Secrets</li>
+                            <li>Twilio couldn't reach the webhook callback URL</li>
+                          </ul>
+                          <div className="mt-3 pt-3 border-t border-yellow-200 dark:border-yellow-900">
+                            <p className="font-medium text-yellow-900 dark:text-yellow-100 mb-2">
+                              How to fix:
+                            </p>
+                            <ol className="list-decimal list-inside space-y-1 text-yellow-700 dark:text-yellow-300 ml-2 text-xs">
+                              <li>Open Replit Secrets (🔒 icon in sidebar)</li>
+                              <li>Check PUBLIC_BASE_URL - it should be your app URL</li>
+                              <li>Delete or fix any incorrect values</li>
+                              <li>Restart your application</li>
+                              <li>Make a new test call</li>
+                            </ol>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </div>
 
           {/* Right Column - Transcript & Summary */}
@@ -190,46 +228,47 @@ export default function CallDetail() {
               </Card>
             )}
 
-            {call.transcript && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center justify-between gap-2">
-                    <span>Transcript</span>
+            {/* Transcript Section - ALWAYS SHOWN */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center justify-between gap-2">
+                  <span>Transcript</span>
+                  {call.transcript && (
                     <Button variant="outline" size="sm" data-testid="button-download-transcript">
                       <Download className="h-4 w-4 mr-2" />
                       Download
                     </Button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {call.transcript ? (
                   <div className="space-y-3" data-testid="transcript-container">
-                    {/* Simulated transcript - in reality would parse from structured data */}
                     <div className="bg-muted/50 rounded-md p-3 space-y-1">
-                      <div className="text-xs font-medium text-muted-foreground">System</div>
-                      <div className="text-sm leading-relaxed">
+                      <div className="text-xs font-medium text-muted-foreground">Transcript</div>
+                      <div className="text-sm leading-relaxed whitespace-pre-wrap">
                         {call.transcript}
                       </div>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {!call.summary && !call.transcript && (
-              <Card>
-                <CardContent className="p-12">
-                  <div className="flex flex-col items-center justify-center space-y-3 text-center">
-                    <Phone className="h-12 w-12 text-muted-foreground" />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">No transcript available</p>
-                      <p className="text-xs text-muted-foreground">
-                        Transcription was not enabled for this call
-                      </p>
+                ) : (
+                  <div className="p-4 bg-muted/50 rounded-lg">
+                    <div className="flex flex-col items-center justify-center space-y-3 text-center py-8">
+                      <Phone className="h-12 w-12 text-muted-foreground" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">No transcript available</p>
+                        <p className="text-xs text-muted-foreground max-w-md">
+                          {call.recordingSid
+                            ? "Transcription was not enabled or is still processing. Check back in a few minutes."
+                            : "No recording was created for this call, so transcription is not available."
+                          }
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </CardContent>
+            </Card>
           </div>
         </div>
       </div>

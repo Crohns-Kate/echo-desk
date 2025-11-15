@@ -14,6 +14,42 @@ export function registerApp(app: Express) {
     res.json(BUILD);
   });
 
+  // Debug endpoint to check environment configuration
+  app.get('/api/debug/config', (req: Request, res: Response) => {
+    const dotEnvValue = 'https://echo-desk-mbjltd70.replit.app'; // What .env file says
+    const actualValue = process.env.PUBLIC_BASE_URL || 'NOT SET';
+    const recordingEnabled = (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true';
+    const transcriptionEnabled = (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true';
+
+    const isCorrect = actualValue === dotEnvValue;
+
+    res.json({
+      status: isCorrect ? 'ok' : 'error',
+      issue: isCorrect ? null : 'PUBLIC_BASE_URL is being overridden by Replit Secrets',
+      recording: {
+        enabled: recordingEnabled,
+        transcriptionEnabled: transcriptionEnabled,
+        publicBaseUrl: {
+          expected: dotEnvValue,
+          actual: actualValue,
+          correct: isCorrect,
+          override: !isCorrect ? 'Replit Secret is overriding .env file - DELETE the PUBLIC_BASE_URL secret!' : null
+        },
+        callbacks: {
+          recording: `${actualValue}/api/voice/recording-status`,
+          transcription: `${actualValue}/api/voice/transcription-status`
+        }
+      },
+      fix: !isCorrect ? [
+        '1. Open Replit Secrets (🔒 icon in left sidebar)',
+        '2. Find PUBLIC_BASE_URL',
+        '3. DELETE it or change it to: ' + dotEnvValue,
+        '4. Restart the server',
+        '5. Make a test call'
+      ] : null
+    });
+  });
+
   // Stats
   app.get('/api/stats', async (req: Request, res: Response) => {
     try {
