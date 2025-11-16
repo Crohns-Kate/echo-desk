@@ -14,7 +14,12 @@
       "Bash(test:*)",
       "Bash(node:*)",
       "Bash(psql:*)",
-      "Bash(printenv:*)"
+      "Bash(printenv:*)",
+      "Bash(for:*)",
+      "Bash(do sleep 5)",
+      "Bash(echo:*)",
+      "Bash(break)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
