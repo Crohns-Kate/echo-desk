@@ -402,13 +402,15 @@ export function registerVoice(app: Express) {
     // Check if we have a known patient for this number
     // First check Cliniko, then fall back to local phone_map
     let knownPatientName: string | undefined;
+    let knownPatientId: string | undefined;
 
     // 1. Try Cliniko lookup first
     try {
       const clinikoPatient = await findPatientByPhoneRobust(from);
       if (clinikoPatient) {
         knownPatientName = `${clinikoPatient.first_name} ${clinikoPatient.last_name}`.trim();
-        console.log("[VOICE] Known patient from Cliniko:", knownPatientName, "ID:", clinikoPatient.id);
+        knownPatientId = clinikoPatient.id;
+        console.log("[VOICE] Known patient from Cliniko:", knownPatientName, "ID:", knownPatientId);
       }
     } catch (err) {
       console.error("[VOICE] Error checking Cliniko for patient:", err);
@@ -420,7 +422,8 @@ export function registerVoice(app: Express) {
         const phoneMapEntry = await storage.getPhoneMap(from);
         if (phoneMapEntry?.fullName) {
           knownPatientName = phoneMapEntry.fullName;
-          console.log("[VOICE] Known patient from phone_map:", knownPatientName);
+          knownPatientId = phoneMapEntry.patientId || undefined;
+          console.log("[VOICE] Known patient from phone_map:", knownPatientName, "ID:", knownPatientId || "none");
         }
       } catch (err) {
         console.error("[VOICE] Error checking phone_map for greeting:", err);
@@ -439,9 +442,26 @@ export function registerVoice(app: Express) {
     }
 
     if (knownPatientName) {
-      // Known patient - confirm identity using first name only
+      // Known patient found - store in context and ask if they are that patient or new
       const firstName = extractFirstName(knownPatientName);
-      const handleUrl = abs(`/api/voice/handle?route=confirm-caller-identity&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownPatientName)}`);
+
+      // Store existing patient info in context
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        if (call?.conversationId) {
+          await storage.updateConversation(call.conversationId, {
+            context: {
+              existingPatientId: knownPatientId,
+              existingPatientName: knownPatientName
+            }
+          });
+          console.log("[VOICE] Stored existing patient in context:", { existingPatientId: knownPatientId, existingPatientName: knownPatientName });
+        }
+      } catch (err) {
+        console.error("[VOICE] Error storing existing patient context:", err);
+      }
+
+      const handleUrl = abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownPatientName)}`);
       const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
 
       const g = vr.gather({
@@ -453,11 +473,11 @@ export function registerVoice(app: Express) {
         method: "POST",
       });
 
-      // Warm Australian greeting with first name only
+      // Ask if they are the existing patient or a new patient
       const greetings = [
-        `Hi there, thanks for calling ${clinicName}. Am I speaking with ${firstName}?`,
-        `G'day, you've called ${clinicName}. Is this ${firstName}?`,
-        `Hi, thanks for calling ${clinicName}. Am I chatting with ${firstName}?`
+        `Hi there, thanks for calling ${clinicName}. Is this ${firstName} or are you a new patient today?`,
+        `G'day, you've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
+        `Hi, thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
       ];
       const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
       saySafeSSML(g, randomGreeting);
@@ -727,6 +747,137 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           saySafe(g, "Sorry, I didn't catch that. Am I speaking with " + knownName + "? Please say yes or no.");
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // CONFIRM-EXISTING-OR-NEW → Handle response to "Is this {Name} or are you a new patient?"
+      if (route === "confirm-existing-or-new") {
+        const knownName = (req.query.knownName as string) || "";
+
+        // Parse response: are they the existing patient or new?
+        const isExisting = speechRaw.includes("yes") || speechRaw.includes("that's me") || speechRaw.includes("thats me") ||
+                          speechRaw.includes("correct") || speechRaw.includes("right") ||
+                          speechRaw.includes("i am") || speechRaw.includes("i'm") ||
+                          speechRaw.includes("this is") || speechRaw.match(/^(yep|yeah|yup)$/i);
+        const isNew = speechRaw.includes("new") || speechRaw.includes("first") || speechRaw.includes("never") ||
+                     speechRaw.includes("no") || speechRaw.includes("not");
+
+        console.log("[CONFIRM-EXISTING-OR-NEW] Speech:", speechRaw);
+        console.log("[CONFIRM-EXISTING-OR-NEW] isExisting:", isExisting, "isNew:", isNew);
+
+        if (isExisting && !isNew) {
+          // They confirmed they are the existing patient
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const context = conversation?.context as any;
+              const existingPatientId = context?.existingPatientId;
+              const existingPatientName = context?.existingPatientName || knownName;
+              const firstName = extractFirstName(existingPatientName);
+
+              // Set patient mode to existing and bind to the patient
+              await storage.updateConversation(call.conversationId, {
+                context: {
+                  ...context,
+                  patientMode: "existing",
+                  patientId: existingPatientId,
+                  fullName: existingPatientName,
+                  firstName,
+                  identityConfirmed: true,
+                  isReturning: true
+                }
+              });
+              console.log("[CONFIRM-EXISTING-OR-NEW] Patient confirmed as existing:", {
+                patientMode: "existing",
+                patientId: existingPatientId,
+                fullName: existingPatientName
+              });
+            }
+          } catch (err) {
+            console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
+          }
+
+          // Ask if appointment is for them or someone else
+          const firstName = extractFirstName(knownName);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            method: "POST",
+          });
+          const appointmentForPrompts = [
+            `Perfect! And is this appointment for you, or is it for someone else?`,
+            `Great! Just to confirm - is the appointment for you, ${firstName}, or for another person?`,
+            `Lovely! Who's the appointment for - yourself, or someone else?`
+          ];
+          const randomPrompt = appointmentForPrompts[Math.floor(Math.random() * appointmentForPrompts.length)];
+          saySafe(g, randomPrompt);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (isNew && !isExisting) {
+          // They indicated they are a new patient
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const context = conversation?.context as any;
+
+              // Set patient mode to new
+              await storage.updateConversation(call.conversationId, {
+                context: {
+                  ...context,
+                  patientMode: "new",
+                  patientId: null,
+                  isNewPatient: true,
+                  isReturning: false
+                }
+              });
+              console.log("[CONFIRM-EXISTING-OR-NEW] Patient identified as new:", {
+                patientMode: "new"
+              });
+            }
+          } catch (err) {
+            console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
+          }
+
+          // Proceed to new patient flow - collect name
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 10,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          const namePrompts = [
+            `Lovely! Since it's your first visit, I just need to get your details into the system. What's your full name?`,
+            `Perfect! Because you're new, I'll need your full name for our records.`,
+            `Great! Let me get your details. What's your full name?`
+          ];
+          const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
+          saySafeSSML(g, randomPrompt);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear response - ask again
+          const firstName = extractFirstName(knownName);
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            method: "POST",
+          });
+          saySafe(g, `Sorry, I didn't catch that. Are you ${firstName}, or are you a new patient? Please say either '${firstName}' or 'new patient'.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1544,6 +1695,69 @@ export function registerVoice(app: Express) {
             console.log("[PROCESS-PHONE-CONFIRM] Phone confirmed:", from);
           } catch (err) {
             console.error("[PROCESS-PHONE-CONFIRM] Error storing phone confirmation:", err);
+          }
+
+          // For NEW PATIENTS: Create patient in Cliniko now that we have all their info
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const context = conversation?.context as any;
+              const isNewPatient = context?.isNewPatient;
+              const patientMode = context?.patientMode;
+
+              // Only create patient if they are explicitly marked as new and we don't already have a patientId
+              if ((isNewPatient || patientMode === "new") && !context?.patientId) {
+                console.log("[PROCESS-PHONE-CONFIRM] Creating new patient in Cliniko");
+                const fullName = context?.fullName || "";
+                const email = context?.email || "";
+
+                if (fullName) {
+                  // Create patient in Cliniko
+                  const { getOrCreatePatient } = await import("../integrations/cliniko");
+                  const patient = await getOrCreatePatient({
+                    phone: from,
+                    fullName,
+                    email
+                  });
+
+                  if (patient && patient.id) {
+                    // Store patient ID in context
+                    await storage.updateConversation(call.conversationId, {
+                      context: {
+                        ...context,
+                        patientId: patient.id,
+                        phoneConfirmed: true,
+                        confirmedPhone: from
+                      }
+                    });
+                    console.log("[PROCESS-PHONE-CONFIRM] ✅ New patient created in Cliniko:", {
+                      patientId: patient.id,
+                      fullName,
+                      email,
+                      phone: from
+                    });
+
+                    // Also store in phone_map for future use
+                    await storage.upsertPhoneMap({
+                      phone: from,
+                      fullName,
+                      email,
+                      patientId: patient.id
+                    });
+                  } else {
+                    console.error("[PROCESS-PHONE-CONFIRM] Failed to create patient - no patient ID returned");
+                  }
+                } else {
+                  console.warn("[PROCESS-PHONE-CONFIRM] Cannot create patient - no fullName in context");
+                }
+              } else if (context?.patientId) {
+                console.log("[PROCESS-PHONE-CONFIRM] Patient already exists with ID:", context.patientId);
+              }
+            }
+          } catch (err) {
+            console.error("[PROCESS-PHONE-CONFIRM] Error creating patient in Cliniko:", err);
+            // Don't fail the call - continue anyway
           }
 
           // Move to reason for visit
@@ -2841,6 +3055,14 @@ export function registerVoice(app: Express) {
               console.log("[BOOK-CHOOSE] Using email from conversation context:", email);
             }
 
+            // CRITICAL: If we have patientId in context, use it
+            // This is especially important for new patients where we created the patient earlier
+            if (context?.patientId) {
+              patientId = context.patientId;
+              console.log("[BOOK-CHOOSE] Using patientId from conversation context:", patientId);
+              console.log("[BOOK-CHOOSE]   - Patient mode:", context?.patientMode || "unknown");
+            }
+
             // Extract reason for visit from context
             if (context?.reason) {
               reasonForVisit = context.reason;
@@ -2972,6 +3194,15 @@ export function registerVoice(app: Express) {
             return res.type("text/xml").send(vr.toString());
           } else {
             // CREATE NEW appointment
+            // Log detailed appointment creation info
+            console.log("[BOOK-CHOOSE] Creating new appointment:");
+            console.log("[BOOK-CHOOSE]   - Patient ID:", patientId || "will be created");
+            console.log("[BOOK-CHOOSE]   - Full name:", fullName || "none");
+            console.log("[BOOK-CHOOSE]   - Email:", email || "none");
+            console.log("[BOOK-CHOOSE]   - Appointment type ID:", appointmentTypeId);
+            console.log("[BOOK-CHOOSE]   - Is new patient appointment:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
+            console.log("[BOOK-CHOOSE]   - Starts at:", chosen);
+
             // Include reason for visit in notes if available
             let appointmentNotes = isReturningPatient
               ? `Follow-up appointment booked via voice call at ${new Date().toISOString()}`
@@ -3010,6 +3241,11 @@ export function registerVoice(app: Express) {
               fullName,
               email,
             });
+
+            console.log("[BOOK-CHOOSE] ✅ Appointment created successfully:");
+            console.log("[BOOK-CHOOSE]   - Appointment ID:", appointment?.id);
+            console.log("[BOOK-CHOOSE]   - Patient ID:", appointment?.patient_id);
+            console.log("[BOOK-CHOOSE]   - Appointment type:", appointment?.appointment_type_id);
 
             // Get the patientId from the created appointment
             if (appointment && appointment.patient_id) {
