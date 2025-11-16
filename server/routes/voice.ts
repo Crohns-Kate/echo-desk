@@ -295,28 +295,58 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Enable call recording using TwiML <Start> verb
+    // Start recording after a delay to ensure call is in-progress
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
       console.log("[VOICE][RECORDING] 🎙️  Recording is ENABLED for call:", callSid);
 
-      // Use TwiML <Start> verb to begin recording
-      const start = vr.start();
-      const recordParams: any = {
-        name: callSid,
-        recordingStatusCallback: abs("/api/voice/recording-status"),
-        recordingStatusCallbackMethod: "POST",
-      };
+      // Wait 2 seconds for call to be fully established before starting recording
+      setTimeout(async () => {
+        try {
+          const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
-      if (env.TRANSCRIPTION_ENABLED) {
-        recordParams.transcribe = true;
-        recordParams.transcribeCallback = abs("/api/voice/transcription-status");
-        console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled");
-      }
+          const recordingParams: any = {
+            recordingStatusCallback: abs("/api/voice/recording-status"),
+            recordingStatusCallbackMethod: "POST",
+          };
 
-      start.record(recordParams);
-      console.log("[VOICE][RECORDING] ✅ Recording enabled via TwiML <Start> verb");
-      console.log("[VOICE][RECORDING]   - Callback: " + abs("/api/voice/recording-status"));
+          if (env.TRANSCRIPTION_ENABLED) {
+            recordingParams.transcribe = true;
+            recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
+            console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled");
+          }
+
+          console.log("[VOICE][RECORDING] 🔄 Starting recording for call:", callSid);
+          const recording = await client.calls(callSid).recordings.create(recordingParams);
+          console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
+          console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
+          console.log("[VOICE][RECORDING]   - Status:", recording.status);
+        } catch (recErr: any) {
+          console.error("[VOICE][RECORDING] ❌ FAILED to start recording");
+          console.error("[VOICE][RECORDING]   - Call SID:", callSid);
+          console.error("[VOICE][RECORDING]   - Error:", recErr.message);
+
+          // Create alert for failed recording
+          try {
+            const tenant = await storage.getTenant("default");
+            if (tenant) {
+              await storage.createAlert({
+                tenantId: tenant.id,
+                reason: "recording_failed",
+                payload: {
+                  error: recErr.message,
+                  stack: recErr.stack,
+                  callSid,
+                  timestamp: new Date().toISOString()
+                },
+                status: "open"
+              });
+            }
+          } catch (alertErr) {
+            console.error("[VOICE][RECORDING] ⚠️  Failed to create alert:", alertErr);
+          }
+        }
+      }, 2000); // 2 second delay
     } else {
       if (!env.CALL_RECORDING_ENABLED) {
         console.log("[VOICE][RECORDING] ⏭️  Recording is DISABLED (CALL_RECORDING_ENABLED=false)");

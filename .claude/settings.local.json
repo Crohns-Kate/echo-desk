@@ -1,27 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pkill:*)",
-      "Bash(npm run dev:*)",
-      "Bash(npx tsc:*)",
-      "Bash(curl:*)",
-      "Bash(cat:*)",
-      "Bash(npm run check:*)",
-      "Bash(npm run build:*)",
-      "Bash(pgrep:*)",
-      "Bash(env)",
-      "Bash(python3:*)",
-      "Bash(test:*)",
-      "Bash(node:*)",
-      "Bash(psql:*)",
-      "Bash(printenv:*)",
-      "Bash(for:*)",
-      "Bash(do sleep 5)",
-      "Bash(echo:*)",
-      "Bash(break)",
-      "Bash(done)",
-      "Bash(git add:*)",
-      "Bash(eligible for recording\". This was because the call wasn''t in the\nright state yet.\n\nNow using TwiML''s <Start><Record> verb to enable recording from the\nbeginning of the call, which is the proper approach.\n\nChanges:\n- Replaced setImmediate() API call approach with TwiML <Start> verb\n- Simplified recording initialization\n- Removed complex error handling for API failures\n- Recording now starts immediately when call begins\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix recording: use setTimeout delay instead of incorrect <Start> verb\n\nPrevious attempt used TwiML <Start> verb which is for media streams,\nnot recording. This caused a 500 error.\n\nThe correct approach is to use the Recordings API, but with a delay\nto ensure the call is fully established and in \"in-progress\" state.\n\nChanges:\n- Removed incorrect <Start> verb usage\n- Added 2-second setTimeout delay before starting recording\n- This allows call to be fully connected before recording begins\n- Should resolve \"not eligible for recording\" errors\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
