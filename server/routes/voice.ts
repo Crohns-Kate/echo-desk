@@ -317,7 +317,15 @@ export function registerVoice(app: Express) {
           }
 
           console.log("[VOICE][RECORDING] 🔄 Starting recording for call:", callSid);
+          console.log("[VOICE][RECORDING] 📋 Recording parameters:", JSON.stringify(recordingParams, null, 2));
           const recording = await client.calls(callSid).recordings.create(recordingParams);
+          console.log("[VOICE][RECORDING] 📋 Twilio response:", JSON.stringify({
+            sid: recording.sid,
+            status: recording.status,
+            uri: recording.uri,
+            // Check if Twilio returned any transcription info
+            transcription: (recording as any).transcription
+          }, null, 2));
           console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
           console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
           console.log("[VOICE][RECORDING]   - Status:", recording.status);
