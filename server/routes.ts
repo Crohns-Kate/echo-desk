@@ -423,12 +423,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error(`Twilio API error: ${twilioRes.status}`);
       }
       
-      // Stream to client - convert Web ReadableStream to Node stream
+      // Stream to client - node-fetch body is already a Node.js stream
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Accept-Ranges', 'bytes');
-      
+
       if (twilioRes.body) {
-        Readable.fromWeb(twilioRes.body as any).pipe(res);
+        // node-fetch v2 returns a Node.js stream, not a Web ReadableStream
+        twilioRes.body.pipe(res);
       } else {
         throw new Error('No response body from Twilio');
       }
@@ -479,12 +480,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error(`Twilio API error: ${twilioRes.status}`);
       }
       
-      // Download to client - convert Web ReadableStream to Node stream
+      // Download to client - node-fetch body is already a Node.js stream
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${sid}.mp3"`);
-      
+
       if (twilioRes.body) {
-        Readable.fromWeb(twilioRes.body as any).pipe(res);
+        // node-fetch v2 returns a Node.js stream, not a Web ReadableStream
+        twilioRes.body.pipe(res);
       } else {
         throw new Error('No response body from Twilio');
       }
