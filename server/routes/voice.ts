@@ -205,6 +205,41 @@ export function registerVoice(app: Express) {
         console.log("[RECORDING_STATUS] Updated call:", callSid, "with recording:", recordingSid);
         // Emit WebSocket update if needed
         emitCallUpdated(updated);
+
+        // Trigger transcription if recording is completed
+        const { env } = await import("../utils/env");
+        if (status === 'completed' && env.TRANSCRIPTION_ENABLED && recordingUrl && env.ASSEMBLYAI_API_KEY) {
+          console.log("[RECORDING_STATUS] 🎤 Triggering transcription for recording:", recordingSid);
+
+          // Import transcription service
+          const { transcribeRecordingAsync } = await import("../services/transcription");
+
+          // Start transcription asynchronously
+          transcribeRecordingAsync(
+            callSid,
+            recordingUrl,
+            env.TWILIO_ACCOUNT_SID,
+            env.TWILIO_AUTH_TOKEN,
+            async (transcript) => {
+              // Update call with transcript
+              console.log("[RECORDING_STATUS] 📝 Updating call with transcript:", callSid);
+              const updatedWithTranscript = await storage.updateCall(callSid, {
+                transcript: transcript
+              });
+              if (updatedWithTranscript) {
+                // Emit WebSocket update with transcript
+                emitCallUpdated(updatedWithTranscript);
+                console.log("[RECORDING_STATUS] ✅ Call updated with transcript");
+              }
+            }
+          );
+        } else if (status === 'completed') {
+          if (!env.TRANSCRIPTION_ENABLED) {
+            console.log("[RECORDING_STATUS] ⏭️  Transcription disabled (TRANSCRIPTION_ENABLED=false)");
+          } else if (!env.ASSEMBLYAI_API_KEY) {
+            console.log("[RECORDING_STATUS] ⚠️  AssemblyAI API key not configured");
+          }
+        }
       }
 
       return res.sendStatus(204);
@@ -310,10 +345,10 @@ export function registerVoice(app: Express) {
             recordingStatusCallbackMethod: "POST",
           };
 
+          // Note: Twilio native transcription doesn't work with Recordings API
+          // We use AssemblyAI for transcription in the recording-status webhook instead
           if (env.TRANSCRIPTION_ENABLED) {
-            recordingParams.transcribe = true;
-            recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
-            console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled");
+            console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled (via AssemblyAI)");
           }
 
           console.log("[VOICE][RECORDING] 🔄 Starting recording for call:", callSid);

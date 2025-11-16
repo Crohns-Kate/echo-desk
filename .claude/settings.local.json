@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git commit -m \"$(cat <<''EOF''\nFix recording: use setTimeout delay instead of incorrect <Start> verb\n\nPrevious attempt used TwiML <Start> verb which is for media streams,\nnot recording. This caused a 500 error.\n\nThe correct approach is to use the Recordings API, but with a delay\nto ensure the call is fully established and in \"in-progress\" state.\n\nChanges:\n- Removed incorrect <Start> verb usage\n- Added 2-second setTimeout delay before starting recording\n- This allows call to be fully connected before recording begins\n- Should resolve \"not eligible for recording\" errors\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []
