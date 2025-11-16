@@ -1,5 +1,6 @@
 import { AssemblyAI } from 'assemblyai';
 import { env } from '../utils/env';
+import fetch from 'node-fetch';
 
 /**
  * Transcribe a Twilio recording using AssemblyAI
@@ -27,13 +28,27 @@ export async function transcribeRecording(
   // AssemblyAI needs the MP3 URL with .mp3 extension
   const audioUrl = recordingUrl.endsWith('.mp3') ? recordingUrl : recordingUrl + '.mp3';
 
-  // Create transcript with Twilio authentication headers
-  const transcript = await client.transcripts.transcribe({
-    audio: audioUrl,
-    // Add Twilio Basic Auth headers so AssemblyAI can download the recording
-    audio_url_headers: {
-      'Authorization': 'Basic ' + Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64')
+  // Download the recording from Twilio first (since it requires authentication)
+  console.log('[TRANSCRIPTION] 📥 Downloading recording from Twilio...');
+  const authHeader = 'Basic ' + Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
+
+  const response = await fetch(audioUrl, {
+    headers: {
+      'Authorization': authHeader
     }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download recording: ${response.status} ${response.statusText}`);
+  }
+
+  const audioBuffer = await response.buffer();
+  console.log('[TRANSCRIPTION] ✅ Downloaded recording:', audioBuffer.length, 'bytes');
+
+  // Pass the audio buffer directly to AssemblyAI (avoids auth issues)
+  console.log('[TRANSCRIPTION] 🔄 Submitting to AssemblyAI...');
+  const transcript = await client.transcripts.transcribe({
+    audio: audioBuffer
   });
 
   if (transcript.status === 'error') {
