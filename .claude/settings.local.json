@@ -5,7 +5,9 @@
       "Bash(git commit:*)",
       "Bash(npm install:*)",
       "Bash(npx tsx:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(pkill:*)",
+      "Bash(npm run dev:*)"
     ],
     "deny": [],
     "ask": []
