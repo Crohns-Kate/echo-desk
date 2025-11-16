@@ -398,7 +398,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: 'Recording not found' });
       }
       const fetch = (await import('node-fetch')).default;
-      const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
 
       if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
@@ -455,7 +454,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: 'Recording not found' });
       }
       const fetch = (await import('node-fetch')).default;
-      const { Readable } = await import('stream');
       const env = (await import('./utils/env')).env;
 
       if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
