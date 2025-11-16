@@ -19,7 +19,9 @@
       "Bash(do sleep 5)",
       "Bash(echo:*)",
       "Bash(break)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(git add:*)",
+      "Bash(eligible for recording\". This was because the call wasn''t in the\nright state yet.\n\nNow using TwiML''s <Start><Record> verb to enable recording from the\nbeginning of the call, which is the proper approach.\n\nChanges:\n- Replaced setImmediate() API call approach with TwiML <Start> verb\n- Simplified recording initialization\n- Removed complex error handling for API failures\n- Recording now starts immediately when call begins\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

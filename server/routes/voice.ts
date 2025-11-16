@@ -295,62 +295,28 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Start recording asynchronously - don't await to avoid blocking the response
+    // Enable call recording using TwiML <Start> verb
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
       console.log("[VOICE][RECORDING] 🎙️  Recording is ENABLED for call:", callSid);
-      // Start recording in background without blocking the response
-      setImmediate(async () => {
-        try {
-          const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
-          const recordingParams: any = {
-            recordingStatusCallback: abs("/api/voice/recording-status"),
-            recordingStatusCallbackMethod: "POST",
-          };
+      // Use TwiML <Start> verb to begin recording
+      const start = vr.start();
+      const recordParams: any = {
+        name: callSid,
+        recordingStatusCallback: abs("/api/voice/recording-status"),
+        recordingStatusCallbackMethod: "POST",
+      };
 
-          console.log("[VOICE][RECORDING] 📞 Callback URLs:");
-          console.log("[VOICE][RECORDING]   - Status: " + abs("/api/voice/recording-status"));
-          if (env.TRANSCRIPTION_ENABLED) {
-            recordingParams.transcribe = true;
-            recordingParams.transcribeCallback = abs("/api/voice/transcription-status");
-            console.log("[VOICE][RECORDING]   - Transcription: " + abs("/api/voice/transcription-status"));
-          }
+      if (env.TRANSCRIPTION_ENABLED) {
+        recordParams.transcribe = true;
+        recordParams.transcribeCallback = abs("/api/voice/transcription-status");
+        console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled");
+      }
 
-          console.log("[VOICE][RECORDING] 🔄 Calling Twilio API to start recording for call:", callSid);
-          const recording = await client.calls(callSid).recordings.create(recordingParams);
-          console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
-          console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
-          console.log("[VOICE][RECORDING]   - Call SID:", callSid);
-          console.log("[VOICE][RECORDING]   - Status:", recording.status);
-          console.log("[VOICE][RECORDING]   - Transcription:", env.TRANSCRIPTION_ENABLED ? "ENABLED" : "DISABLED");
-        } catch (recErr: any) {
-          console.error("[VOICE][RECORDING] ❌ FAILED to start recording");
-          console.error("[VOICE][RECORDING]   - Call SID:", callSid);
-          console.error("[VOICE][RECORDING]   - Error:", recErr.message);
-          console.error("[VOICE][RECORDING]   - Full error:", recErr);
-          // Create alert for failed recording
-          try {
-            const tenant = await storage.getTenant("default");
-            if (tenant) {
-              await storage.createAlert({
-                tenantId: tenant.id,
-                reason: "recording_failed",
-                payload: {
-                  error: recErr.message,
-                  stack: recErr.stack,
-                  callSid,
-                  timestamp: new Date().toISOString()
-                },
-                status: "open"
-              });
-              console.log("[VOICE][RECORDING] 📬 Created alert for recording failure");
-            }
-          } catch (alertErr) {
-            console.error("[VOICE][RECORDING] ⚠️  Failed to create alert:", alertErr);
-          }
-        }
-      });
+      start.record(recordParams);
+      console.log("[VOICE][RECORDING] ✅ Recording enabled via TwiML <Start> verb");
+      console.log("[VOICE][RECORDING]   - Callback: " + abs("/api/voice/recording-status"));
     } else {
       if (!env.CALL_RECORDING_ENABLED) {
         console.log("[VOICE][RECORDING] ⏭️  Recording is DISABLED (CALL_RECORDING_ENABLED=false)");
