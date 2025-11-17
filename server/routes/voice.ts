@@ -65,6 +65,33 @@ function parseDayOfWeek(speechRaw: string): string | undefined {
 }
 
 /**
+ * Helper function to normalize spoken email addresses
+ * Converts speech patterns like "john dot smith at gmail dot com" to "john.smith@gmail.com"
+ * Returns null if the email doesn't pass basic validation
+ */
+function normalizeSpokenEmail(raw: string): string | null {
+  if (!raw) return null;
+  let s = raw.trim().toLowerCase();
+
+  // Common spoken words → symbols
+  s = s.replace(/\s+at\s+/g, "@");
+  s = s.replace(/\s+dot\s+/g, ".");
+  s = s.replace(/\s+underscore\s+/g, "_");
+  s = s.replace(/\s+(dash|hyphen)\s+/g, "-");
+  s = s.replace(/\s+plus\s+/g, "+");
+
+  // Remove remaining spaces
+  s = s.replace(/\s+/g, "");
+
+  // Basic validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(s)) {
+    return null;
+  }
+  return s;
+}
+
+/**
  * Helper function to interpret slot choice from user input
  * Returns: "option1", "option2", "reject", "alt_day", or "unknown"
  * Also returns requestedDayOfWeek if alt_day is detected
@@ -828,22 +855,36 @@ export function registerVoice(app: Express) {
             if (call?.conversationId) {
               const conversation = await storage.getConversation(call.conversationId);
               const context = conversation?.context as any;
+              const existingPatientId = context?.existingPatientId;
 
-              // Set patient mode to new and CLEAR any existing patient data
+              // CRITICAL: Set patient mode to new and CLEAR any existing patient data
+              // This prevents the system from binding the appointment to the existing patient
               await storage.updateConversation(call.conversationId, {
                 context: {
                   ...context,
                   patientMode: "new",
-                  patientId: null,
-                  fullName: null,           // Clear old name
-                  firstName: null,          // Clear old first name
+                  patientId: null,              // MUST be null for new patients
+                  fullName: null,               // Clear old name
+                  firstName: null,              // Clear old first name
                   isNewPatient: true,
                   isReturning: false,
-                  identityConfirmed: false  // Reset identity confirmation
+                  identityConfirmed: false,     // Reset identity confirmation
+                  // Keep existingPatientId for reference but mark it as NOT to be used
+                  existingPatientId: existingPatientId,
+                  existingPatientName: context?.existingPatientName
                 }
               });
+
+              // INVARIANT CHECK: Ensure patientId is NOT set to existingPatientId
+              if (existingPatientId) {
+                console.log("[CONFIRM-EXISTING-OR-NEW] ⚠️  IMPORTANT: Existing patient found in Cliniko but caller is NEW");
+                console.log("[CONFIRM-EXISTING-OR-NEW]   - existingPatientId:", existingPatientId, "(will NOT be used)");
+                console.log("[CONFIRM-EXISTING-OR-NEW]   - patientId set to: null (correct)");
+                console.log("[CONFIRM-EXISTING-OR-NEW]   - A NEW patient record will be created in Cliniko");
+              }
               console.log("[CONFIRM-EXISTING-OR-NEW] Patient identified as new - cleared old patient data:", {
                 patientMode: "new",
+                patientId: null,
                 clearedExistingData: true
               });
             }
@@ -1026,20 +1067,28 @@ export function registerVoice(app: Express) {
           console.error("[ASK-OTHER-PERSON-EMAIL] Error getting firstName:", err);
         }
 
-        // Store email if provided (voice capture is unreliable, so we note it for verification)
+        // Normalize and store email if provided
         if (!skipEmail && emailRaw && emailRaw.length > 0) {
-          try {
-            const call = await storage.getCallByCallSid(callSid);
-            if (call?.conversationId) {
-              const conversation = await storage.getConversation(call.conversationId);
-              const existingContext = (conversation?.context as any) || {};
-              await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, email: emailRaw }
-              });
+          const normalizedEmail = normalizeSpokenEmail(emailRaw);
+          console.log("[ASK-OTHER-PERSON-EMAIL] Raw email from speech:", emailRaw);
+          console.log("[ASK-OTHER-PERSON-EMAIL] Normalized email:", normalizedEmail || "INVALID");
+
+          if (normalizedEmail) {
+            try {
+              const call = await storage.getCallByCallSid(callSid);
+              if (call?.conversationId) {
+                const conversation = await storage.getConversation(call.conversationId);
+                const existingContext = (conversation?.context as any) || {};
+                await storage.updateConversation(call.conversationId, {
+                  context: { ...existingContext, email: normalizedEmail }
+                });
+              }
+              console.log("[ASK-OTHER-PERSON-EMAIL] ✅ Stored normalized email:", normalizedEmail);
+            } catch (err) {
+              console.error("[ASK-OTHER-PERSON-EMAIL] Failed to store email:", err);
             }
-            console.log("[ASK-OTHER-PERSON-EMAIL] Stored email (from voice, may need verification):", emailRaw);
-          } catch (err) {
-            console.error("[ASK-OTHER-PERSON-EMAIL] Failed to store email:", err);
+          } else {
+            console.log("[ASK-OTHER-PERSON-EMAIL] ⚠️  Email normalization failed, but continuing anyway");
           }
         } else {
           console.log("[ASK-OTHER-PERSON-EMAIL] No email provided or skipped");
@@ -1615,27 +1664,58 @@ export function registerVoice(app: Express) {
           console.error("[ASK-EMAIL-NEW] Error getting firstName:", err);
         }
 
-        // Voice-captured emails are often unreliable, so we'll store it but note it may need verification
-        // Store email in conversation context
-        if (emailRaw && emailRaw.length > 0) {
+        // Normalize spoken email using helper function
+        const normalizedEmail = normalizeSpokenEmail(emailRaw);
+
+        console.log("[ASK-EMAIL-NEW] Raw email from speech:", emailRaw);
+        console.log("[ASK-EMAIL-NEW] Normalized email:", normalizedEmail || "INVALID");
+
+        // Store email in conversation context if valid
+        if (normalizedEmail) {
           try {
             const call = await storage.getCallByCallSid(callSid);
             if (call?.conversationId) {
               const conversation = await storage.getConversation(call.conversationId);
               const existingContext = (conversation?.context as any) || {};
               await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, email: emailRaw }
+                context: { ...existingContext, email: normalizedEmail }
               });
             }
-            console.log("[ASK-EMAIL-NEW] Stored email (from voice):", emailRaw);
+            console.log("[ASK-EMAIL-NEW] ✅ Stored normalized email:", normalizedEmail);
           } catch (err) {
             console.error("[ASK-EMAIL-NEW] Failed to store email:", err);
           }
+          // Move to phone confirmation
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (emailRaw && emailRaw.length > 0) {
+          // Email was provided but didn't normalize - ask again
+          console.log("[ASK-EMAIL-NEW] ⚠️  Email normalization failed, asking again");
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 10,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          const retryPrompts = firstName ? [
+            `Sorry ${firstName}, I didn't quite catch that email address. Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`,
+            `Hmm, I'm having trouble with that email. Can you spell it out for me? Like 'jane underscore doe at outlook dot com'.`
+          ] : [
+            `Sorry, I didn't catch that email address. Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`
+          ];
+          const randomRetry = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
+          saySafe(g, randomRetry);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // No email provided - skip to phone confirmation
+          console.log("[ASK-EMAIL-NEW] No email provided, skipping to phone confirmation");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
         }
-
-        // Move to phone confirmation
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(vr.toString());
       }
 
       // 5b) CONFIRM-PHONE-NEW → Confirm phone number for new patient
@@ -2555,8 +2635,9 @@ export function registerVoice(app: Express) {
           timePart = 'afternoon';
         }
 
-        // Determine if new patient and preferred day from conversation context
-        let isNewPatient = !isReturningPatient;
+        // Determine patient mode and preferred day from conversation context
+        let patientMode: "new" | "existing" | null = null;
+        let isNewPatient = !isReturningPatient; // fallback default
         let weekOffset = weekOffsetParam;
         let preferredDayOfWeek: string | undefined;
         let specificWeek: string | undefined;
@@ -2568,16 +2649,23 @@ export function registerVoice(app: Express) {
             const context = conversation?.context as any;
 
             console.log("[GET-AVAILABILITY] 📋 Reading Conversation Context:");
-            console.log("[GET-AVAILABILITY]   - isNewPatient:", context?.isNewPatient);
             console.log("[GET-AVAILABILITY]   - patientMode:", context?.patientMode);
+            console.log("[GET-AVAILABILITY]   - isNewPatient (legacy):", context?.isNewPatient);
             console.log("[GET-AVAILABILITY]   - isReturning:", context?.isReturning);
             console.log("[GET-AVAILABILITY]   - patientId:", context?.patientId);
+            console.log("[GET-AVAILABILITY]   - existingPatientId:", context?.existingPatientId);
             console.log("[GET-AVAILABILITY]   - fullName:", context?.fullName);
 
-            if (context?.isNewPatient !== undefined) {
+            // CRITICAL: Use patientMode as the source of truth
+            if (context?.patientMode) {
+              patientMode = context.patientMode;
+              isNewPatient = patientMode === "new";
+              console.log("[GET-AVAILABILITY]   ✅ Using patientMode from context:", patientMode);
+            } else if (context?.isNewPatient !== undefined) {
+              // Fallback to legacy isNewPatient flag
               const oldValue = isNewPatient;
               isNewPatient = context.isNewPatient;
-              console.log("[GET-AVAILABILITY]   - isNewPatient overridden from", oldValue, "to", isNewPatient);
+              console.log("[GET-AVAILABILITY]   ⚠️  Using legacy isNewPatient flag (fallback):", isNewPatient);
             }
             if (context?.weekOffset !== undefined) {
               weekOffset = context.weekOffset;
@@ -2593,13 +2681,14 @@ export function registerVoice(app: Express) {
           console.error("[GET-AVAILABILITY] Error checking conversation context:", err);
         }
 
-        // Use appropriate appointment type
+        // Use appropriate appointment type based on patientMode
         const appointmentTypeId = isNewPatient
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
 
         console.log("[GET-AVAILABILITY] 🔍 Appointment Type Selection:");
-        console.log("[GET-AVAILABILITY]   - isNewPatient:", isNewPatient);
+        console.log("[GET-AVAILABILITY]   - patientMode:", patientMode);
+        console.log("[GET-AVAILABILITY]   - isNewPatient (computed):", isNewPatient);
         console.log("[GET-AVAILABILITY]   - NEW_PATIENT_APPT_TYPE_ID:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
         console.log("[GET-AVAILABILITY]   - STANDARD_APPT_TYPE_ID:", env.CLINIKO_APPT_TYPE_ID);
         console.log("[GET-AVAILABILITY]   - SELECTED appointmentTypeId:", appointmentTypeId);
@@ -3084,6 +3173,30 @@ export function registerVoice(app: Express) {
               console.log("[BOOK-CHOOSE]   - Patient mode:", context?.patientMode || "unknown");
             }
 
+            // INVARIANT CHECK: If patientMode === "new", patientId MUST NOT equal existingPatientId
+            const patientMode = context?.patientMode;
+            const existingPatientId = context?.existingPatientId;
+            if (patientMode === "new" && existingPatientId && patientId === existingPatientId) {
+              console.error("[BOOK-CHOOSE] ❌ BUG DETECTED: New patient flow is reusing existingPatientId!");
+              console.error("[BOOK-CHOOSE]   - patientMode:", patientMode);
+              console.error("[BOOK-CHOOSE]   - patientId:", patientId);
+              console.error("[BOOK-CHOOSE]   - existingPatientId:", existingPatientId);
+              console.error("[BOOK-CHOOSE]   - THIS IS A CRITICAL BUG - Resetting patientId to null");
+              // Force reset to prevent booking for wrong patient
+              patientId = undefined;
+              // Update conversation context to fix the bug
+              await storage.updateConversation(call.conversationId, {
+                context: {
+                  ...context,
+                  patientId: null
+                }
+              });
+            } else if (patientMode === "new") {
+              console.log("[BOOK-CHOOSE] ✅ New patient mode verified - patientId is NOT reusing existingPatientId");
+              console.log("[BOOK-CHOOSE]   - patientId:", patientId || "null (will create new)");
+              console.log("[BOOK-CHOOSE]   - existingPatientId:", existingPatientId || "none");
+            }
+
             // Extract reason for visit from context
             if (context?.reason) {
               reasonForVisit = context.reason;
@@ -3220,9 +3333,24 @@ export function registerVoice(app: Express) {
             console.log("[BOOK-CHOOSE]   - Patient ID:", patientId || "will be created");
             console.log("[BOOK-CHOOSE]   - Full name:", fullName || "none");
             console.log("[BOOK-CHOOSE]   - Email:", email || "none");
+            console.log("[BOOK-CHOOSE]   - Patient mode:", patientMode || "unknown");
             console.log("[BOOK-CHOOSE]   - Appointment type ID:", appointmentTypeId);
             console.log("[BOOK-CHOOSE]   - Is new patient appointment:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
             console.log("[BOOK-CHOOSE]   - Starts at:", chosen);
+
+            // INVARIANT CHECK: If patientMode === "new", appointmentTypeId MUST be NEW_PATIENT_APPOINTMENT_TYPE_ID
+            if (patientMode === "new" && appointmentTypeId !== env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID) {
+              console.error("[BOOK-CHOOSE] ❌ BUG DETECTED: New patient mode but using STANDARD appointment type!");
+              console.error("[BOOK-CHOOSE]   - patientMode:", patientMode);
+              console.error("[BOOK-CHOOSE]   - appointmentTypeId:", appointmentTypeId);
+              console.error("[BOOK-CHOOSE]   - Expected:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
+              console.error("[BOOK-CHOOSE]   - THIS IS A CRITICAL BUG - appointment type is wrong");
+              throw new Error("Appointment type mismatch for new patient");
+            } else if (patientMode === "new") {
+              console.log("[BOOK-CHOOSE] ✅ New patient mode - using NEW PATIENT appointment type (correct)");
+            } else if (patientMode === "existing") {
+              console.log("[BOOK-CHOOSE] ✅ Existing patient mode - using STANDARD appointment type (correct)");
+            }
 
             // Include reason for visit in notes if available
             let appointmentNotes = isReturningPatient
@@ -3380,29 +3508,39 @@ export function registerVoice(app: Express) {
           timePart = 'afternoon';
         }
 
-        // Determine if new patient from conversation context
-        let isNewPatient = !isReturningPatient;
+        // Determine patient mode from conversation context
+        let patientMode: "new" | "existing" | null = null;
+        let isNewPatient = !isReturningPatient; // fallback default
 
         try {
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
-            if (context?.isNewPatient !== undefined) {
+
+            // CRITICAL: Use patientMode as the source of truth
+            if (context?.patientMode) {
+              patientMode = context.patientMode;
+              isNewPatient = patientMode === "new";
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   ✅ Using patientMode from context:", patientMode);
+            } else if (context?.isNewPatient !== undefined) {
+              // Fallback to legacy isNewPatient flag
               isNewPatient = context.isNewPatient;
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   ⚠️  Using legacy isNewPatient flag (fallback):", isNewPatient);
             }
           }
         } catch (err) {
           console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Error checking conversation context:", err);
         }
 
-        // Use appropriate appointment type
+        // Use appropriate appointment type based on patientMode
         const appointmentTypeId = isNewPatient
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
 
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY] 🔍 Appointment Type Selection:");
-        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - isNewPatient:", isNewPatient);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - patientMode:", patientMode);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - isNewPatient (computed):", isNewPatient);
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - NEW_PATIENT_APPT_TYPE_ID:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - STANDARD_APPT_TYPE_ID:", env.CLINIKO_APPT_TYPE_ID);
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - SELECTED appointmentTypeId:", appointmentTypeId);
