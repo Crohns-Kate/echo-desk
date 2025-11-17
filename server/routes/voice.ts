@@ -829,18 +829,22 @@ export function registerVoice(app: Express) {
               const conversation = await storage.getConversation(call.conversationId);
               const context = conversation?.context as any;
 
-              // Set patient mode to new
+              // Set patient mode to new and CLEAR any existing patient data
               await storage.updateConversation(call.conversationId, {
                 context: {
                   ...context,
                   patientMode: "new",
                   patientId: null,
+                  fullName: null,           // Clear old name
+                  firstName: null,          // Clear old first name
                   isNewPatient: true,
-                  isReturning: false
+                  isReturning: false,
+                  identityConfirmed: false  // Reset identity confirmation
                 }
               });
-              console.log("[CONFIRM-EXISTING-OR-NEW] Patient identified as new:", {
-                patientMode: "new"
+              console.log("[CONFIRM-EXISTING-OR-NEW] Patient identified as new - cleared old patient data:", {
+                patientMode: "new",
+                clearedExistingData: true
               });
             }
           } catch (err) {
@@ -2562,8 +2566,18 @@ export function registerVoice(app: Express) {
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
+
+            console.log("[GET-AVAILABILITY] 📋 Reading Conversation Context:");
+            console.log("[GET-AVAILABILITY]   - isNewPatient:", context?.isNewPatient);
+            console.log("[GET-AVAILABILITY]   - patientMode:", context?.patientMode);
+            console.log("[GET-AVAILABILITY]   - isReturning:", context?.isReturning);
+            console.log("[GET-AVAILABILITY]   - patientId:", context?.patientId);
+            console.log("[GET-AVAILABILITY]   - fullName:", context?.fullName);
+
             if (context?.isNewPatient !== undefined) {
+              const oldValue = isNewPatient;
               isNewPatient = context.isNewPatient;
+              console.log("[GET-AVAILABILITY]   - isNewPatient overridden from", oldValue, "to", isNewPatient);
             }
             if (context?.weekOffset !== undefined) {
               weekOffset = context.weekOffset;
@@ -2583,6 +2597,13 @@ export function registerVoice(app: Express) {
         const appointmentTypeId = isNewPatient
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
+
+        console.log("[GET-AVAILABILITY] 🔍 Appointment Type Selection:");
+        console.log("[GET-AVAILABILITY]   - isNewPatient:", isNewPatient);
+        console.log("[GET-AVAILABILITY]   - NEW_PATIENT_APPT_TYPE_ID:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
+        console.log("[GET-AVAILABILITY]   - STANDARD_APPT_TYPE_ID:", env.CLINIKO_APPT_TYPE_ID);
+        console.log("[GET-AVAILABILITY]   - SELECTED appointmentTypeId:", appointmentTypeId);
+        console.log("[GET-AVAILABILITY]   - Using:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID ? "NEW PATIENT ✅" : "STANDARD ⚠️");
 
         // Calculate date range based on week offset and preferred day
         const tzNow = dayjs().tz();
@@ -3379,6 +3400,13 @@ export function registerVoice(app: Express) {
         const appointmentTypeId = isNewPatient
           ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
           : env.CLINIKO_APPT_TYPE_ID;
+
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY] 🔍 Appointment Type Selection:");
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - isNewPatient:", isNewPatient);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - NEW_PATIENT_APPT_TYPE_ID:", env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - STANDARD_APPT_TYPE_ID:", env.CLINIKO_APPT_TYPE_ID);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - SELECTED appointmentTypeId:", appointmentTypeId);
+        console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - Using:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID ? "NEW PATIENT ✅" : "STANDARD ⚠️");
 
         // Calculate the date for the requested day of week
         const weekdayMap: { [key: string]: number } = {
