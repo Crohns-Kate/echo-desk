@@ -83,11 +83,30 @@ function normalizeSpokenEmail(raw: string): string | null {
   // Remove remaining spaces
   s = s.replace(/\s+/g, "");
 
-  // Basic validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  // Strict validation: Only allow valid email characters
+  // Local part (before @): letters, numbers, dots, hyphens, underscores, plus
+  // Domain part (after @): letters, numbers, dots, hyphens
+  // Must have exactly one @ symbol and at least one dot after @
+  const emailRegex = /^[a-z0-9._+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+
+  // Additional checks
   if (!emailRegex.test(s)) {
+    console.log("[normalizeSpokenEmail] Failed regex validation:", s);
     return null;
   }
+
+  // Reject if it has comma, space, or other invalid characters
+  if (/[,\s]/.test(s)) {
+    console.log("[normalizeSpokenEmail] Contains invalid characters (comma or space):", s);
+    return null;
+  }
+
+  // Reject if @ symbol is at the start or end
+  if (s.startsWith('@') || s.endsWith('@')) {
+    console.log("[normalizeSpokenEmail] Invalid @ position:", s);
+    return null;
+  }
+
   return s;
 }
 
@@ -3127,6 +3146,7 @@ export function registerVoice(app: Express) {
         let fullName: string | undefined;
         let email: string | undefined;
         let patientId: string | undefined;
+        let patientMode: string | undefined;
         let isReschedule = false;
         let apptId: string | undefined;
         let reasonForVisit: string | undefined;
@@ -3160,6 +3180,10 @@ export function registerVoice(app: Express) {
               fullName = context.fullName;
               console.log("[BOOK-CHOOSE] Using name from conversation context:", fullName);
             }
+            if (context?.firstName) {
+              firstName = context.firstName;
+              console.log("[BOOK-CHOOSE] Using firstName from conversation context:", firstName);
+            }
             if (context?.email) {
               email = context.email;
               console.log("[BOOK-CHOOSE] Using email from conversation context:", email);
@@ -3174,7 +3198,7 @@ export function registerVoice(app: Express) {
             }
 
             // INVARIANT CHECK: If patientMode === "new", patientId MUST NOT equal existingPatientId
-            const patientMode = context?.patientMode;
+            patientMode = context?.patientMode;
             const existingPatientId = context?.existingPatientId;
             if (patientMode === "new" && existingPatientId && patientId === existingPatientId) {
               console.error("[BOOK-CHOOSE] ❌ BUG DETECTED: New patient flow is reusing existingPatientId!");
