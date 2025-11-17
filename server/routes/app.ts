@@ -145,4 +145,167 @@ export function registerApp(app: Express) {
       res.status(500).json({ error: 'Failed to fetch tenants' });
     }
   });
+
+  // AI Diagnostic endpoint - comprehensive call analysis data
+  app.get('/api/ai/analyze/:callSid?', async (req: Request, res: Response) => {
+    try {
+      const callSid = req.params.callSid;
+      let call;
+
+      if (callSid) {
+        // Analyze specific call
+        call = await storage.getCallByCallSid(callSid);
+        if (!call) {
+          return res.status(404).json({ error: 'Call not found' });
+        }
+      } else {
+        // Analyze most recent call
+        const calls = await storage.listCalls(undefined, 1);
+        if (calls.length === 0) {
+          return res.status(404).json({ error: 'No calls found' });
+        }
+        call = calls[0];
+      }
+
+      // Fetch conversation context
+      let conversationContext = null;
+      if (call.conversationId) {
+        const conversation = await storage.getConversation(call.conversationId);
+        conversationContext = conversation?.context || null;
+      }
+
+      // Fetch related alerts
+      const allAlerts = await storage.listAlerts(call.tenantId, 50);
+      const relatedAlerts = allAlerts.filter(alert =>
+        alert.conversationId === call.conversationId ||
+        (alert.payload as any)?.callSid === call.callSid
+      );
+
+      // Build comprehensive analysis data
+      const analysisData = {
+        // Call metadata
+        callSid: call.callSid,
+        fromNumber: call.fromNumber,
+        toNumber: call.toNumber,
+        duration: call.duration,
+        createdAt: call.createdAt,
+
+        // Intent and outcome
+        intent: call.intent,
+        summary: call.summary,
+
+        // Transcript
+        transcript: call.transcript || null,
+        transcriptAvailable: !!call.transcript,
+
+        // Recording
+        recordingUrl: call.recordingUrl || null,
+        recordingSid: call.recordingSid || null,
+        recordingStatus: call.recordingStatus || null,
+        recordingAvailable: !!call.recordingUrl,
+
+        // Conversation context (FSM state, patient data)
+        context: conversationContext,
+
+        // Patient mode analysis
+        patientMode: (conversationContext as any)?.patientMode || null,
+        patientId: (conversationContext as any)?.patientId || null,
+        existingPatientId: (conversationContext as any)?.existingPatientId || null,
+        existingPatientName: (conversationContext as any)?.existingPatientName || null,
+        fullName: (conversationContext as any)?.fullName || null,
+        firstName: (conversationContext as any)?.firstName || null,
+        email: (conversationContext as any)?.email || null,
+
+        // Flags
+        isNewPatient: (conversationContext as any)?.isNewPatient || false,
+        isReturning: (conversationContext as any)?.isReturning || false,
+        identityConfirmed: (conversationContext as any)?.identityConfirmed || false,
+
+        // Related alerts/errors
+        alerts: relatedAlerts.map(alert => ({
+          id: alert.id,
+          reason: alert.reason,
+          payload: alert.payload,
+          status: alert.status,
+          createdAt: alert.createdAt
+        })),
+
+        // Analysis hints
+        analysisHints: {
+          hasTranscript: !!call.transcript,
+          hasRecording: !!call.recordingUrl,
+          hasContext: !!conversationContext,
+          hasAlerts: relatedAlerts.length > 0,
+          patientModeSet: !!(conversationContext as any)?.patientMode,
+          possibleIssues: []
+        }
+      };
+
+      // Add automatic issue detection
+      const hints = analysisData.analysisHints.possibleIssues;
+
+      if (analysisData.patientMode === "new" && analysisData.patientId === analysisData.existingPatientId) {
+        hints.push("⚠️ CRITICAL: New patient mode but patientId equals existingPatientId");
+      }
+
+      if (!analysisData.transcript && analysisData.recordingAvailable) {
+        hints.push("⚠️ Recording available but transcript missing");
+      }
+
+      if (analysisData.email && !analysisData.email.includes('@')) {
+        hints.push("⚠️ Email appears invalid (missing @)");
+      }
+
+      if (analysisData.intent === "booking" && !analysisData.summary?.includes("booked")) {
+        hints.push("⚠️ Intent is 'booking' but summary doesn't confirm success");
+      }
+
+      if (relatedAlerts.length > 0) {
+        hints.push(`⚠️ ${relatedAlerts.length} alert(s) associated with this call`);
+      }
+
+      res.json(analysisData);
+    } catch (error) {
+      console.error('AI analysis error:', error);
+      res.status(500).json({ error: 'Failed to fetch analysis data' });
+    }
+  });
+
+  // AI Diagnostic endpoint - analyze multiple recent calls
+  app.get('/api/ai/analyze-recent/:limit?', async (req: Request, res: Response) => {
+    try {
+      const limit = parseInt(req.params.limit || '5');
+      const calls = await storage.listCalls(undefined, Math.min(limit, 50));
+
+      const analyses = await Promise.all(calls.map(async (call) => {
+        // Fetch conversation context
+        let conversationContext = null;
+        if (call.conversationId) {
+          const conversation = await storage.getConversation(call.conversationId);
+          conversationContext = conversation?.context || null;
+        }
+
+        return {
+          callSid: call.callSid,
+          fromNumber: call.fromNumber,
+          createdAt: call.createdAt,
+          intent: call.intent,
+          summary: call.summary,
+          hasTranscript: !!call.transcript,
+          hasRecording: !!call.recordingUrl,
+          patientMode: (conversationContext as any)?.patientMode || null,
+          patientId: (conversationContext as any)?.patientId || null,
+          existingPatientId: (conversationContext as any)?.existingPatientId || null,
+        };
+      }));
+
+      res.json({
+        totalCalls: analyses.length,
+        calls: analyses
+      });
+    } catch (error) {
+      console.error('AI recent analysis error:', error);
+      res.status(500).json({ error: 'Failed to fetch recent analysis data' });
+    }
+  });
 }

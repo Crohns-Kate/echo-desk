@@ -9,7 +9,9 @@
       "Bash(pkill:*)",
       "Bash(npm run dev:*)",
       "WebSearch",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(curl:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []
