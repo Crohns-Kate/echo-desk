@@ -308,4 +308,250 @@ export function registerApp(app: Express) {
       res.status(500).json({ error: 'Failed to fetch recent analysis data' });
     }
   });
+
+  // Email collection endpoint - accepts email submission via web form
+  app.post('/api/email-collect', async (req: Request, res: Response) => {
+    try {
+      const { callSid, email } = req.body;
+
+      if (!callSid || !email) {
+        return res.status(400).json({ error: 'Missing callSid or email' });
+      }
+
+      // Basic email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+      }
+
+      // Find call and update conversation context
+      const call = await storage.getCallByCallSid(callSid);
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      if (call.conversationId) {
+        const conversation = await storage.getConversation(call.conversationId);
+        const existingContext = (conversation?.context as any) || {};
+        await storage.updateConversation(call.conversationId, {
+          context: { ...existingContext, email: email.toLowerCase(), emailCollectedViaSMS: true }
+        });
+        console.log('[EMAIL-COLLECT] Stored email from web form:', email, 'for call:', callSid);
+
+        // Try to update Cliniko immediately if patient exists
+        try {
+          const { findPatientByPhone } = await import('../services/cliniko');
+          const { updateClinikoPatient } = await import('../integrations/cliniko');
+
+          if (call.fromNumber && updateClinikoPatient) {
+            const patient = await findPatientByPhone(call.fromNumber);
+            if (patient && patient.id && (!patient.email || patient.email === '')) {
+              console.log('[EMAIL-COLLECT] Updating Cliniko patient immediately:', patient.id);
+              await updateClinikoPatient(patient.id, { email: email.toLowerCase() });
+              console.log('[EMAIL-COLLECT] ✅ Cliniko patient updated with email');
+            }
+          }
+        } catch (clinikoErr) {
+          console.warn('[EMAIL-COLLECT] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
+        }
+      }
+
+      res.json({ success: true, message: 'Email saved successfully!' });
+    } catch (error) {
+      console.error('Email collection error:', error);
+      res.status(500).json({ error: 'Failed to save email' });
+    }
+  });
+
+  // Name verification endpoint - accepts name submission via web form
+  app.post('/api/name-verify', async (req: Request, res: Response) => {
+    try {
+      const { callSid, firstName, lastName } = req.body;
+
+      if (!callSid || !firstName) {
+        return res.status(400).json({ error: 'Missing callSid or firstName' });
+      }
+
+      // Basic validation
+      if (firstName.trim().length < 1) {
+        return res.status(400).json({ error: 'First name is required' });
+      }
+
+      const fullName = lastName
+        ? `${firstName.trim()} ${lastName.trim()}`
+        : firstName.trim();
+
+      // Find call and update conversation context
+      const call = await storage.getCallByCallSid(callSid);
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      if (call.conversationId) {
+        const conversation = await storage.getConversation(call.conversationId);
+        const existingContext = (conversation?.context as any) || {};
+        await storage.updateConversation(call.conversationId, {
+          context: {
+            ...existingContext,
+            fullName,
+            firstName: firstName.trim(),
+            nameVerifiedViaSMS: true
+          }
+        });
+        console.log('[NAME-VERIFY] Stored name from web form:', fullName, 'for call:', callSid);
+
+        // Try to update Cliniko immediately if patient exists
+        try {
+          const { findPatientByPhone } = await import('../services/cliniko');
+          const { updateClinikoPatient } = await import('../integrations/cliniko');
+
+          if (call.fromNumber && updateClinikoPatient) {
+            const patient = await findPatientByPhone(call.fromNumber);
+            if (patient && patient.id) {
+              console.log('[NAME-VERIFY] Updating Cliniko patient immediately:', patient.id);
+              const updateData: any = { first_name: firstName.trim() };
+              if (lastName && lastName.trim()) {
+                updateData.last_name = lastName.trim();
+              }
+              await updateClinikoPatient(patient.id, updateData);
+              console.log('[NAME-VERIFY] ✅ Cliniko patient updated with name');
+            }
+          }
+        } catch (clinikoErr) {
+          console.warn('[NAME-VERIFY] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
+        }
+      }
+
+      res.json({ success: true, message: 'Name saved successfully!' });
+    } catch (error) {
+      console.error('Name verification error:', error);
+      res.status(500).json({ error: 'Failed to save name' });
+    }
+  });
+
+  // Post-call data verification endpoint - comprehensive data update
+  app.post('/api/verify-details', async (req: Request, res: Response) => {
+    try {
+      const { callSid, firstName, lastName, email, dateOfBirth, preferredPhone } = req.body;
+
+      if (!callSid) {
+        return res.status(400).json({ error: 'Missing callSid' });
+      }
+
+      // Find call
+      const call = await storage.getCallByCallSid(callSid);
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      if (!call.conversationId) {
+        return res.status(400).json({ error: 'No conversation associated with call' });
+      }
+
+      const conversation = await storage.getConversation(call.conversationId);
+      const existingContext = (conversation?.context as any) || {};
+
+      // Build update object
+      const updates: any = { ...existingContext };
+
+      if (firstName && firstName.trim()) {
+        updates.firstName = firstName.trim();
+        const fullName = lastName && lastName.trim()
+          ? `${firstName.trim()} ${lastName.trim()}`
+          : firstName.trim();
+        updates.fullName = fullName;
+        updates.nameVerifiedViaSMS = true;
+      }
+
+      if (email && email.trim()) {
+        // Validate email
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+        updates.email = email.toLowerCase();
+        updates.emailCollectedViaSMS = true;
+      }
+
+      if (dateOfBirth && dateOfBirth.trim()) {
+        updates.dateOfBirth = dateOfBirth.trim();
+      }
+
+      if (preferredPhone && preferredPhone.trim()) {
+        updates.preferredPhone = preferredPhone.trim();
+        updates.phoneConfirmed = true;
+      }
+
+      updates.detailsVerifiedPostCall = true;
+      updates.detailsVerifiedAt = new Date().toISOString();
+
+      // Update conversation context
+      await storage.updateConversation(call.conversationId, { context: updates });
+      console.log('[VERIFY-DETAILS] Updated details from post-call form for call:', callSid);
+
+      // Try to update Cliniko immediately if patient exists
+      try {
+        const { findPatientByPhone } = await import('../services/cliniko');
+        const { updateClinikoPatient } = await import('../integrations/cliniko');
+
+        if (call.fromNumber && updateClinikoPatient) {
+          const patient = await findPatientByPhone(call.fromNumber);
+          if (patient && patient.id) {
+            console.log('[VERIFY-DETAILS] Updating Cliniko patient immediately:', patient.id);
+
+            const clinikoUpdate: any = {};
+            if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
+            if (lastName && lastName.trim()) clinikoUpdate.last_name = lastName.trim();
+            if (email && email.trim()) clinikoUpdate.email = email.toLowerCase();
+            if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
+
+            if (Object.keys(clinikoUpdate).length > 0) {
+              await updateClinikoPatient(patient.id, clinikoUpdate);
+              console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated with verified details');
+            }
+          }
+        }
+      } catch (clinikoErr) {
+        console.warn('[VERIFY-DETAILS] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
+      }
+
+      res.json({ success: true, message: 'Details saved successfully!' });
+    } catch (error) {
+      console.error('Verify details error:', error);
+      res.status(500).json({ error: 'Failed to save details' });
+    }
+  });
+
+  // Get call details for verification form (helps pre-populate form)
+  app.get('/api/call-details/:callSid', async (req: Request, res: Response) => {
+    try {
+      const callSid = req.params.callSid;
+      const call = await storage.getCallByCallSid(callSid);
+
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      let context: any = {};
+      if (call.conversationId) {
+        const conversation = await storage.getConversation(call.conversationId);
+        context = (conversation?.context as any) || {};
+      }
+
+      // Return sanitized data for form pre-population
+      res.json({
+        callSid: call.callSid,
+        fromNumber: call.fromNumber,
+        firstName: context.firstName || '',
+        fullName: context.fullName || '',
+        email: context.email || '',
+        dateOfBirth: context.dateOfBirth || '',
+        preferredPhone: context.preferredPhone || call.fromNumber || '',
+        appointmentBooked: !!context.appointmentId
+      });
+    } catch (error) {
+      console.error('Get call details error:', error);
+      res.status(500).json({ error: 'Failed to fetch call details' });
+    }
+  });
 }

@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+    <title>Verify Your Details</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px 30px;
+            animation: slideUp 0.4s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 30px;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #718096;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .appointment-info {
+            background: #edf2f7;
+            border-left: 4px solid #667eea;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+        }
+
+        .appointment-info p {
+            font-size: 14px;
+            color: #2d3748;
+            margin: 0;
+        }
+
+        .appointment-info strong {
+            color: #1a202c;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .verified-badge {
+            display: inline-block;
+            background: #48bb78;
+            color: white;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            margin-left: 8px;
+            font-weight: 500;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 16px;
+            font-family: inherit;
+            transition: all 0.2s;
+            background: #f7fafc;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        input.error {
+            border-color: #f56565;
+            background: #fff5f5;
+        }
+
+        .error-message {
+            color: #f56565;
+            font-size: 13px;
+            margin-top: 6px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .helper-text {
+            color: #718096;
+            font-size: 12px;
+            margin-top: 6px;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+            margin-top: 10px;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .success {
+            text-align: center;
+            display: none;
+        }
+
+        .success.show {
+            display: block;
+        }
+
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            background: #48bb78;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            font-size: 40px;
+            animation: scaleIn 0.5s ease-out;
+        }
+
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+            }
+            to {
+                transform: scale(1);
+            }
+        }
+
+        .success h2 {
+            color: #1a202c;
+            font-size: 22px;
+            margin-bottom: 12px;
+        }
+
+        .success p {
+            color: #718096;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        .updated-list {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 20px;
+            text-align: left;
+        }
+
+        .updated-list h3 {
+            font-size: 14px;
+            color: #2d3748;
+            margin-bottom: 12px;
+        }
+
+        .updated-list ul {
+            list-style: none;
+        }
+
+        .updated-list li {
+            color: #48bb78;
+            font-size: 14px;
+            padding: 4px 0;
+        }
+
+        .updated-list li:before {
+            content: "✓ ";
+            margin-right: 8px;
+        }
+
+        .form-container {
+            display: block;
+        }
+
+        .form-container.hide {
+            display: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .loading.hide {
+            display: none;
+        }
+
+        @media (max-width: 600px) {
+            .row {
+                grid-template-columns: 1fr;
+            }
+
+            .container {
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="loading" id="loadingMessage">
+            <div class="spinner" style="width: 40px; height: 40px; margin: 0 auto 20px;"></div>
+            <p style="color: #718096;">Loading your details...</p>
+        </div>
+
+        <div class="form-container hide" id="formContainer">
+            <div class="header">
+                <div class="icon">📋</div>
+                <h1>Verify Your Details</h1>
+                <p class="subtitle">Please confirm or update your information for our records.</p>
+            </div>
+
+            <div class="appointment-info" id="appointmentInfo" style="display: none;">
+                <p><strong>Appointment Status:</strong> <span id="appointmentStatus"></span></p>
+            </div>
+
+            <form id="detailsForm">
+                <div class="row">
+                    <div class="form-group">
+                        <label for="firstName">First Name</label>
+                        <input
+                            type="text"
+                            id="firstName"
+                            name="firstName"
+                            placeholder="John"
+                            autocomplete="given-name"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="lastName">Last Name</label>
+                        <input
+                            type="text"
+                            id="lastName"
+                            name="lastName"
+                            placeholder="Smith"
+                            autocomplete="family-name"
+                        >
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="email">Email Address</label>
+                    <input
+                        type="email"
+                        id="email"
+                        name="email"
+                        placeholder="your.name@example.com"
+                        autocomplete="email"
+                    >
+                    <div class="error-message" id="emailError">Please enter a valid email address</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="dateOfBirth">Date of Birth</label>
+                    <input
+                        type="date"
+                        id="dateOfBirth"
+                        name="dateOfBirth"
+                        autocomplete="bday"
+                    >
+                    <p class="helper-text">Optional - helps us provide better care</p>
+                </div>
+
+                <div class="form-group">
+                    <label for="preferredPhone">Phone Number</label>
+                    <input
+                        type="tel"
+                        id="preferredPhone"
+                        name="preferredPhone"
+                        placeholder="+61 4XX XXX XXX"
+                        autocomplete="tel"
+                    >
+                </div>
+
+                <button type="submit" id="submitBtn">
+                    <span id="btnText">Save Details</span>
+                </button>
+            </form>
+        </div>
+
+        <div class="success" id="successMessage">
+            <div class="success-icon">✓</div>
+            <h2>Details Updated!</h2>
+            <p>Your information has been successfully saved and synced to our system.</p>
+            <div class="updated-list" id="updatedList"></div>
+        </div>
+    </div>
+
+    <script>
+        // Get callSid from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const callSid = urlParams.get('callSid');
+
+        if (!callSid) {
+            alert('Invalid link. Please use the link from your text message.');
+        }
+
+        const form = document.getElementById('detailsForm');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const formContainer = document.getElementById('formContainer');
+        const successMessage = document.getElementById('successMessage');
+        const submitBtn = document.getElementById('submitBtn');
+        const btnText = document.getElementById('btnText');
+
+        // Form inputs
+        const firstNameInput = document.getElementById('firstName');
+        const lastNameInput = document.getElementById('lastName');
+        const emailInput = document.getElementById('email');
+        const dateOfBirthInput = document.getElementById('dateOfBirth');
+        const preferredPhoneInput = document.getElementById('preferredPhone');
+        const emailError = document.getElementById('emailError');
+
+        // Load existing data
+        async function loadCallDetails() {
+            try {
+                const response = await fetch(`/api/call-details/${callSid}`);
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Pre-populate form
+                    firstNameInput.value = data.firstName || '';
+                    if (data.fullName && data.fullName.includes(' ')) {
+                        const parts = data.fullName.split(' ');
+                        lastNameInput.value = parts.slice(1).join(' ');
+                    }
+                    emailInput.value = data.email || '';
+                    dateOfBirthInput.value = data.dateOfBirth || '';
+                    preferredPhoneInput.value = data.preferredPhone || '';
+
+                    // Show appointment status if booked
+                    if (data.appointmentBooked) {
+                        document.getElementById('appointmentInfo').style.display = 'block';
+                        document.getElementById('appointmentStatus').textContent = 'Confirmed ✓';
+                    }
+
+                    // Show form
+                    loadingMessage.classList.add('hide');
+                    formContainer.classList.remove('hide');
+                } else {
+                    throw new Error('Failed to load details');
+                }
+            } catch (error) {
+                console.error('Error loading details:', error);
+                loadingMessage.innerHTML = '<p style="color: #f56565;">Failed to load details. Please try refreshing the page.</p>';
+            }
+        }
+
+        // Load data on page load
+        loadCallDetails();
+
+        // Email validation
+        function validateEmail(email) {
+            if (!email) return true; // Optional field
+            const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return re.test(email);
+        }
+
+        // Real-time email validation
+        emailInput.addEventListener('input', () => {
+            const email = emailInput.value.trim();
+            if (email && !validateEmail(email)) {
+                emailInput.classList.add('error');
+                emailError.classList.add('show');
+            } else {
+                emailInput.classList.remove('error');
+                emailError.classList.remove('show');
+            }
+        });
+
+        // Form submission
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const firstName = firstNameInput.value.trim();
+            const lastName = lastNameInput.value.trim();
+            const email = emailInput.value.trim();
+            const dateOfBirth = dateOfBirthInput.value;
+            const preferredPhone = preferredPhoneInput.value.trim();
+
+            // Validate email if provided
+            if (email && !validateEmail(email)) {
+                emailInput.classList.add('error');
+                emailError.classList.add('show');
+                return;
+            }
+
+            // Disable form
+            submitBtn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span>Saving...';
+
+            // Track what was updated
+            const updates = [];
+            if (firstName) updates.push('Name');
+            if (email) updates.push('Email');
+            if (dateOfBirth) updates.push('Date of Birth');
+            if (preferredPhone) updates.push('Phone Number');
+
+            try {
+                const response = await fetch('/api/verify-details', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        callSid: callSid,
+                        firstName: firstName || undefined,
+                        lastName: lastName || undefined,
+                        email: email || undefined,
+                        dateOfBirth: dateOfBirth || undefined,
+                        preferredPhone: preferredPhone || undefined
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Show what was updated
+                    if (updates.length > 0) {
+                        const updatedListHtml = `
+                            <h3>Updated Information:</h3>
+                            <ul>
+                                ${updates.map(item => `<li>${item}</li>`).join('')}
+                            </ul>
+                        `;
+                        document.getElementById('updatedList').innerHTML = updatedListHtml;
+                    }
+
+                    // Show success message
+                    formContainer.classList.add('hide');
+                    successMessage.classList.add('show');
+                } else {
+                    alert(data.error || 'Failed to save details. Please try again.');
+                    submitBtn.disabled = false;
+                    btnText.textContent = 'Save Details';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred. Please try again.');
+                submitBtn.disabled = false;
+                btnText.textContent = 'Save Details';
+            }
+        });
+    </script>
+</body>
+</html>

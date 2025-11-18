@@ -15,7 +15,7 @@ import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME } from "../utils/voice-const
 import { abs } from "../utils/url";
 import { labelForSpeech, AUST_TZ } from "../time";
 import { storage } from "../storage";
-import { sendAppointmentConfirmation } from "../services/sms";
+import { sendAppointmentConfirmation, sendEmailCollectionLink, sendNameVerificationLink, sendPostCallDataCollection } from "../services/sms";
 import { emitCallStarted, emitCallUpdated, emitAlertCreated } from "../services/websocket";
 import { classifyIntent } from "../services/intent";
 import { env } from "../utils/env";
@@ -67,11 +67,20 @@ function parseDayOfWeek(speechRaw: string): string | undefined {
 /**
  * Helper function to normalize spoken email addresses
  * Converts speech patterns like "john dot smith at gmail dot com" to "john.smith@gmail.com"
- * Returns null if the email doesn't pass basic validation
+ * Returns { email: string | null, errorType: string | null }
  */
-function normalizeSpokenEmail(raw: string): string | null {
-  if (!raw) return null;
+function normalizeSpokenEmail(raw: string): { email: string | null; errorType: string | null } {
+  if (!raw) return { email: null, errorType: "empty" };
   let s = raw.trim().toLowerCase();
+
+  // Handle number words (common in emails)
+  const numberWords: Record<string, string> = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
+  };
+  Object.keys(numberWords).forEach(word => {
+    s = s.replace(new RegExp(`\\b${word}\\b`, 'g'), numberWords[word]);
+  });
 
   // Common spoken words → symbols
   s = s.replace(/\s+at\s+/g, "@");
@@ -80,34 +89,77 @@ function normalizeSpokenEmail(raw: string): string | null {
   s = s.replace(/\s+(dash|hyphen)\s+/g, "-");
   s = s.replace(/\s+plus\s+/g, "+");
 
+  // Common email provider shortcuts
+  s = s.replace(/\bgmail\b/, "gmail");
+  s = s.replace(/\byahoo\b/, "yahoo");
+  s = s.replace(/\bhotmail\b/, "hotmail");
+  s = s.replace(/\boutlook\b/, "outlook");
+
   // Remove remaining spaces
   s = s.replace(/\s+/g, "");
 
-  // Strict validation: Only allow valid email characters
-  // Local part (before @): letters, numbers, dots, hyphens, underscores, plus
-  // Domain part (after @): letters, numbers, dots, hyphens
-  // Must have exactly one @ symbol and at least one dot after @
-  const emailRegex = /^[a-z0-9._+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
-
-  // Additional checks
-  if (!emailRegex.test(s)) {
-    console.log("[normalizeSpokenEmail] Failed regex validation:", s);
-    return null;
+  // Check for missing @ symbol
+  if (!s.includes("@")) {
+    console.log("[normalizeSpokenEmail] Missing @ symbol:", s);
+    return { email: null, errorType: "missing_at" };
   }
 
-  // Reject if it has comma, space, or other invalid characters
-  if (/[,\s]/.test(s)) {
-    console.log("[normalizeSpokenEmail] Contains invalid characters (comma or space):", s);
-    return null;
+  // Check for multiple @ symbols
+  if ((s.match(/@/g) || []).length > 1) {
+    console.log("[normalizeSpokenEmail] Multiple @ symbols:", s);
+    return { email: null, errorType: "multiple_at" };
   }
 
-  // Reject if @ symbol is at the start or end
+  // Check for @ at start or end
   if (s.startsWith('@') || s.endsWith('@')) {
     console.log("[normalizeSpokenEmail] Invalid @ position:", s);
-    return null;
+    return { email: null, errorType: "invalid_at_position" };
   }
 
-  return s;
+  // Split on @ to validate parts
+  const parts = s.split("@");
+  if (parts.length !== 2) {
+    console.log("[normalizeSpokenEmail] Invalid email structure:", s);
+    return { email: null, errorType: "invalid_structure" };
+  }
+
+  const [local, domain] = parts;
+
+  // Check local part
+  if (!local || local.length === 0) {
+    console.log("[normalizeSpokenEmail] Empty local part:", s);
+    return { email: null, errorType: "missing_username" };
+  }
+
+  // Check domain part has at least one dot
+  if (!domain.includes(".")) {
+    console.log("[normalizeSpokenEmail] Domain missing dot:", s);
+    return { email: null, errorType: "missing_domain" };
+  }
+
+  // Check domain has valid TLD (at least 2 chars after last dot)
+  const domainParts = domain.split(".");
+  const tld = domainParts[domainParts.length - 1];
+  if (!tld || tld.length < 2) {
+    console.log("[normalizeSpokenEmail] Invalid TLD:", s);
+    return { email: null, errorType: "invalid_domain" };
+  }
+
+  // Strict validation: Only allow valid email characters
+  const emailRegex = /^[a-z0-9._+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+  if (!emailRegex.test(s)) {
+    console.log("[normalizeSpokenEmail] Failed regex validation:", s);
+    return { email: null, errorType: "invalid_characters" };
+  }
+
+  // Reject if it still has comma, space, or other invalid characters
+  if (/[,\s]/.test(s)) {
+    console.log("[normalizeSpokenEmail] Contains invalid characters:", s);
+    return { email: null, errorType: "invalid_characters" };
+  }
+
+  console.log("[normalizeSpokenEmail] Successfully normalized:", s);
+  return { email: s, errorType: null };
 }
 
 /**
@@ -376,40 +428,79 @@ export function registerVoice(app: Express) {
 
     const vr = new twilio.twiml.VoiceResponse();
 
-    // Start recording after a delay to ensure call is in-progress
+    // Start recording after verifying call is in-progress
     const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
       console.log("[VOICE][RECORDING] 🎙️  Recording is ENABLED for call:", callSid);
 
-      // Wait 2 seconds for call to be fully established before starting recording
-      setTimeout(async () => {
+      // Function to check call status and start recording when ready
+      const startRecordingWhenReady = async (attemptNumber = 1, maxAttempts = 5) => {
         try {
           const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
-          const recordingParams: any = {
-            recordingStatusCallback: abs("/api/voice/recording-status"),
-            recordingStatusCallbackMethod: "POST",
-          };
+          // Check call status before attempting to record
+          console.log("[VOICE][RECORDING] 🔍 Checking call status (attempt", attemptNumber, "of", maxAttempts, ")");
+          const call = await client.calls(callSid).fetch();
+          console.log("[VOICE][RECORDING] 📞 Call status:", call.status);
 
-          // Note: Twilio native transcription doesn't work with Recordings API
-          // We use AssemblyAI for transcription in the recording-status webhook instead
-          if (env.TRANSCRIPTION_ENABLED) {
-            console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled (via AssemblyAI)");
+          if (call.status === 'in-progress') {
+            // Call is ready, start recording
+            const recordingParams: any = {
+              recordingStatusCallback: abs("/api/voice/recording-status"),
+              recordingStatusCallbackMethod: "POST",
+            };
+
+            // Note: Twilio native transcription doesn't work with Recordings API
+            // We use AssemblyAI for transcription in the recording-status webhook instead
+            if (env.TRANSCRIPTION_ENABLED) {
+              console.log("[VOICE][RECORDING] 📞 Recording with transcription enabled (via AssemblyAI)");
+            }
+
+            console.log("[VOICE][RECORDING] 🔄 Starting recording for call:", callSid);
+            console.log("[VOICE][RECORDING] 📋 Recording parameters:", JSON.stringify(recordingParams, null, 2));
+            const recording = await client.calls(callSid).recordings.create(recordingParams);
+            console.log("[VOICE][RECORDING] 📋 Twilio response:", JSON.stringify({
+              sid: recording.sid,
+              status: recording.status,
+              uri: recording.uri,
+              // Check if Twilio returned any transcription info
+              transcription: (recording as any).transcription
+            }, null, 2));
+            console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
+            console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
+            console.log("[VOICE][RECORDING]   - Status:", recording.status);
+          } else if (attemptNumber < maxAttempts && (call.status === 'ringing' || call.status === 'queued')) {
+            // Call not ready yet, retry after a short delay
+            console.log("[VOICE][RECORDING] ⏳ Call not in-progress yet, will retry in 1 second");
+            setTimeout(() => startRecordingWhenReady(attemptNumber + 1, maxAttempts), 1000);
+          } else {
+            // Call is in unexpected state or max attempts reached
+            const errorMsg = attemptNumber >= maxAttempts
+              ? `Max attempts (${maxAttempts}) reached, call status: ${call.status}`
+              : `Call in unexpected state: ${call.status}`;
+            console.error("[VOICE][RECORDING] ❌ Cannot start recording:", errorMsg);
+
+            // Create alert for failed recording
+            try {
+              const tenant = await storage.getTenant("default");
+              if (tenant) {
+                await storage.createAlert({
+                  tenantId: tenant.id,
+                  reason: "recording_failed",
+                  payload: {
+                    error: errorMsg,
+                    callSid,
+                    callStatus: call.status,
+                    attempts: attemptNumber,
+                    timestamp: new Date().toISOString()
+                  },
+                  status: "open"
+                });
+              }
+            } catch (alertErr) {
+              console.error("[VOICE][RECORDING] ⚠️  Failed to create alert:", alertErr);
+            }
           }
-
-          console.log("[VOICE][RECORDING] 🔄 Starting recording for call:", callSid);
-          console.log("[VOICE][RECORDING] 📋 Recording parameters:", JSON.stringify(recordingParams, null, 2));
-          const recording = await client.calls(callSid).recordings.create(recordingParams);
-          console.log("[VOICE][RECORDING] 📋 Twilio response:", JSON.stringify({
-            sid: recording.sid,
-            status: recording.status,
-            uri: recording.uri,
-            // Check if Twilio returned any transcription info
-            transcription: (recording as any).transcription
-          }, null, 2));
-          console.log("[VOICE][RECORDING] ✅ SUCCESS! Recording started");
-          console.log("[VOICE][RECORDING]   - Recording SID:", recording.sid);
-          console.log("[VOICE][RECORDING]   - Status:", recording.status);
         } catch (recErr: any) {
           console.error("[VOICE][RECORDING] ❌ FAILED to start recording");
           console.error("[VOICE][RECORDING]   - Call SID:", callSid);
@@ -435,7 +526,10 @@ export function registerVoice(app: Express) {
             console.error("[VOICE][RECORDING] ⚠️  Failed to create alert:", alertErr);
           }
         }
-      }, 2000); // 2 second delay
+      };
+
+      // Start the process with initial delay to avoid immediate race condition
+      setTimeout(() => startRecordingWhenReady(), 500); // Start checking after 500ms
     } else {
       if (!env.CALL_RECORDING_ENABLED) {
         console.log("[VOICE][RECORDING] ⏭️  Recording is DISABLED (CALL_RECORDING_ENABLED=false)");
@@ -804,17 +898,37 @@ export function registerVoice(app: Express) {
         const knownName = (req.query.knownName as string) || "";
 
         // Parse response: are they the existing patient or new?
-        const isExisting = speechRaw.includes("yes") || speechRaw.includes("that's me") || speechRaw.includes("thats me") ||
-                          speechRaw.includes("correct") || speechRaw.includes("right") ||
-                          speechRaw.includes("i am") || speechRaw.includes("i'm") ||
-                          speechRaw.includes("this is") || speechRaw.match(/^(yep|yeah|yup)$/i);
-        const isNew = speechRaw.includes("new") || speechRaw.includes("first") || speechRaw.includes("never") ||
-                     speechRaw.includes("no") || speechRaw.includes("not");
+        // Priority order: explicit "new" keywords > confirmation words
+        const hasNewKeywords = speechRaw.includes("new") || speechRaw.includes("first") ||
+                               speechRaw.includes("never been") || speechRaw.includes("first time");
+        const hasNoKeywords = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("nope");
+        const hasYesKeywords = speechRaw.includes("yes") || speechRaw.includes("that's me") || speechRaw.includes("thats me") ||
+                               speechRaw.includes("correct") || speechRaw.includes("right") ||
+                               speechRaw.includes("i am") || speechRaw.includes("i'm") ||
+                               speechRaw.includes("this is") || speechRaw.match(/^(yep|yeah|yup)$/i);
+
+        // Improved disambiguation logic with priority
+        let isExisting = false;
+        let isNew = false;
+
+        // Priority 1: If they say "new" or "first", they're new regardless of "yes"
+        if (hasNewKeywords) {
+          isNew = true;
+        }
+        // Priority 2: If they say "no" without "new", they're denying being the existing patient
+        else if (hasNoKeywords && !hasNewKeywords) {
+          isNew = true;
+        }
+        // Priority 3: Clear "yes" without any "new" or "no" keywords
+        else if (hasYesKeywords && !hasNoKeywords && !hasNewKeywords) {
+          isExisting = true;
+        }
 
         console.log("[CONFIRM-EXISTING-OR-NEW] Speech:", speechRaw);
-        console.log("[CONFIRM-EXISTING-OR-NEW] isExisting:", isExisting, "isNew:", isNew);
+        console.log("[CONFIRM-EXISTING-OR-NEW] hasNewKeywords:", hasNewKeywords, "hasNoKeywords:", hasNoKeywords, "hasYesKeywords:", hasYesKeywords);
+        console.log("[CONFIRM-EXISTING-OR-NEW] Resolved: isExisting:", isExisting, "isNew:", isNew);
 
-        if (isExisting && !isNew) {
+        if (isExisting) {
           // They confirmed they are the existing patient
           try {
             const call = await storage.getCallByCallSid(callSid);
@@ -834,13 +948,15 @@ export function registerVoice(app: Express) {
                   fullName: existingPatientName,
                   firstName,
                   identityConfirmed: true,
-                  isReturning: true
+                  isReturning: true,
+                  isNewPatient: false  // CRITICAL: Explicitly mark as NOT a new patient
                 }
               });
               console.log("[CONFIRM-EXISTING-OR-NEW] Patient confirmed as existing:", {
                 patientMode: "existing",
                 patientId: existingPatientId,
-                fullName: existingPatientName
+                fullName: existingPatientName,
+                isNewPatient: false
               });
             }
           } catch (err) {
@@ -867,7 +983,7 @@ export function registerVoice(app: Express) {
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
-        } else if (isNew && !isExisting) {
+        } else if (isNew) {
           // They indicated they are a new patient
           try {
             const call = await storage.getCallByCallSid(callSid);
@@ -921,9 +1037,9 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const namePrompts = [
-            `Lovely! Since it's your first visit, I just need to get your details into the system. What's your full name?`,
-            `Perfect! Because you're new, I'll need your full name for our records.`,
-            `Great! Let me get your details. What's your full name?`
+            `Lovely! Since it's your first visit, I just need to get your details into the system. What's your full name? Or if you prefer, say 'text me' and I'll send you a link.`,
+            `Perfect! Because you're new, I'll need your full name for our records. You can spell it out or say 'text me' for a link.`,
+            `Great! Let me get your details. What's your full name? Feel free to say 'text me' if you'd like to type it instead.`
           ];
           const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
           saySafeSSML(g, randomPrompt);
@@ -1088,9 +1204,10 @@ export function registerVoice(app: Express) {
 
         // Normalize and store email if provided
         if (!skipEmail && emailRaw && emailRaw.length > 0) {
-          const normalizedEmail = normalizeSpokenEmail(emailRaw);
+          const { email: normalizedEmail, errorType } = normalizeSpokenEmail(emailRaw);
           console.log("[ASK-OTHER-PERSON-EMAIL] Raw email from speech:", emailRaw);
           console.log("[ASK-OTHER-PERSON-EMAIL] Normalized email:", normalizedEmail || "INVALID");
+          console.log("[ASK-OTHER-PERSON-EMAIL] Error type:", errorType || "none");
 
           if (normalizedEmail) {
             try {
@@ -1623,6 +1740,42 @@ export function registerVoice(app: Express) {
       // 5) ASK-NAME-NEW → Collect name for new patient
       if (route === "ask-name-new") {
         const name = speechRaw || "";
+
+        // Check if user wants to receive SMS link for name verification
+        if (name && (name.toLowerCase().includes("text me") || name.toLowerCase().includes("text it") || name.toLowerCase().includes("send me"))) {
+          console.log("[ASK-NAME-NEW] User requested SMS link for name verification");
+
+          // Send SMS link immediately
+          try {
+            const tenant = await storage.getTenant("default");
+            const clinicName = tenant?.clinicName || "the clinic";
+
+            await sendNameVerificationLink({
+              to: from,
+              callSid: callSid,
+              clinicName: clinicName
+            });
+
+            console.log("[ASK-NAME-NEW] ✅ SMS name verification link sent to:", from);
+
+            const acknowledgments = [
+              `Perfect! I've just sent you a text with a link to enter your name. Let's continue with your booking.`,
+              `Great! Check your phone - I've texted you a link to type your name. Let's keep going.`,
+              `Done! I've sent you a text message. You can enter your name there and we'll continue.`
+            ];
+            const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+            saySafe(vr, randomAck);
+          } catch (err) {
+            console.error("[ASK-NAME-NEW] Failed to send SMS link:", err);
+            const fallback = "I'll make a note to collect your name later. Let's continue.";
+            saySafe(vr, fallback);
+          }
+
+          // Skip to email collection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
         const firstName = extractFirstName(name);
 
         // Store name and firstName in conversation context
@@ -1645,7 +1798,7 @@ export function registerVoice(app: Express) {
         // Move to email collection with SMS link option
         const g = vr.gather({
           input: ["speech"],
-          timeout: 5,
+          timeout: 10,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
           action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
@@ -1662,7 +1815,8 @@ export function registerVoice(app: Express) {
         const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
         saySafeSSML(g, randomPrompt);
         g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        // If timeout, re-ask for email instead of restarting
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -1670,24 +1824,78 @@ export function registerVoice(app: Express) {
       if (route === "ask-email-new") {
         const emailRaw = speechRaw || "";
 
-        // Get firstName from context
+        // Get firstName from context and retry count
         let firstName = "";
+        let emailRetryCount = 0;
         try {
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
             firstName = context?.firstName || "";
+            emailRetryCount = context?.emailRetryCount || 0;
           }
         } catch (err) {
           console.error("[ASK-EMAIL-NEW] Error getting firstName:", err);
         }
 
+        // Check if user wants to receive SMS link
+        if (emailRaw && (emailRaw.toLowerCase().includes("text me") || emailRaw.toLowerCase().includes("text it") || emailRaw.toLowerCase().includes("send me"))) {
+          console.log("[ASK-EMAIL-NEW] User requested SMS link for email");
+
+          // Mark that user wants SMS link
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, wantsEmailViaSMS: true }
+              });
+            }
+          } catch (err) {
+            console.error("[ASK-EMAIL-NEW] Failed to mark SMS preference:", err);
+          }
+
+          // Send SMS link immediately using caller's phone number
+          try {
+            const tenant = await storage.getTenant("default");
+            const clinicName = tenant?.clinicName || "the clinic";
+
+            await sendEmailCollectionLink({
+              to: from,
+              callSid: callSid,
+              clinicName: clinicName
+            });
+
+            console.log("[ASK-EMAIL-NEW] ✅ SMS link sent to:", from);
+
+            const acknowledgments = firstName ? [
+              `Perfect ${firstName}! I've just sent you a text with a link to enter your email. Let's continue with your booking.`,
+              `Great! Check your phone - I've texted you a link. Let's keep going.`
+            ] : [
+              `Done! I've sent you a text message with a link. Let's continue.`
+            ];
+            const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+            saySafe(vr, randomAck);
+          } catch (err) {
+            console.error("[ASK-EMAIL-NEW] Failed to send SMS link:", err);
+            // Fallback gracefully
+            const fallback = "I'll make a note to collect your email later. Let's continue.";
+            saySafe(vr, fallback);
+          }
+
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
         // Normalize spoken email using helper function
-        const normalizedEmail = normalizeSpokenEmail(emailRaw);
+        const { email: normalizedEmail, errorType } = normalizeSpokenEmail(emailRaw);
 
         console.log("[ASK-EMAIL-NEW] Raw email from speech:", emailRaw);
         console.log("[ASK-EMAIL-NEW] Normalized email:", normalizedEmail || "INVALID");
+        console.log("[ASK-EMAIL-NEW] Error type:", errorType || "none");
+        console.log("[ASK-EMAIL-NEW] Retry count:", emailRetryCount);
 
         // Store email in conversation context if valid
         if (normalizedEmail) {
@@ -1697,7 +1905,7 @@ export function registerVoice(app: Express) {
               const conversation = await storage.getConversation(call.conversationId);
               const existingContext = (conversation?.context as any) || {};
               await storage.updateConversation(call.conversationId, {
-                context: { ...existingContext, email: normalizedEmail }
+                context: { ...existingContext, email: normalizedEmail, emailRetryCount: 0 }
               });
             }
             console.log("[ASK-EMAIL-NEW] ✅ Stored normalized email:", normalizedEmail);
@@ -1708,8 +1916,49 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else if (emailRaw && emailRaw.length > 0) {
-          // Email was provided but didn't normalize - ask again
+          // Email was provided but didn't normalize - ask again with specific error feedback
           console.log("[ASK-EMAIL-NEW] ⚠️  Email normalization failed, asking again");
+
+          // Increment retry count
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, emailRetryCount: emailRetryCount + 1 }
+              });
+            }
+          } catch (err) {
+            console.error("[ASK-EMAIL-NEW] Failed to update retry count:", err);
+          }
+
+          // After 2 failed attempts, offer to skip
+          if (emailRetryCount >= 2) {
+            console.log("[ASK-EMAIL-NEW] Max retries reached, skipping email collection");
+            const skipMessages = firstName ? [
+              `No worries ${firstName}, we can sort that out later. Let's keep going.`
+            ] : [
+              `That's okay, we can get that sorted later. Let's continue.`
+            ];
+            const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
+            saySafe(vr, randomSkip);
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          // Build specific error feedback based on error type
+          let errorFeedback = "";
+          if (errorType === "missing_at") {
+            errorFeedback = "I didn't hear the 'at' symbol. ";
+          } else if (errorType === "missing_domain") {
+            errorFeedback = "I think the domain part might be incomplete. ";
+          } else if (errorType === "invalid_domain") {
+            errorFeedback = "The domain doesn't sound quite right. ";
+          } else if (errorType === "missing_username") {
+            errorFeedback = "I didn't catch the first part of your email. ";
+          }
+
           const g = vr.gather({
             input: ["speech"],
             timeout: 10,
@@ -1719,20 +1968,67 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const retryPrompts = firstName ? [
-            `Sorry ${firstName}, I didn't quite catch that email address. Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`,
-            `Hmm, I'm having trouble with that email. Can you spell it out for me? Like 'jane underscore doe at outlook dot com'.`
+            `Sorry ${firstName}, ${errorFeedback}Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`,
+            `${errorFeedback}Let me try again. Can you spell it out for me? Like 'jane underscore doe at outlook dot com'.`
           ] : [
-            `Sorry, I didn't catch that email address. Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`
+            `Sorry, ${errorFeedback}Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`
           ];
           const randomRetry = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
           saySafe(g, randomRetry);
           g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // If timeout, re-ask for email instead of restarting
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // No email provided - skip to phone confirmation
-          console.log("[ASK-EMAIL-NEW] No email provided, skipping to phone confirmation");
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+          // No email captured from speech - ask again instead of skipping
+          console.log("[ASK-EMAIL-NEW] ⚠️  No speech captured, asking for email again");
+
+          // Increment retry count
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, emailRetryCount: emailRetryCount + 1 }
+              });
+            }
+          } catch (err) {
+            console.error("[ASK-EMAIL-NEW] Failed to update retry count:", err);
+          }
+
+          // After 2 attempts with no speech, skip
+          if (emailRetryCount >= 2) {
+            console.log("[ASK-EMAIL-NEW] No speech after multiple attempts, skipping email");
+            const skipMessages = [
+              `That's okay, we'll get your email sorted out later. Let's keep going.`,
+              `No worries, we can collect that another time. Let's continue.`
+            ];
+            const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
+            saySafe(vr, randomSkip);
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 10,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          const noSpeechPrompts = firstName ? [
+            `Sorry ${firstName}, I didn't hear anything. What's your email address? You can spell it out, or say 'text me' for a link.`,
+            `I didn't catch that. Can you spell out your email? Or say 'text me' and I'll send you a link.`
+          ] : [
+            `Sorry, I didn't hear that. Could you spell out your email address slowly?`
+          ];
+          const randomPrompt = noSpeechPrompts[Math.floor(Math.random() * noSpeechPrompts.length)];
+          saySafe(g, randomPrompt);
+          g.pause({ length: 1 });
+          // If timeout, re-ask for email instead of restarting
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
       }
@@ -3460,6 +3756,43 @@ export function registerVoice(app: Express) {
                 appointmentDate: spokenTime,
                 clinicName: tenant.clinicName,
               });
+
+              // Send post-call data verification link to improve data quality
+              // Check if we have missing or unverified data
+              const call = await storage.getCallByCallSid(callSid);
+              let context: any = {};
+              if (call?.conversationId) {
+                const conversation = await storage.getConversation(call.conversationId);
+                context = (conversation?.context as any) || {};
+              }
+
+              const missingFields: string[] = [];
+              const needsVerification = [];
+
+              // Check for missing or voice-collected (potentially inaccurate) data
+              if (!context.nameVerifiedViaSMS && context.fullName) {
+                needsVerification.push('name (collected via voice)');
+              }
+              if (!context.emailCollectedViaSMS && (!context.email || !context.email.includes('@'))) {
+                missingFields.push('email');
+              }
+              if (!context.dateOfBirth) {
+                missingFields.push('date of birth');
+              }
+
+              // Send post-call SMS if there's any data to verify or collect
+              if (missingFields.length > 0 || needsVerification.length > 0) {
+                console.log('[BOOK-CHOOSE] Sending post-call verification SMS - missing:', missingFields, 'needs verification:', needsVerification);
+                await sendPostCallDataCollection({
+                  to: from,
+                  callSid: callSid,
+                  clinicName: tenant.clinicName,
+                  appointmentDetails: `Your appointment is confirmed for ${spokenTime}.`,
+                  missingFields: [...missingFields, ...needsVerification]
+                });
+              } else {
+                console.log('[BOOK-CHOOSE] All data verified, skipping post-call verification SMS');
+              }
             }
           } catch (smsErr) {
             console.warn("[SMS] Failed to send confirmation:", smsErr);

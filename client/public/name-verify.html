@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+    <title>Verify Your Name</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 100%;
+            padding: 40px 30px;
+            animation: slideUp 0.4s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 30px;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #718096;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 16px;
+            font-family: inherit;
+            transition: all 0.2s;
+            background: #f7fafc;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        input.error {
+            border-color: #f56565;
+            background: #fff5f5;
+        }
+
+        .error-message {
+            color: #f56565;
+            font-size: 13px;
+            margin-top: 6px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .helper-text {
+            color: #718096;
+            font-size: 12px;
+            margin-top: 6px;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+            margin-top: 10px;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .success {
+            text-align: center;
+            display: none;
+        }
+
+        .success.show {
+            display: block;
+        }
+
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            background: #48bb78;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            font-size: 40px;
+            animation: scaleIn 0.5s ease-out;
+        }
+
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+            }
+            to {
+                transform: scale(1);
+            }
+        }
+
+        .success h2 {
+            color: #1a202c;
+            font-size: 22px;
+            margin-bottom: 12px;
+        }
+
+        .success p {
+            color: #718096;
+            line-height: 1.6;
+        }
+
+        .form-container {
+            display: block;
+        }
+
+        .form-container.hide {
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="form-container" id="formContainer">
+            <div class="header">
+                <div class="icon">👤</div>
+                <h1>Verify Your Name</h1>
+                <p class="subtitle">Please confirm the spelling of your name for our records.</p>
+            </div>
+
+            <form id="nameForm">
+                <div class="form-group">
+                    <label for="firstName">First Name *</label>
+                    <input
+                        type="text"
+                        id="firstName"
+                        name="firstName"
+                        placeholder="John"
+                        required
+                        autocomplete="given-name"
+                        autofocus
+                    >
+                    <div class="error-message" id="firstNameError">First name is required</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="lastName">Last Name</label>
+                    <input
+                        type="text"
+                        id="lastName"
+                        name="lastName"
+                        placeholder="Smith"
+                        autocomplete="family-name"
+                    >
+                    <p class="helper-text">Leave blank if you only have one name</p>
+                </div>
+
+                <button type="submit" id="submitBtn">
+                    <span id="btnText">Confirm Name</span>
+                </button>
+            </form>
+        </div>
+
+        <div class="success" id="successMessage">
+            <div class="success-icon">✓</div>
+            <h2>Name Saved!</h2>
+            <p>Your name has been successfully verified and updated in our system.</p>
+        </div>
+    </div>
+
+    <script>
+        // Get callSid from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const callSid = urlParams.get('callSid');
+
+        if (!callSid) {
+            alert('Invalid link. Please use the link from your text message.');
+        }
+
+        const form = document.getElementById('nameForm');
+        const firstNameInput = document.getElementById('firstName');
+        const lastNameInput = document.getElementById('lastName');
+        const firstNameError = document.getElementById('firstNameError');
+        const submitBtn = document.getElementById('submitBtn');
+        const btnText = document.getElementById('btnText');
+        const formContainer = document.getElementById('formContainer');
+        const successMessage = document.getElementById('successMessage');
+
+        // Name validation
+        function validateName(name) {
+            // Allow letters, spaces, hyphens, apostrophes
+            const re = /^[a-zA-Z\s\-']+$/;
+            return name.length > 0 && name.length <= 50 && re.test(name);
+        }
+
+        // Real-time validation for first name
+        firstNameInput.addEventListener('input', () => {
+            const value = firstNameInput.value.trim();
+            if (value && !validateName(value)) {
+                firstNameInput.classList.add('error');
+                firstNameError.textContent = 'Please use only letters, spaces, hyphens, and apostrophes';
+                firstNameError.classList.add('show');
+            } else if (value && value.length > 50) {
+                firstNameInput.classList.add('error');
+                firstNameError.textContent = 'Name is too long (max 50 characters)';
+                firstNameError.classList.add('show');
+            } else {
+                firstNameInput.classList.remove('error');
+                firstNameError.classList.remove('show');
+            }
+        });
+
+        // Real-time validation for last name
+        lastNameInput.addEventListener('input', () => {
+            const value = lastNameInput.value.trim();
+            if (value && !validateName(value)) {
+                lastNameInput.classList.add('error');
+            } else {
+                lastNameInput.classList.remove('error');
+            }
+        });
+
+        // Form submission
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const firstName = firstNameInput.value.trim();
+            const lastName = lastNameInput.value.trim();
+
+            // Validate
+            if (!firstName) {
+                firstNameInput.classList.add('error');
+                firstNameError.textContent = 'First name is required';
+                firstNameError.classList.add('show');
+                return;
+            }
+
+            if (!validateName(firstName)) {
+                firstNameInput.classList.add('error');
+                firstNameError.textContent = 'Please use only letters, spaces, hyphens, and apostrophes';
+                firstNameError.classList.add('show');
+                return;
+            }
+
+            if (lastName && !validateName(lastName)) {
+                lastNameInput.classList.add('error');
+                alert('Please use only letters, spaces, hyphens, and apostrophes in last name');
+                return;
+            }
+
+            // Disable form
+            submitBtn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span>Saving...';
+
+            try {
+                const response = await fetch('/api/name-verify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        callSid: callSid,
+                        firstName: firstName,
+                        lastName: lastName || undefined
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Show success message
+                    formContainer.classList.add('hide');
+                    successMessage.classList.add('show');
+                } else {
+                    alert(data.error || 'Failed to save name. Please try again.');
+                    submitBtn.disabled = false;
+                    btnText.textContent = 'Confirm Name';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred. Please try again.');
+                submitBtn.disabled = false;
+                btnText.textContent = 'Confirm Name';
+            }
+        });
+    </script>
+</body>
+</html>

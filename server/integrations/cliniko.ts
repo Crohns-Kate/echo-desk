@@ -11,6 +11,162 @@ function headers() {
   };
 }
 
+// --- Retry logic with exponential backoff ---
+interface RetryOptions {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  shouldRetry?: (error: any) => boolean;
+}
+
+/**
+ * Wraps an async operation with exponential backoff retry logic.
+ *
+ * @param operation - The async function to retry
+ * @param options - Retry configuration
+ * @returns The result of the operation
+ * @throws The last error if all retries are exhausted
+ */
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  options: RetryOptions = {}
+): Promise<T> {
+  const {
+    maxRetries = 3,
+    baseDelay = 1000,
+    maxDelay = 10000,
+    shouldRetry = defaultShouldRetry
+  } = options;
+
+  let lastError: any;
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      // Don't retry if this is the last attempt
+      if (attempt > maxRetries) {
+        console.error(`[Cliniko Retry] All ${maxRetries} retries exhausted:`, error);
+        break;
+      }
+
+      // Check if error is retryable
+      if (!shouldRetry(error)) {
+        console.warn('[Cliniko Retry] Non-retryable error, aborting:', error);
+        throw error;
+      }
+
+      // Calculate delay with exponential backoff and jitter
+      const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * 0.3 * exponentialDelay; // +/- 30% jitter
+      const delay = Math.min(exponentialDelay + jitter, maxDelay);
+
+      console.warn(
+        `[Cliniko Retry] Attempt ${attempt}/${maxRetries + 1} failed. ` +
+        `Retrying in ${Math.round(delay)}ms...`,
+        String(error).substring(0, 200)
+      );
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Determines if an error should trigger a retry.
+ * Retries network errors, rate limits (429), and server errors (5xx).
+ * Does NOT retry client errors (4xx) except 429.
+ */
+function defaultShouldRetry(error: any): boolean {
+  const errorStr = String(error);
+
+  // Network/connection errors - always retry
+  if (
+    errorStr.includes('ECONNREFUSED') ||
+    errorStr.includes('ETIMEDOUT') ||
+    errorStr.includes('ENOTFOUND') ||
+    errorStr.includes('socket hang up') ||
+    errorStr.includes('network')
+  ) {
+    return true;
+  }
+
+  // Extract HTTP status code if present
+  const statusMatch = errorStr.match(/\b(4\d{2}|5\d{2})\b/);
+  if (statusMatch) {
+    const status = parseInt(statusMatch[1], 10);
+
+    // Retry rate limits
+    if (status === 429) return true;
+
+    // Retry server errors (500-599)
+    if (status >= 500) return true;
+
+    // Don't retry client errors (400-499) except 429
+    if (status >= 400 && status < 500) return false;
+  }
+
+  // If we can't determine, err on the side of retrying
+  return true;
+}
+
+// --- Critical error alerting ---
+interface CriticalFailure {
+  operation: string;
+  patientId?: string;
+  error: string;
+  timestamp: string;
+  context?: Record<string, any>;
+}
+
+const criticalFailures: CriticalFailure[] = [];
+const MAX_STORED_FAILURES = 100;
+
+/**
+ * Logs a critical failure that should alert staff.
+ * In production, this could send emails, SMS, or Slack notifications.
+ *
+ * @param failure - Details about the critical failure
+ */
+export function logCriticalFailure(failure: Omit<CriticalFailure, 'timestamp'>): void {
+  const fullFailure: CriticalFailure = {
+    ...failure,
+    timestamp: new Date().toISOString()
+  };
+
+  // Store for retrieval
+  criticalFailures.push(fullFailure);
+  if (criticalFailures.length > MAX_STORED_FAILURES) {
+    criticalFailures.shift(); // Remove oldest
+  }
+
+  // Log to console (in production, add email/SMS/Slack integration here)
+  console.error('🚨 [CLINIKO CRITICAL FAILURE] 🚨', {
+    operation: fullFailure.operation,
+    patientId: fullFailure.patientId,
+    error: fullFailure.error.substring(0, 500),
+    timestamp: fullFailure.timestamp,
+    context: fullFailure.context
+  });
+
+  // TODO: Send alert to staff via email/SMS/Slack
+  // Example: await sendStaffAlert({ subject: 'Cliniko Update Failed', body: ... });
+}
+
+/**
+ * Retrieves recent critical failures for staff dashboard.
+ *
+ * @param limit - Maximum number of failures to return
+ * @returns Recent critical failures
+ */
+export function getRecentCriticalFailures(limit: number = 20): CriticalFailure[] {
+  return criticalFailures.slice(-limit).reverse();
+}
+
 // --- Input hygiene helpers ---
 export function sanitizeEmail(input?: string | null): string | null {
   if (!input) return null;
@@ -69,34 +225,53 @@ function normalizePhoneForMatching(input?: string | null): string[] {
   return variants;
 }
 
-// --- low-level fetch wrappers ---
+// --- low-level fetch wrappers (with retry logic) ---
 async function clinikoGet(path: string, params?: Record<string, string>): Promise<any> {
-  const url = new URL(CLINIKO_BASE + path);
-  if (params) {
-    // IMPORTANT: Explicitly set each parameter to ensure correct encoding
-    for (const [k, v] of Object.entries(params)) {
-      url.searchParams.set(String(k), String(v));
+  return withRetry(async () => {
+    const url = new URL(CLINIKO_BASE + path);
+    if (params) {
+      // IMPORTANT: Explicitly set each parameter to ensure correct encoding
+      for (const [k, v] of Object.entries(params)) {
+        url.searchParams.set(String(k), String(v));
+      }
     }
-  }
-  const res = await fetch(url.toString(), { method: "GET", headers: headers() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Cliniko GET ${url.pathname} ${res.status}: ${text}`);
-  }
-  return text ? JSON.parse(text) : {};
+    const res = await fetch(url.toString(), { method: "GET", headers: headers() });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Cliniko GET ${url.pathname} ${res.status}: ${text}`);
+    }
+    return text ? JSON.parse(text) : {};
+  }, { maxRetries: 3, baseDelay: 1000 });
 }
 
 async function clinikoPost(path: string, payload: any): Promise<any> {
-  const res = await fetch(CLINIKO_BASE + path, {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify(payload),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
-  }
-  return text ? JSON.parse(text) : {};
+  return withRetry(async () => {
+    const res = await fetch(CLINIKO_BASE + path, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
+    }
+    return text ? JSON.parse(text) : {};
+  }, { maxRetries: 3, baseDelay: 1000 });
+}
+
+async function clinikoPatch(path: string, payload: any): Promise<any> {
+  return withRetry(async () => {
+    const res = await fetch(CLINIKO_BASE + path, {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Cliniko PATCH ${path} ${res.status}: ${text}`);
+    }
+    return text ? JSON.parse(text) : {};
+  }, { maxRetries: 3, baseDelay: 1000 });
 }
 
 // --- search strategies ---
@@ -220,6 +395,73 @@ export async function getOrCreatePatient({
       const created = await clinikoPost("/patients", payload);
       console.log("[Cliniko] Created patient (no email):", created.id, first_name, last_name);
       return created;
+    }
+    throw e;
+  }
+}
+
+// --- Update existing patient ---
+export async function updateClinikoPatient(patientId: string, updates: {
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  date_of_birth?: string;
+  phone_numbers?: Array<{ label: string; number: string }>;
+}) {
+  console.log('[Cliniko] Updating patient:', patientId, 'with:', updates);
+
+  // Sanitize inputs
+  const payload: any = {};
+
+  if (updates.first_name) payload.first_name = updates.first_name.trim();
+  if (updates.last_name) payload.last_name = updates.last_name.trim();
+  if (updates.email) {
+    const sanitized = sanitizeEmail(updates.email);
+    if (sanitized) payload.email = sanitized;
+  }
+  if (updates.date_of_birth) payload.date_of_birth = updates.date_of_birth.trim();
+  if (updates.phone_numbers) payload.phone_numbers = updates.phone_numbers;
+
+  // If nothing to update, skip
+  if (Object.keys(payload).length === 0) {
+    console.log('[Cliniko] No valid updates provided, skipping');
+    return null;
+  }
+
+  try {
+    const updated = await clinikoPatch(`/patients/${patientId}`, payload);
+    console.log("[Cliniko] Updated patient:", patientId);
+    return updated;
+  } catch (e) {
+    const msg = String(e);
+    // If email fails, retry without it
+    if (/email.*invalid/i.test(msg) && payload.email) {
+      console.warn("[Cliniko] Email invalid during update, retrying without email");
+      delete payload.email;
+      if (Object.keys(payload).length > 0) {
+        try {
+          const updated = await clinikoPatch(`/patients/${patientId}`, payload);
+          console.log("[Cliniko] Updated patient (no email):", patientId);
+          return updated;
+        } catch (retryError) {
+          // Log critical failure after all retries exhausted
+          logCriticalFailure({
+            operation: 'updateClinikoPatient',
+            patientId,
+            error: String(retryError),
+            context: { updates, attemptedPayload: payload }
+          });
+          throw retryError;
+        }
+      }
+    } else {
+      // Log critical failure for non-email errors
+      logCriticalFailure({
+        operation: 'updateClinikoPatient',
+        patientId,
+        error: String(e),
+        context: { updates, payload }
+      });
     }
     throw e;
   }

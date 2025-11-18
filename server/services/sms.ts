@@ -70,15 +70,94 @@ export async function sendAppointmentReminder(params: {
 }): Promise<void> {
   try {
     const message = `Reminder: You have an appointment at ${params.clinicName} on ${params.appointmentDate}. Please call if you need to reschedule.`;
-    
+
     await client.messages.create({
       body: message,
       from: fromNumber,
       to: params.to
     });
-    
+
     console.log('[SMS] Sent reminder to', params.to);
   } catch (e) {
     console.error('[SMS] Failed to send reminder', e);
+  }
+}
+
+export async function sendEmailCollectionLink(params: {
+  to: string;
+  callSid: string;
+  clinicName: string;
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/email-collect?callSid=${encodeURIComponent(params.callSid)}`;
+    const message = `Hi from ${params.clinicName}! Please click this link to enter your email address: ${link}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent email collection link to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send email collection link', e);
+  }
+}
+
+export async function sendNameVerificationLink(params: {
+  to: string;
+  callSid: string;
+  clinicName: string;
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/name-verify?callSid=${encodeURIComponent(params.callSid)}`;
+    const message = `Hi from ${params.clinicName}! Please click this link to verify your name spelling: ${link}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent name verification link to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send name verification link', e);
+  }
+}
+
+export async function sendPostCallDataCollection(params: {
+  to: string;
+  callSid: string;
+  clinicName: string;
+  appointmentDetails?: string;
+  missingFields?: string[];
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/verify-details?callSid=${encodeURIComponent(params.callSid)}`;
+
+    let message = `Thanks for calling ${params.clinicName}!`;
+
+    if (params.appointmentDetails) {
+      message += ` ${params.appointmentDetails}`;
+    }
+
+    if (params.missingFields && params.missingFields.length > 0) {
+      message += `\n\nPlease verify your details here: ${link}`;
+    } else {
+      message += `\n\nVerify or update your details: ${link}`;
+    }
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent post-call data collection to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send post-call data collection', e);
   }
 }
