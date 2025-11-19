@@ -624,28 +624,9 @@ export function registerVoice(app: Express) {
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     } else {
-      // Unknown number - warm generic greeting
-      const handleUrl = abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`);
-      const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
-
-      const g = vr.gather({
-        input: ["speech"],
-        timeout: 5,
-        speechTimeout: "auto",
-        actionOnEmptyResult: true,
-        action: handleUrl,
-        method: "POST",
-      });
-
-      const greetings = [
-        `Hi there, thanks for calling ${clinicName}. How can I help you today?`,
-        `G'day, you've called ${clinicName}. What can I do for you?`,
-        `Hi, thanks for calling ${clinicName}. What brings you in?`
-      ];
-      const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-      saySafeSSML(g, randomGreeting);
-      g.pause({ length: 1 });
-      vr.redirect({ method: "POST" }, timeoutUrl);
+      // Unknown number - use NEW FSM handler
+      console.log("[VOICE][INCOMING] Using new FSM-based call flow");
+      vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=greeting`));
     }
 
     return res.type("text/xml").send(vr.toString());
@@ -2281,10 +2262,10 @@ export function registerVoice(app: Express) {
         } else {
           // Returning patient - proceed to week selection with empathy
           const empathyLines = firstName ? [
-            `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
-            `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Let me see what's available to get you in soon.`,
-            `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
-            `Ahh ${firstName}, that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
+            `${firstName}, ${EMOTIONS.empathetic("ahh sorry to hear that", "high")}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
+            `${firstName}, ${EMOTIONS.empathetic("oh you poor thing", "high")}. We'll take care of you. Let me see what's available to get you in soon.`,
+            `${firstName}, ${EMOTIONS.empathetic("that's not great", "high")}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
+            `${firstName}, ahh that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
           ] : [
             `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
             `${EMOTIONS.empathetic("Ahh that's not great", "high")}. We'll take care of you. Hang on while I check the schedule.`
@@ -2318,9 +2299,9 @@ export function registerVoice(app: Express) {
 
         // Warm intro - because it's their first visit
         const introLines = firstName ? [
-          `${EMOTIONS.empathetic("Ahh sorry to hear that", "high")}, ${firstName}. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
-          `${EMOTIONS.empathetic("Oh you poor thing", "high")}. We'll take care of you, ${firstName}. Since you haven't been before, let me run you through what happens on your first visit.`,
-          `${EMOTIONS.empathetic("That's not great", "high")}, ${firstName}. Before we book you in, let me just explain what to expect on your first visit.`
+          `${firstName}, ${EMOTIONS.empathetic("ahh sorry to hear that", "high")}. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
+          `${firstName}, ${EMOTIONS.empathetic("oh you poor thing", "high")}. We'll take care of you. Since you haven't been before, let me run you through what happens on your first visit.`,
+          `${firstName}, ${EMOTIONS.empathetic("that's not great", "high")}. Before we book you in, let me just explain what to expect on your first visit.`
         ] : [
           `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Because it's your first visit, let me quickly tell you what to expect.`,
           `${EMOTIONS.empathetic("Ahh that's not great", "high")}. Before we book you in, let me run you through what happens on your first visit.`
@@ -2405,6 +2386,27 @@ export function registerVoice(app: Express) {
             }
           } catch (err) {
             console.error("[PROCESS-WEEK] Error storing today preference:", err);
+          }
+          // Skip to time-of-day selection
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=0`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (speechRaw.includes("tomorrow")) {
+          // Handle tomorrow specifically
+          weekOffset = 0;
+          specificWeek = "tomorrow";
+          // Store tomorrow as the specific day and skip day selection
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              const tomorrowDayNumber = dayjs().tz().add(1, 'day').day(); // Tomorrow's day number
+              await storage.updateConversation(call.conversationId, {
+                context: { ...existingContext, weekOffset: 0, specificWeek: "tomorrow", preferredDayOfWeek: tomorrowDayNumber }
+              });
+            }
+          } catch (err) {
+            console.error("[PROCESS-WEEK] Error storing tomorrow preference:", err);
           }
           // Skip to time-of-day selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=0`));
@@ -3626,9 +3628,9 @@ export function registerVoice(app: Express) {
 
             // Warm, reassuring confirmation messages
             const confirmationMessages = firstName ? [
-              `${EMOTIONS.excited("Beautiful", "medium")}, you're all set ${firstName}! You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
-              `${EMOTIONS.excited("Perfect", "medium")}! You're all booked, ${firstName} - ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
-              `${EMOTIONS.excited("Lovely", "medium")}! All sorted ${firstName}. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+              `${firstName}, ${EMOTIONS.excited("beautiful", "medium")}! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+              `${firstName}, ${EMOTIONS.excited("perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+              `${firstName}, ${EMOTIONS.excited("lovely", "medium")}! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
             ] : [
               `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
             ];
@@ -3812,9 +3814,9 @@ export function registerVoice(app: Express) {
 
           // Warm, reassuring confirmation messages
           const confirmationMessages = firstName ? [
-            `${EMOTIONS.excited("Beautiful", "medium")}, you're all set ${firstName}! You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
-            `${EMOTIONS.excited("Perfect", "medium")}! You're all booked, ${firstName} - ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
-            `${EMOTIONS.excited("Lovely", "medium")}! All sorted ${firstName}. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+            `${firstName}, ${EMOTIONS.excited("beautiful", "medium")}! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+            `${firstName}, ${EMOTIONS.excited("perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+            `${firstName}, ${EMOTIONS.excited("lovely", "medium")}! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
           ] : [
             `${EMOTIONS.excited("Wonderful", "medium")}! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
           ];
@@ -4047,6 +4049,98 @@ export function registerVoice(app: Express) {
       return res.type("text/xml").send(vr.toString());
     } catch (err: any) {
       console.error("[VOICE][ERROR]", err?.stack || err);
+      const fallback = new twilio.twiml.VoiceResponse();
+      saySafe(fallback, "Sorry, an error occurred. Please try again later.");
+      return res.type("text/xml").send(fallback.toString());
+    }
+  });
+
+  // ───────────────────────────────────────────────
+  // NEW FSM-based call flow handler
+  // ───────────────────────────────────────────────
+  app.post("/api/voice/handle-flow", async (req: Request, res: Response) => {
+    try {
+      const callSid = (req.query.callSid as string) || (req.body?.CallSid as string) || "";
+      const step = (req.query.step as string) || "greeting";
+      const speechRaw = ((req.body?.SpeechResult as string) || "").trim();
+      const digits = (req.body?.Digits as string) || "";
+      const from = (req.body?.From as string) || "";
+
+      console.log("[VOICE][HANDLE-FLOW]", { step, callSid, speechRaw, digits, from });
+
+      const vr = new twilio.twiml.VoiceResponse();
+      const { CallFlowHandler, CallState } = await import('../services/callFlowHandler');
+
+      const handler = new CallFlowHandler(callSid, from, vr);
+      await handler.loadContext();
+
+      switch (step) {
+        case 'greeting':
+          await handler.handleGreeting();
+          break;
+
+        case 'patient_type':
+          await handler.handlePatientTypeDetect(speechRaw, digits);
+          break;
+
+        case 'phone_confirm':
+          await handler.handlePhoneConfirm(speechRaw, digits);
+          break;
+
+        case 'alternate_phone':
+          // Handle alternate phone number
+          if (digits && digits.length === 10) {
+            // Update caller phone and proceed
+            const newPhone = '+1' + digits; // Assuming US numbers
+            vr.redirect({
+              method: 'POST'
+            }, `/api/voice/handle-flow?callSid=${callSid}&step=send_form`);
+          } else {
+            saySafe(vr, "I didn't get a valid number. Let me transfer you to our reception.");
+            vr.hangup();
+          }
+          break;
+
+        case 'send_form':
+          await handler.handleSendFormLink();
+          break;
+
+        case 'check_form_status':
+          await handler.handleCheckFormStatus();
+          break;
+
+        case 'chief_complaint':
+          await handler.handleChiefComplaint(speechRaw);
+          break;
+
+        case 'choose_slot':
+          await handler.handleChooseSlot(speechRaw, digits);
+          break;
+
+        case 'final_check':
+          const sayingNo = speechRaw.toLowerCase().includes('no') ||
+                           speechRaw.toLowerCase().includes('nothing') ||
+                           speechRaw.toLowerCase().includes("that's all");
+
+          if (sayingNo) {
+            saySafe(vr, "Perfect! See you soon. Bye!");
+            vr.hangup();
+          } else {
+            saySafe(vr, "Let me transfer you to our reception for help with that.");
+            vr.hangup();
+          }
+          break;
+
+        default:
+          console.warn(`[VOICE][HANDLE-FLOW] Unknown step: ${step}`);
+          saySafe(vr, "I'm having trouble processing your request. Let me transfer you to our reception.");
+          vr.hangup();
+      }
+
+      return res.type("text/xml").send(handler.getTwiML());
+
+    } catch (err: any) {
+      console.error("[VOICE][HANDLE-FLOW][ERROR]", err?.stack || err);
       const fallback = new twilio.twiml.VoiceResponse();
       saySafe(fallback, "Sorry, an error occurred. Please try again later.");
       return res.type("text/xml").send(fallback.toString());

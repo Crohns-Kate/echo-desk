@@ -507,6 +507,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Register Twilio voice webhook routes
   registerVoice(app);
 
+  // Register form collection routes
+  const { registerForms } = await import('./routes/forms');
+  registerForms(app);
+
   // Register dashboard API routes
   registerApp(app);
 

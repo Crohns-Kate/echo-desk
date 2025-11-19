@@ -161,3 +161,25 @@ export async function sendPostCallDataCollection(params: {
     console.error('[SMS] Failed to send post-call data collection', e);
   }
 }
+
+export async function sendNewPatientForm(params: {
+  to: string;
+  token: string;
+  clinicName: string;
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/intake/${params.token}`;
+    const message = `Thanks for calling ${params.clinicName}! Please complete your details here (takes 30 seconds): ${link}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent new patient form link to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send new patient form link', e);
+  }
+}
