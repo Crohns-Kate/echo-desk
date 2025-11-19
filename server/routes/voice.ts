@@ -2011,44 +2011,64 @@ export function registerVoice(app: Express) {
 
       // 5b) CONFIRM-PHONE-NEW → Confirm phone number for new patient
       if (route === "confirm-phone-new") {
-        // Get the last 3 digits of the calling number
-        const lastThreeDigits = from.slice(-3);
-
-        // Get firstName from context
-        let firstName = "";
         try {
-          const call = await storage.getCallByCallSid(callSid);
-          if (call?.conversationId) {
-            const conversation = await storage.getConversation(call.conversationId);
-            const context = conversation?.context as any;
-            firstName = context?.firstName || "";
-          }
-        } catch (err) {
-          console.error("[CONFIRM-PHONE-NEW] Error getting firstName:", err);
-        }
+          console.log("[CONFIRM-PHONE-NEW] Starting route handler", { callSid, from });
 
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 5,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=process-phone-confirm&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // Add variety - sometimes use name with flavor, sometimes skip it
-        const phonePrompts = [
-          `Perfect, ${firstName}. Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you?`,
-          `Great. Is the number ending in ${lastThreeDigits} the best one to reach you on?`,
-          `And just to confirm, is the number ending in ${lastThreeDigits} the best way to contact you?`
-        ];
-        const randomPhonePrompt = phonePrompts[Math.floor(Math.random() * phonePrompts.length)];
-        const prompt = firstName
-          ? randomPhonePrompt
-          : `Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`;
-        saySafe(g, prompt);
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(vr.toString());
+          // Get the last 3 digits of the calling number
+          const lastThreeDigits = from.slice(-3);
+          console.log("[CONFIRM-PHONE-NEW] Last 3 digits:", lastThreeDigits);
+
+          // Get firstName from context
+          let firstName = "";
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            console.log("[CONFIRM-PHONE-NEW] Retrieved call:", call?.id);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              console.log("[CONFIRM-PHONE-NEW] Retrieved conversation:", conversation?.id);
+              const context = conversation?.context as any;
+              firstName = context?.firstName || "";
+              console.log("[CONFIRM-PHONE-NEW] First name from context:", firstName);
+            }
+          } catch (err) {
+            console.error("[CONFIRM-PHONE-NEW] Error getting firstName:", err);
+          }
+
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=process-phone-confirm&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+          });
+          console.log("[CONFIRM-PHONE-NEW] Gather configured");
+
+          // Add variety - sometimes use name with flavor, sometimes skip it
+          const phonePrompts = [
+            `Perfect, ${firstName}. Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you?`,
+            `Great. Is the number ending in ${lastThreeDigits} the best one to reach you on?`,
+            `And just to confirm, is the number ending in ${lastThreeDigits} the best way to contact you?`
+          ];
+          const randomPhonePrompt = phonePrompts[Math.floor(Math.random() * phonePrompts.length)];
+          const prompt = firstName
+            ? randomPhonePrompt
+            : `Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you on?`;
+          console.log("[CONFIRM-PHONE-NEW] Prompt:", prompt);
+
+          saySafe(g, prompt);
+          console.log("[CONFIRM-PHONE-NEW] saySafe completed");
+
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          console.log("[CONFIRM-PHONE-NEW] Sending response");
+          return res.type("text/xml").send(vr.toString());
+        } catch (err) {
+          console.error("[CONFIRM-PHONE-NEW] ❌ CRITICAL ERROR:", err);
+          console.error("[CONFIRM-PHONE-NEW] Error stack:", err instanceof Error ? err.stack : String(err));
+          // Re-throw to be caught by main error handler
+          throw err;
+        }
       }
 
       // 5c) PROCESS-PHONE-CONFIRM → Handle phone confirmation response
