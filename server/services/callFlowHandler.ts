@@ -585,33 +585,75 @@ export class CallFlowHandler {
     }
 
     const slot = this.ctx.appointmentSlots[this.ctx.selectedSlotIndex];
+    const { env } = await import('../utils/env');
 
     try {
-      // Create patient in Cliniko if new
-      let patientId = this.ctx.patientId;
+      // Determine if this is a new patient
+      const isNewPatient = !this.ctx.patientId && this.ctx.formData;
 
-      if (!patientId && this.ctx.formData) {
-        // Create new patient (this should be done via Cliniko API)
-        // For now, we'll just use the form data
-        console.log('[handleConfirmBooking] Would create patient:', this.ctx.formData);
-        // TODO: Actually create patient in Cliniko
-        // const newPatient = await createPatient(this.ctx.formData);
-        // patientId = newPatient.id;
+      // Use NEW_PATIENT appointment type for new patients
+      const appointmentTypeId = isNewPatient
+        ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
+        : env.CLINIKO_APPT_TYPE_ID;
+
+      console.log('[handleConfirmBooking] Creating appointment:');
+      console.log('[handleConfirmBooking]   - Is new patient:', isNewPatient);
+      console.log('[handleConfirmBooking]   - Appointment type ID:', appointmentTypeId);
+      console.log('[handleConfirmBooking]   - Phone:', this.ctx.callerPhone);
+      console.log('[handleConfirmBooking]   - Name:', this.ctx.formData?.firstName, this.ctx.formData?.lastName);
+
+      // Prepare full name for Cliniko
+      let fullName = '';
+      if (this.ctx.formData) {
+        fullName = `${this.ctx.formData.firstName} ${this.ctx.formData.lastName}`.trim();
+      } else if (this.ctx.patientName) {
+        fullName = this.ctx.patientName;
       }
 
-      // Create appointment
-      // TODO: Actually create appointment in Cliniko
-      // await createAppointmentForPatient({
-      //   patientId: patientId!,
-      //   startTime: slot.startISO,
-      //   practitionerId: slot.practitionerId!,
-      //   appointmentTypeId: slot.appointmentTypeId!
-      // });
+      // Create appointment (this also creates patient if needed)
+      const appointment = await createAppointmentForPatient(this.ctx.callerPhone, {
+        startsAt: slot.startISO,
+        practitionerId: env.CLINIKO_PRACTITIONER_ID,
+        appointmentTypeId: appointmentTypeId,
+        notes: isNewPatient
+          ? `New patient appointment booked via voice call at ${new Date().toISOString()}`
+          : `Follow-up appointment booked via voice call at ${new Date().toISOString()}`,
+        fullName: fullName || undefined,
+        email: this.ctx.formData?.email || this.ctx.patientEmail || undefined
+      });
 
-      saySafe(this.vr, `Perfect! You're all set for ${slot.speakable} with Dr. Michael. I'll text you a confirmation now.`);
+      console.log('[handleConfirmBooking] ✅ Appointment created successfully:');
+      console.log('[handleConfirmBooking]   - Appointment ID:', appointment?.id);
+      console.log('[handleConfirmBooking]   - Patient ID:', appointment?.patient_id);
+
+      // Store patient ID for future use
+      if (appointment?.patient_id) {
+        this.ctx.patientId = appointment.patient_id;
+        await this.saveContext();
+      }
+
+      const firstName = this.ctx.formData?.firstName || this.ctx.patientFirstName || '';
+      const confirmationText = firstName
+        ? `${firstName}, perfect! You're all set for ${slot.speakable} with Dr. Michael. I'll text you a confirmation now.`
+        : `Perfect! You're all set for ${slot.speakable} with Dr. Michael. I'll text you a confirmation now.`;
+
+      saySafe(this.vr, confirmationText);
 
       // Send SMS confirmation
-      // TODO: Send actual confirmation SMS
+      try {
+        const { sendAppointmentConfirmation } = await import('../services/sms');
+        const { storage } = await import('../storage');
+        const tenant = await storage.getTenant("default");
+        if (tenant) {
+          await sendAppointmentConfirmation({
+            to: this.ctx.callerPhone,
+            appointmentDate: slot.speakable,
+            clinicName: tenant.clinicName
+          });
+        }
+      } catch (smsErr) {
+        console.error('[handleConfirmBooking] Failed to send SMS:', smsErr);
+      }
 
       this.transitionTo(CallState.CLOSING);
       await this.handleClosing();

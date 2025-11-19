@@ -1724,36 +1724,31 @@ export function registerVoice(app: Express) {
 
         // Check if user wants to receive SMS link for name verification
         if (name && (name.toLowerCase().includes("text me") || name.toLowerCase().includes("text it") || name.toLowerCase().includes("send me"))) {
-          console.log("[ASK-NAME-NEW] User requested SMS link for name verification");
+          console.log("[ASK-NAME-NEW] User requested SMS link - redirecting to NEW FSM flow with form");
 
-          // Send SMS link immediately
+          // CRITICAL: Mark this as a new patient and set patientMode
           try {
-            const tenant = await storage.getTenant("default");
-            const clinicName = tenant?.clinicName || "the clinic";
-
-            await sendNameVerificationLink({
-              to: from,
-              callSid: callSid,
-              clinicName: clinicName
-            });
-
-            console.log("[ASK-NAME-NEW] ✅ SMS name verification link sent to:", from);
-
-            const acknowledgments = [
-              `Perfect! I've just sent you a text with a link to enter your name. Let's continue with your booking.`,
-              `Great! Check your phone - I've texted you a link to type your name. Let's keep going.`,
-              `Done! I've sent you a text message. You can enter your name there and we'll continue.`
-            ];
-            const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
-            saySafe(vr, randomAck);
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const existingContext = (conversation?.context as any) || {};
+              await storage.updateConversation(call.conversationId, {
+                context: {
+                  ...existingContext,
+                  patientMode: "new",
+                  isNewPatient: true,
+                  patientId: null  // Ensure no existing patient ID is used
+                }
+              });
+              console.log("[ASK-NAME-NEW] Set patientMode=new before form redirect");
+            }
           } catch (err) {
-            console.error("[ASK-NAME-NEW] Failed to send SMS link:", err);
-            const fallback = "I'll make a note to collect your name later. Let's continue.";
-            saySafe(vr, fallback);
+            console.error("[ASK-NAME-NEW] Failed to set patientMode:", err);
           }
 
-          // Skip to email collection
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
+          // Redirect to NEW FSM flow which properly handles form submission and waiting
+          saySafe(vr, "Perfect! Let me send you a form link to fill in your details. I'll wait right here.");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=send_form`));
           return res.type("text/xml").send(vr.toString());
         }
 
@@ -3239,42 +3234,59 @@ export function registerVoice(app: Express) {
 
         const g = vr.gather({
           input: ["speech", "dtmf"],
-          timeout: 5,
+          timeout: 8,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
           action: nextUrl,
           method: "POST",
+          hints: 'option one, option two, one, two, first, second, first one, second one',
+          numDigits: 1
         });
 
         // Build warm Australian prompts with firstName
+        // Convert day number to readable name
+        const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        let readableDay = "";
+
+        if (specificWeek === "today") {
+          readableDay = "today";
+        } else if (specificWeek === "tomorrow") {
+          readableDay = "tomorrow";
+        } else if (typeof preferredDayOfWeek === 'number') {
+          readableDay = dayNames[preferredDayOfWeek];
+        } else if (typeof preferredDayOfWeek === 'string') {
+          // Capitalize first letter
+          readableDay = preferredDayOfWeek.charAt(0).toUpperCase() + preferredDayOfWeek.slice(1).toLowerCase();
+        }
+
         let prompt: string;
-        if (preferredDayOfWeek && s2) {
+        if (readableDay && s2) {
           const prompts = firstName ? [
-            `Alright ${firstName}, I've got two good options for you on ${preferredDayOfWeek}. Option one is ${opt1}, or option two is ${opt2}. Just say option one or option two, or press 1 or 2.`,
-            `Great news ${firstName}! I've found two spots on ${preferredDayOfWeek}. Option one, ${opt1}. Or option two, ${opt2}. Which one suits you?`
+            `${firstName}, great news! I've found two spots for ${readableDay}. Option one, ${opt1}. Or option two, ${opt2}. Which one suits you?`,
+            `Alright ${firstName}, I've got two good options for you for ${readableDay}. Option one is ${opt1}, or option two is ${opt2}. Just say option one or option two, or press 1 or 2.`
           ] : [
-            `Great! I have two options for ${preferredDayOfWeek}. Option one is ${opt1}, or option two is ${opt2}. Say option one or option two, or press 1 or 2.`
+            `Great! I have two options for ${readableDay}. Option one is ${opt1}, or option two is ${opt2}. Say option one or option two, or press 1 or 2.`
           ];
           prompt = prompts[Math.floor(Math.random() * prompts.length)];
-        } else if (preferredDayOfWeek && !s2) {
+        } else if (readableDay && !s2) {
           const prompts = firstName ? [
-            `Perfect ${firstName}! I've got one spot on ${preferredDayOfWeek} at ${opt1}. Press 1 or say yes to book it.`,
-            `Great news! I have ${opt1} available on ${preferredDayOfWeek}. Does that work for you, ${firstName}?`
+            `${firstName}, perfect! I've got one spot for ${readableDay} at ${opt1}. Press 1 or say yes to book it.`,
+            `Great news! I have ${opt1} available for ${readableDay}. Does that work for you, ${firstName}?`
           ] : [
-            `Perfect! I have one option on ${preferredDayOfWeek}: ${opt1}. Press 1 or say yes to book it.`
+            `Perfect! I have one option for ${readableDay}: ${opt1}. Press 1 or say yes to book it.`
           ];
           prompt = prompts[Math.floor(Math.random() * prompts.length)];
         } else if (s2) {
           const prompts = firstName ? [
-            `Alright ${firstName}, I've got two good options. Option one is ${opt1}, or option two is ${opt2}. Which one works better?`,
-            `Great! I found two spots for you. Option one, ${opt1}. Or option two, ${opt2}. Just say which one you'd like.`
+            `${firstName}, great! I've got two good options. Option one is ${opt1}, or option two is ${opt2}. Which one works better?`,
+            `Alright! I found two spots for you. Option one, ${opt1}. Or option two, ${opt2}. Just say which one you'd like.`
           ] : [
             `Great! I have two options. Option one is ${opt1}, or option two is ${opt2}. Say option one or option two, or press 1 or 2.`
           ];
           prompt = prompts[Math.floor(Math.random() * prompts.length)];
         } else {
           const prompts = firstName ? [
-            `Perfect! I've got ${opt1} available. Does that work for you, ${firstName}?`,
+            `${firstName}, perfect! I've got ${opt1} available. Does that work for you?`,
             `Great news! I have one spot at ${opt1}. Shall I book that for you?`
           ] : [
             `Perfect! I have one option: ${opt1}. Press 1 or say yes to book it.`
@@ -4024,11 +4036,13 @@ export function registerVoice(app: Express) {
 
         const g = vr.gather({
           input: ["speech", "dtmf"],
-          timeout: 5,
+          timeout: 8,
           speechTimeout: "auto",
           actionOnEmptyResult: true,
           action: nextUrl,
           method: "POST",
+          hints: 'option one, option two, one, two, first, second, first one, second one',
+          numDigits: 1
         });
 
         saySafe(
