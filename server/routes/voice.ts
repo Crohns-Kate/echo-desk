@@ -328,6 +328,15 @@ export function registerVoice(app: Express) {
                 // Emit WebSocket update with transcript
                 emitCallUpdated(updatedWithTranscript);
                 console.log("[RECORDING_STATUS] ✅ Call updated with transcript");
+
+                // Analyze communication quality
+                const { analyzeCallQuality, storeQualityMetrics } = await import("../services/communication-quality");
+                console.log("[RECORDING_STATUS] 🔍 Starting quality analysis for call:", callSid);
+                const qualityMetrics = await analyzeCallQuality(updatedWithTranscript);
+                if (qualityMetrics) {
+                  await storeQualityMetrics(qualityMetrics);
+                  console.log("[RECORDING_STATUS] 📊 Quality analysis complete");
+                }
               }
             }
           );
@@ -384,6 +393,15 @@ export function registerVoice(app: Express) {
           console.log("[TRANSCRIPTION_STATUS] Updated call:", callSid, "with transcription (", transcriptionText.length, "chars)");
           // Emit WebSocket update to refresh dashboard
           emitCallUpdated(updated);
+
+          // Analyze communication quality
+          const { analyzeCallQuality, storeQualityMetrics } = await import("../services/communication-quality");
+          console.log("[TRANSCRIPTION_STATUS] 🔍 Starting quality analysis for call:", callSid);
+          const qualityMetrics = await analyzeCallQuality(updated);
+          if (qualityMetrics) {
+            await storeQualityMetrics(qualityMetrics);
+            console.log("[TRANSCRIPTION_STATUS] 📊 Quality analysis complete");
+          }
         }
       } else if (transcriptionStatus === "failed") {
         console.warn("[TRANSCRIPTION_STATUS] Transcription failed for call:", callSid);
@@ -618,9 +636,9 @@ export function registerVoice(app: Express) {
 
       // Ask if they are the existing patient or a new patient
       const greetings = [
-        `Hi there, thanks for calling ${clinicName}. Is this ${firstName} or are you a new patient today?`,
-        `G'day, you've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
-        `Hi, thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
+        `Hi there! Thanks so much for calling ${clinicName}. Is this ${firstName}, or are you a new patient with us today?`,
+        `G'day! You've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
+        `Hello! Thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
       ];
       const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
       saySafeSSML(g, randomGreeting);
@@ -987,9 +1005,9 @@ export function registerVoice(app: Express) {
             hints: "book, reschedule, cancel, appointment"
           });
           const intentPrompts = [
-            `Perfect, ${firstName}! What can I help you with today? Would you like to book, reschedule, or cancel an appointment?`,
-            `Great! How can I help you, ${firstName}? Are you looking to book, reschedule, or cancel?`,
-            `Lovely, ${firstName}! What would you like to do - book a new appointment, reschedule an existing one, or cancel?`
+            `${firstName}, that's wonderful! What can I help you with today? Would you like to book, reschedule, or cancel an appointment?`,
+            `${firstName}, how can I help you? Are you looking to book, reschedule, or cancel?`,
+            `Lovely! So ${firstName}, what would you like to do - book a new appointment, reschedule an existing one, or cancel?`
           ];
           const randomPrompt = intentPrompts[Math.floor(Math.random() * intentPrompts.length)];
           saySafe(g, randomPrompt);
@@ -1050,9 +1068,9 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const namePrompts = [
-            `Lovely! Since it's your first visit, I just need to get your details into the system. What's your full name? Or if you prefer, say 'text me' and I'll send you a link.`,
-            `Perfect! Because you're new, I'll need your full name for our records. You can spell it out or say 'text me' for a link.`,
-            `Great! Let me get your details. What's your full name? Feel free to say 'text me' if you'd like to type it instead.`
+            `Wonderful! Since it's your first visit with us, I just need to get your details into the system. What's your full name? Or if you prefer, just say 'text me' and I'll send you a link!`,
+            `Brilliant! Because you're new, I'll need your full name for our records. You can spell it out nice and slowly, or say 'text me' for a link.`,
+            `Lovely! Let me get your details sorted. What's your full name? Feel free to say 'text me' if you'd like to type it instead - whatever's easier for you!`
           ];
           const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
           saySafeSSML(g, randomPrompt);
@@ -1446,9 +1464,9 @@ export function registerVoice(app: Express) {
         // Proceed to intent detection - just redirect without asking again
         // The start route will ask what they need
         const simpleGreetings = [
-          `Thanks, ${firstName}!`,
-          `Perfect, nice to meet you ${firstName}.`,
-          `Great, thanks ${firstName}.`
+          `Thank you, ${firstName}!`,
+          `${firstName}, it's lovely to meet you!`,
+          `Wonderful, ${firstName}! Thanks so much.`
         ];
         const randomGreeting = firstName
           ? simpleGreetings[Math.floor(Math.random() * simpleGreetings.length)]
@@ -1613,9 +1631,9 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const namePrompts = [
-            `Lovely! Because it's your first visit, I just need to get your name into the system properly. What's your full name?`,
-            `Perfect! Since you're new, I'll need your full name for our records.`,
-            `Great! I just need your full name for the booking.`
+            `Wonderful! Because it's your first visit with us, I just need to get your name into the system properly. What's your full name?`,
+            `Brilliant! Since you're new, I'll need your full name for our records.`,
+            `Lovely! I just need your full name for the booking.`
           ];
           const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
           saySafeSSML(g, randomPrompt);
@@ -1920,9 +1938,9 @@ export function registerVoice(app: Express) {
         });
         // Warm prompts offering email spelling or SMS link option
         const emailPrompts = firstName ? [
-          `Perfect ${firstName}! And for your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.`,
-          `Lovely! What email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.`,
-          `Great! I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link.`
+          `${firstName}, for your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.`,
+          `Lovely! So ${firstName}, what email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.`,
+          `Wonderful! ${firstName}, I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link.`
         ] : [
           `And what's your email address? You can spell it out slowly, or I can text you a link to type it in - whichever works better.`
         ];
@@ -1985,8 +2003,8 @@ export function registerVoice(app: Express) {
             console.log("[ASK-EMAIL-NEW] ✅ SMS link sent to:", from);
 
             const acknowledgments = firstName ? [
-              `Perfect ${firstName}! I've just sent you a text with a link to enter your email. Let's continue with your booking.`,
-              `Great! Check your phone - I've texted you a link. Let's keep going.`
+              `Wonderful, ${firstName}! I've just sent you a text with a link to enter your email. Let's continue with your booking.`,
+              `${firstName}, check your phone - I've texted you a link. Let's keep going!`
             ] : [
               `Done! I've sent you a text message with a link. Let's continue.`
             ];
@@ -2184,8 +2202,8 @@ export function registerVoice(app: Express) {
 
           // Add variety - sometimes use name with flavor, sometimes skip it
           const phonePrompts = [
-            `Perfect, ${firstName}. Is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you?`,
-            `Great. Is the number ending in ${lastThreeDigits} the best one to reach you on?`,
+            `${firstName}, is the number you're calling from, ending in ${lastThreeDigits}, the best number to reach you?`,
+            `Lovely! So, is the number ending in ${lastThreeDigits} the best one to reach you on?`,
             `And just to confirm, is the number ending in ${lastThreeDigits} the best way to contact you?`
           ];
           const randomPhonePrompt = phonePrompts[Math.floor(Math.random() * phonePrompts.length)];
@@ -3429,7 +3447,7 @@ export function registerVoice(app: Express) {
         } else if (readableDay && !s2) {
           const prompts = firstName ? [
             `${firstName}, perfect! I've got one spot for ${readableDay} at ${opt1}. Press 1 or say yes to book it.`,
-            `Great news! I have ${opt1} available for ${readableDay}. Does that work for you, ${firstName}?`
+            `${firstName}, great news! I have ${opt1} available for ${readableDay}. Does that work for you?`
           ] : [
             `Perfect! I have one option for ${readableDay}: ${opt1}. Press 1 or say yes to book it.`
           ];

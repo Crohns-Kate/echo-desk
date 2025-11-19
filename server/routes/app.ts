@@ -96,6 +96,45 @@ export function registerApp(app: Express) {
     }
   });
 
+  // Quality Insights
+  app.get('/api/quality/insights', async (req: Request, res: Response) => {
+    try {
+      const { getQualityInsights } = await import('../services/communication-quality');
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+      const insights = await getQualityInsights(undefined, limit);
+      res.json(insights);
+    } catch (error: any) {
+      console.error('Quality insights error:', error);
+      res.status(500).json({ error: 'Failed to fetch quality insights', details: error.message });
+    }
+  });
+
+  app.get('/api/quality/analyze/:callSid', async (req: Request, res: Response) => {
+    try {
+      const { analyzeCallQuality } = await import('../services/communication-quality');
+      const callSid = req.params.callSid;
+      const call = await storage.getCallByCallSid(callSid);
+
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      if (!call.transcript || call.transcript.length < 10) {
+        return res.status(400).json({ error: 'No transcript available for this call' });
+      }
+
+      const metrics = await analyzeCallQuality(call);
+      if (!metrics) {
+        return res.status(500).json({ error: 'Quality analysis failed' });
+      }
+
+      res.json(metrics);
+    } catch (error: any) {
+      console.error('Call quality analysis error:', error);
+      res.status(500).json({ error: 'Failed to analyze call quality', details: error.message });
+    }
+  });
+
   // Alerts
   app.get('/api/alerts', async (req: Request, res: Response) => {
     try {

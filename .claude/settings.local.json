@@ -12,7 +12,17 @@
       "Bash(cat:*)",
       "Bash(curl:*)",
       "Bash(echo:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(printenv:*)",
+      "Bash(node -e:*)",
+      "Bash(python3:*)",
+      "Bash(node test-cliniko.mjs:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run check:*)",
+      "Bash(node check-twilio-config.mjs:*)",
+      "Bash(node check-recent-twilio-calls.mjs:*)",
+      "Bash(node analyze-specific-twilio-call.mjs:*)",
+      "Bash(node verify-env.mjs:*)"
     ],
     "deny": [],
     "ask": []

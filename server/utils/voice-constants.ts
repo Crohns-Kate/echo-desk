@@ -142,33 +142,81 @@ export function saySafeSSML(node: any, text?: string, voice?: any) {
 }
 
 /**
- * Conversational helpers that use natural language cues
- * Polly Neural voices interpret these naturally without explicit SSML
+ * Conversational helpers that add emotional expressiveness
+ * Polly Neural voices interpret these naturally through word choice and punctuation
  *
  * Note: We use conversational fillers and punctuation instead of SSML
  * because Twilio's Node SDK escapes SSML tags, making them unreadable.
  */
 export const EMOTIONS = {
-  // Emotional tones - use word choice and emphasis
+  // Emotional tones - add warmth and expressiveness through word choice
   empathetic: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
-    // Polly interprets empathetic language naturally
-    return text;
+    const prefixes = {
+      low: ['I understand,', 'I see,', 'I hear you,'],
+      medium: ['I completely understand,', 'I really appreciate that,', 'That makes perfect sense,'],
+      high: ['I completely hear you on that,', 'I really, really appreciate that,', 'That makes total sense,']
+    };
+    const prefix = prefixes[intensity][Math.floor(Math.random() * prefixes[intensity].length)];
+    return `${prefix} ${text}`;
   },
 
   excited: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
-    // Exclamation marks help Polly understand excitement
-    return text;
+    const prefixes = {
+      low: ['Great!', 'Wonderful!', 'Lovely!'],
+      medium: ['That\'s fantastic!', 'How exciting!', 'Brilliant!'],
+      high: ['Oh that\'s absolutely wonderful!', 'How absolutely exciting!', 'That\'s just brilliant!']
+    };
+    const prefix = prefixes[intensity][Math.floor(Math.random() * prefixes[intensity].length)];
+    return `${prefix} ${text}`;
   },
 
   disappointed: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
-    // Polly interprets apologetic language naturally
-    return text;
+    const prefixes = {
+      low: ['Oh,', 'Hmm,', 'I see,'],
+      medium: ['Oh dear,', 'Oh no,', 'I\'m so sorry,'],
+      high: ['Oh I\'m really sorry about that,', 'Oh dear, that\'s not ideal,', 'I\'m so sorry to hear that,']
+    };
+    const prefix = prefixes[intensity][Math.floor(Math.random() * prefixes[intensity].length)];
+    return `${prefix} ${text}`;
   },
 
-  // Natural breathing/thinking sounds - use conversational fillers
-  sigh: () => '', // Remove - causes SSML issues
-  breath: () => '', // Remove - causes SSML issues
-  shortBreath: () => '', // Remove - causes SSML issues
+  // Warm acknowledgments
+  warmAcknowledge: () => {
+    const phrases = [
+      'Absolutely!',
+      'Of course!',
+      'Definitely!',
+      'You bet!',
+      'For sure!',
+      'No worries at all!'
+    ];
+    return phrases[Math.floor(Math.random() * phrases.length)];
+  },
+
+  // Enthusiastic confirmations
+  enthusiasticConfirm: () => {
+    const phrases = [
+      'Perfect!',
+      'Brilliant!',
+      'Wonderful!',
+      'Excellent!',
+      'Lovely!',
+      'Fantastic!'
+    ];
+    return phrases[Math.floor(Math.random() * phrases.length)];
+  },
+
+  // Natural thinking/processing fillers
+  thinking: () => {
+    const phrases = [
+      'Let me see...',
+      'One moment...',
+      'Just checking that for you...',
+      'Bear with me...',
+      'Let me just pull that up...'
+    ];
+    return phrases[Math.floor(Math.random() * phrases.length)];
+  },
 
   // Pauses - use ellipsis and commas for natural pausing
   pause: (ms: number) => ms > 500 ? '...' : ',',
