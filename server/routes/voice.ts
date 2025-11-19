@@ -3736,7 +3736,19 @@ export function registerVoice(app: Express) {
               appointmentNotes += `\n\nEmail provided (via voice - may need verification): ${email}`;
             }
 
-            appointment = await createAppointmentForPatient(from, {
+            // For appointments booked for another person, use their phone number
+            // For new patients, prefer the other person's phone over the caller's phone
+            const phoneForPatient = (appointmentForOther && otherPersonPhone)
+              ? otherPersonPhone
+              : from;
+
+            console.log("[BOOK-CHOOSE] Phone number for patient creation:", phoneForPatient);
+            if (appointmentForOther) {
+              console.log("[BOOK-CHOOSE]   - Caller's phone:", from);
+              console.log("[BOOK-CHOOSE]   - Patient's phone:", otherPersonPhone || "not provided");
+            }
+
+            appointment = await createAppointmentForPatient(phoneForPatient, {
               startsAt: chosen,
               practitionerId: env.CLINIKO_PRACTITIONER_ID,
               appointmentTypeId: appointmentTypeId,

@@ -596,10 +596,17 @@ export class CallFlowHandler {
         ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
         : env.CLINIKO_APPT_TYPE_ID;
 
+      // For new patients with form data, use the patient's phone from the form
+      // For returning patients, use the caller's phone
+      const phoneToUse = isNewPatient && this.ctx.formData?.phone
+        ? this.ctx.formData.phone
+        : this.ctx.callerPhone;
+
       console.log('[handleConfirmBooking] Creating appointment:');
       console.log('[handleConfirmBooking]   - Is new patient:', isNewPatient);
       console.log('[handleConfirmBooking]   - Appointment type ID:', appointmentTypeId);
-      console.log('[handleConfirmBooking]   - Phone:', this.ctx.callerPhone);
+      console.log('[handleConfirmBooking]   - Caller phone:', this.ctx.callerPhone);
+      console.log('[handleConfirmBooking]   - Patient phone (for Cliniko):', phoneToUse);
       console.log('[handleConfirmBooking]   - Name:', this.ctx.formData?.firstName, this.ctx.formData?.lastName);
 
       // Prepare full name for Cliniko
@@ -611,7 +618,7 @@ export class CallFlowHandler {
       }
 
       // Create appointment (this also creates patient if needed)
-      const appointment = await createAppointmentForPatient(this.ctx.callerPhone, {
+      const appointment = await createAppointmentForPatient(phoneToUse, {
         startsAt: slot.startISO,
         practitionerId: env.CLINIKO_PRACTITIONER_ID,
         appointmentTypeId: appointmentTypeId,
