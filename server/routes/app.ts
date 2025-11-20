@@ -135,6 +135,77 @@ export function registerApp(app: Express) {
     }
   });
 
+  // QA Reports
+  app.get('/api/qa/report/:callId', async (req: Request, res: Response) => {
+    try {
+      const callId = req.params.callId;
+
+      // callId can be either numeric ID or callSid
+      let call;
+      if (/^\d+$/.test(callId)) {
+        // Numeric ID
+        call = await storage.getCallById(parseInt(callId));
+      } else {
+        // callSid
+        call = await storage.getCallByCallSid(callId);
+      }
+
+      if (!call) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      if (!call.callSid) {
+        return res.status(400).json({ error: 'Call has no SID' });
+      }
+
+      // Try to get existing QA report
+      const existingReport = await storage.getQaReportByCallSid(call.callSid);
+      if (existingReport) {
+        return res.json(existingReport);
+      }
+
+      // If no report exists, generate one on-the-fly
+      if (!call.transcript || call.transcript.length < 10) {
+        return res.status(400).json({ error: 'No transcript available for this call' });
+      }
+
+      const { generateQAReport } = await import('../services/qa-engine');
+      const report = await generateQAReport(call);
+      if (!report) {
+        return res.status(500).json({ error: 'Failed to generate QA report' });
+      }
+
+      // Save the generated report
+      const savedReport = await storage.saveQaReport({
+        callSid: report.callSid,
+        callLogId: call.id,
+        identityDetectionScore: report.identityDetectionScore,
+        patientClassificationScore: report.patientClassificationScore,
+        emailCaptureScore: report.emailCaptureScore,
+        appointmentTypeScore: report.appointmentTypeScore,
+        promptClarityScore: report.promptClarityScore,
+        overallScore: report.overallScore,
+        issues: report.issues as any,
+      });
+
+      res.json(savedReport);
+    } catch (error: any) {
+      console.error('QA report error:', error);
+      res.status(500).json({ error: 'Failed to fetch QA report', details: error.message });
+    }
+  });
+
+  app.get('/api/qa/reports', async (req: Request, res: Response) => {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+      const reports = await storage.listQaReports(limit);
+      res.json(reports);
+    } catch (error: any) {
+      console.error('List QA reports error:', error);
+      res.status(500).json({ error: 'Failed to fetch QA reports', details: error.message });
+    }
+  });
+
   // Alerts
   app.get('/api/alerts', async (req: Request, res: Response) => {
     try {
@@ -375,24 +446,15 @@ export function registerApp(app: Express) {
         await storage.updateConversation(call.conversationId, {
           context: { ...existingContext, email: email.toLowerCase(), emailCollectedViaSMS: true }
         });
-        console.log('[EMAIL-COLLECT] Stored email from web form:', email, 'for call:', callSid);
+        console.log('[EMAIL-COLLECT] ✅ Stored email from web form:', email, 'for call:', callSid);
+        console.log('[EMAIL-COLLECT] Email will be synced to Cliniko during appointment booking');
 
-        // Try to update Cliniko immediately if patient exists
-        try {
-          const { findPatientByPhone } = await import('../services/cliniko');
-          const { updateClinikoPatient } = await import('../integrations/cliniko');
-
-          if (call.fromNumber && updateClinikoPatient) {
-            const patient = await findPatientByPhone(call.fromNumber);
-            if (patient && patient.id && (!patient.email || patient.email === '')) {
-              console.log('[EMAIL-COLLECT] Updating Cliniko patient immediately:', patient.id);
-              await updateClinikoPatient(patient.id, { email: email.toLowerCase() });
-              console.log('[EMAIL-COLLECT] ✅ Cliniko patient updated with email');
-            }
-          }
-        } catch (clinikoErr) {
-          console.warn('[EMAIL-COLLECT] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
-        }
+        // IMPORTANT: Do NOT update Cliniko here!
+        // Reason: We don't know if this is a new patient or returning patient.
+        // - If NEW patient: we need to CREATE a new patient record, not update existing
+        // - If RETURNING patient: we can update the existing record
+        // The booking logic (server/routes/voice.ts) handles this correctly.
+        // Updating here would cause BUG-001: overwriting existing patients' data!
       }
 
       res.json({ success: true, message: 'Email saved successfully!' });
@@ -437,28 +499,22 @@ export function registerApp(app: Express) {
             nameVerifiedViaSMS: true
           }
         });
-        console.log('[NAME-VERIFY] Stored name from web form:', fullName, 'for call:', callSid);
+        console.log('[NAME-VERIFY] ✅ Stored name from web form:', fullName, 'for call:', callSid);
+        console.log('[NAME-VERIFY] Name will be synced to Cliniko during appointment booking');
 
-        // Try to update Cliniko immediately if patient exists
-        try {
-          const { findPatientByPhone } = await import('../services/cliniko');
-          const { updateClinikoPatient } = await import('../integrations/cliniko');
-
-          if (call.fromNumber && updateClinikoPatient) {
-            const patient = await findPatientByPhone(call.fromNumber);
-            if (patient && patient.id) {
-              console.log('[NAME-VERIFY] Updating Cliniko patient immediately:', patient.id);
-              const updateData: any = { first_name: firstName.trim() };
-              if (lastName && lastName.trim()) {
-                updateData.last_name = lastName.trim();
-              }
-              await updateClinikoPatient(patient.id, updateData);
-              console.log('[NAME-VERIFY] ✅ Cliniko patient updated with name');
-            }
-          }
-        } catch (clinikoErr) {
-          console.warn('[NAME-VERIFY] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
-        }
+        // IMPORTANT: Do NOT update Cliniko here!
+        // Reason: We don't know if this is a new patient or returning patient.
+        // - If NEW patient: we need to CREATE a new patient record, not update existing
+        // - If RETURNING patient: we can update the existing record
+        // The booking logic (server/routes/voice.ts) handles this correctly.
+        //
+        // 🚨 CRITICAL BUG PREVENTED (BUG-001):
+        // If we updated Cliniko here by phone lookup, we would OVERWRITE the existing
+        // patient's name when a NEW patient calls from the same phone number!
+        // Example: John Smith has phone +61401234567
+        //          Jane Doe calls from same phone as new patient
+        //          Jane fills form with "Jane Doe"
+        //          If we updated here: John Smith would be renamed to "Jane Doe"! ❌
       }
 
       res.json({ success: true, message: 'Name saved successfully!' });

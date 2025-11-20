@@ -1,22 +1,25 @@
 // Referenced from blueprint:javascript_database
-import { 
-  tenants, 
-  phoneMap, 
-  conversations, 
-  callLogs, 
+import {
+  tenants,
+  phoneMap,
+  conversations,
+  callLogs,
   alerts,
   appointments,
-  type Tenant, 
+  qaReports,
+  type Tenant,
   type PhoneMap,
   type Conversation,
   type CallLog,
   type Alert,
   type Appointment,
+  type QaReport,
   type InsertTenant,
   type InsertPhoneMap,
   type InsertCallLog,
   type InsertAlert,
-  type InsertAppointment
+  type InsertAppointment,
+  type InsertQaReport
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, gt } from "drizzle-orm";
@@ -51,6 +54,11 @@ export interface IStorage {
   saveAppointment(data: InsertAppointment): Promise<Appointment>;
   findUpcomingByPhone(phone: string): Promise<Appointment | undefined>;
   updateAppointmentStatus(id: number, status: string): Promise<Appointment | undefined>;
+
+  // QA Reports
+  saveQaReport(data: InsertQaReport): Promise<QaReport>;
+  getQaReportByCallSid(callSid: string): Promise<QaReport | undefined>;
+  listQaReports(limit?: number): Promise<QaReport[]>;
 
   // Stats
   getStats(tenantId?: number): Promise<{
@@ -308,6 +316,43 @@ export class DatabaseStorage implements IStorage {
       .where(eq(appointments.id, id))
       .returning();
     return appointment || undefined;
+  }
+
+  async saveQaReport(data: InsertQaReport): Promise<QaReport> {
+    const [qaReport] = await db
+      .insert(qaReports)
+      .values(data)
+      .onConflictDoUpdate({
+        target: qaReports.callSid,
+        set: {
+          identityDetectionScore: data.identityDetectionScore,
+          patientClassificationScore: data.patientClassificationScore,
+          emailCaptureScore: data.emailCaptureScore,
+          appointmentTypeScore: data.appointmentTypeScore,
+          promptClarityScore: data.promptClarityScore,
+          overallScore: data.overallScore,
+          issues: data.issues,
+        },
+      })
+      .returning();
+    return qaReport;
+  }
+
+  async getQaReportByCallSid(callSid: string): Promise<QaReport | undefined> {
+    const [qaReport] = await db
+      .select()
+      .from(qaReports)
+      .where(eq(qaReports.callSid, callSid))
+      .limit(1);
+    return qaReport || undefined;
+  }
+
+  async listQaReports(limit: number = 50): Promise<QaReport[]> {
+    return db
+      .select()
+      .from(qaReports)
+      .orderBy(desc(qaReports.createdAt))
+      .limit(limit);
   }
 
   async seed(): Promise<void> {

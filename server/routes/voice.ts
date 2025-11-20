@@ -329,13 +329,25 @@ export function registerVoice(app: Express) {
                 emitCallUpdated(updatedWithTranscript);
                 console.log("[RECORDING_STATUS] ✅ Call updated with transcript");
 
-                // Analyze communication quality
-                const { analyzeCallQuality, storeQualityMetrics } = await import("../services/communication-quality");
-                console.log("[RECORDING_STATUS] 🔍 Starting quality analysis for call:", callSid);
-                const qualityMetrics = await analyzeCallQuality(updatedWithTranscript);
-                if (qualityMetrics) {
-                  await storeQualityMetrics(qualityMetrics);
-                  console.log("[RECORDING_STATUS] 📊 Quality analysis complete");
+                // Generate QA Report using QA Engine
+                const { generateQAReport, logQAReport } = await import("../services/qa-engine");
+                console.log("[RECORDING_STATUS] 🔍 Starting QA Engine analysis for call:", callSid);
+                const qaReport = await generateQAReport(updatedWithTranscript);
+                if (qaReport) {
+                  // Save QA report to database
+                  await storage.saveQaReport({
+                    callSid: qaReport.callSid,
+                    callLogId: updatedWithTranscript.id,
+                    identityDetectionScore: qaReport.identityDetectionScore,
+                    patientClassificationScore: qaReport.patientClassificationScore,
+                    emailCaptureScore: qaReport.emailCaptureScore,
+                    appointmentTypeScore: qaReport.appointmentTypeScore,
+                    promptClarityScore: qaReport.promptClarityScore,
+                    overallScore: qaReport.overallScore,
+                    issues: qaReport.issues as any,
+                  });
+                  logQAReport(qaReport);
+                  console.log("[RECORDING_STATUS] 📊 QA Report saved to database");
                 }
               }
             }
@@ -394,13 +406,25 @@ export function registerVoice(app: Express) {
           // Emit WebSocket update to refresh dashboard
           emitCallUpdated(updated);
 
-          // Analyze communication quality
-          const { analyzeCallQuality, storeQualityMetrics } = await import("../services/communication-quality");
-          console.log("[TRANSCRIPTION_STATUS] 🔍 Starting quality analysis for call:", callSid);
-          const qualityMetrics = await analyzeCallQuality(updated);
-          if (qualityMetrics) {
-            await storeQualityMetrics(qualityMetrics);
-            console.log("[TRANSCRIPTION_STATUS] 📊 Quality analysis complete");
+          // Generate QA Report using QA Engine
+          const { generateQAReport, logQAReport } = await import("../services/qa-engine");
+          console.log("[TRANSCRIPTION_STATUS] 🔍 Starting QA Engine analysis for call:", callSid);
+          const qaReport = await generateQAReport(updated);
+          if (qaReport) {
+            // Save QA report to database
+            await storage.saveQaReport({
+              callSid: qaReport.callSid,
+              callLogId: updated.id,
+              identityDetectionScore: qaReport.identityDetectionScore,
+              patientClassificationScore: qaReport.patientClassificationScore,
+              emailCaptureScore: qaReport.emailCaptureScore,
+              appointmentTypeScore: qaReport.appointmentTypeScore,
+              promptClarityScore: qaReport.promptClarityScore,
+              overallScore: qaReport.overallScore,
+              issues: qaReport.issues as any,
+            });
+            logQAReport(qaReport);
+            console.log("[TRANSCRIPTION_STATUS] 📊 QA Report saved to database");
           }
         }
       } else if (transcriptionStatus === "failed") {
@@ -850,7 +874,7 @@ export function registerVoice(app: Express) {
           // Ask if this appointment is for the caller or someone else - be very clear
           const appointmentForPrompts = [
             `Perfect! And is this appointment for you, or is it for someone else?`,
-            `Great! Just to confirm - is the appointment for you, ${firstName}, or for another person?`,
+            `Great! Just to confirm - is the appointment for you, or for another person?`,
             `Lovely! Who's the appointment for - yourself, or someone else?`
           ];
           const randomPrompt = appointmentForPrompts[Math.floor(Math.random() * appointmentForPrompts.length)];
@@ -1005,9 +1029,9 @@ export function registerVoice(app: Express) {
             hints: "book, reschedule, cancel, appointment"
           });
           const intentPrompts = [
-            `${firstName}, that's wonderful! What can I help you with today? Would you like to book, reschedule, or cancel an appointment?`,
-            `${firstName}, how can I help you? Are you looking to book, reschedule, or cancel?`,
-            `Lovely! So ${firstName}, what would you like to do - book a new appointment, reschedule an existing one, or cancel?`
+            `That's wonderful! What can I help you with today? Would you like to book, reschedule, or cancel an appointment?`,
+            `How can I help you? Are you looking to book, reschedule, or cancel?`,
+            `Lovely! What would you like to do - book a new appointment, reschedule an existing one, or cancel?`
           ];
           const randomPrompt = intentPrompts[Math.floor(Math.random() * intentPrompts.length)];
           saySafe(g, randomPrompt);
@@ -1175,7 +1199,7 @@ export function registerVoice(app: Express) {
           });
           const appointmentForPrompts = [
             `Perfect! And is this appointment for you, or is it for someone else?`,
-            `Great! Just to confirm - is the appointment for you, ${firstName}, or for another person?`,
+            `Great! Just to confirm - is the appointment for you, or for another person?`,
             `Lovely! Who's the appointment for - yourself, or someone else?`
           ];
           const randomPrompt = appointmentForPrompts[Math.floor(Math.random() * appointmentForPrompts.length)];
@@ -1243,7 +1267,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
           });
-          saySafe(g, `Sorry, I didn't catch that. Is this appointment for you, ${firstName}, or for someone else?`);
+          saySafe(g, `Sorry, I didn't catch that. Is this appointment for you, or for someone else?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1292,9 +1316,9 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const emailPrompts = [
-            `Perfect! And do you have an email address for ${firstName}? You can spell it out, or just say 'no email' if you don't have it.`,
-            `Great! What's ${firstName}'s email address? Or say 'skip' if you don't know it.`,
-            `Lovely! Can you provide ${firstName}'s email? Just say 'none' if you don't have one.`
+            `Perfect! And do you have an email address for them? You can spell it out, or just say 'no email' if you don't have it.`,
+            `Great! What's their email address? Or say 'skip' if you don't know it.`,
+            `Lovely! Can you provide their email? Just say 'none' if you don't have one.`
           ];
           const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
           saySafeSSML(g, randomPrompt);
@@ -1937,12 +1961,10 @@ export function registerVoice(app: Express) {
           method: "POST",
         });
         // Warm prompts offering email spelling or SMS link option
-        const emailPrompts = firstName ? [
-          `${firstName}, for your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.`,
-          `Lovely! So ${firstName}, what email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.`,
-          `Wonderful! ${firstName}, I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link.`
-        ] : [
-          `And what's your email address? You can spell it out slowly, or I can text you a link to type it in - whichever works better.`
+        const emailPrompts = [
+          "For your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.",
+          "Lovely! What email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.",
+          "Wonderful! I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link."
         ];
         const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
         saySafeSSML(g, randomPrompt);
@@ -2002,11 +2024,10 @@ export function registerVoice(app: Express) {
 
             console.log("[ASK-EMAIL-NEW] ✅ SMS link sent to:", from);
 
-            const acknowledgments = firstName ? [
-              `Wonderful, ${firstName}! I've just sent you a text with a link to enter your email. Let's continue with your booking.`,
-              `${firstName}, check your phone - I've texted you a link. Let's keep going!`
-            ] : [
-              `Done! I've sent you a text message with a link. Let's continue.`
+            const acknowledgments = [
+              "Wonderful! I've just sent you a text with a link to enter your email. Let's continue with your booking.",
+              "Check your phone - I've texted you a link. Let's keep going!",
+              "Done! I've sent you a text message with a link. Let's continue."
             ];
             const randomAck = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
             saySafe(vr, randomAck);
@@ -3516,7 +3537,7 @@ export function registerVoice(app: Express) {
           console.error("[BOOK-CHOOSE] Error getting firstName:", err);
         }
 
-        // Handle rejection - ask for alternative with warm Australian tone
+        // Handle rejection - ask for alternative with warm, reassuring tone
         if (interpretation.choice === "reject") {
           const g = vr.gather({
             input: ["speech"],
@@ -3526,13 +3547,10 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`),
             method: "POST",
           });
-          const rejectionPrompts = firstName ? [
-            `No stress at all, ${firstName}. Which day works better for you?`,
-            `No worries! What other day suits you, ${firstName}?`,
-            `That's okay! Let me find something else for you. Which day would you prefer?`
-          ] : [
-            "No stress at all. Which day works better for you?",
-            "No worries! What other day suits you?"
+          const rejectionPrompts = [
+            "No worries at all! Don't worry, the team will take good care of you. Which day works better?",
+            "That's absolutely fine! We'll find a time that suits you perfectly. What day would you prefer?",
+            "No stress! The team will look after you well. Let me find you a better time. Which day suits you?"
           ];
           const randomPrompt = rejectionPrompts[Math.floor(Math.random() * rejectionPrompts.length)];
           saySafe(g, randomPrompt);

@@ -493,6 +493,101 @@ If Claude needs to refactor voice code, it must do so **minimally** and **safely
 
 ---
 
+# 📚 PROJECT FILES INDEX
+
+## Documentation Files
+
+The following documentation files provide detailed technical specifications and guidance:
+
+### `./docs/echo-desk-architecture.md`
+Complete technical architecture documentation including:
+- Technology stack (Node.js, TypeScript, Express, PostgreSQL, Twilio, Cliniko)
+- Route definitions and API endpoints
+- Call flow state machine overview
+- Cliniko integration details
+- Database schema and tables
+- Environment variables reference
+- Voice/TTS configuration
+- Security implementation
+- State management and persistence
+- Error handling patterns
+- Multi-tenant design
+- Deployment requirements
+- Code organization structure
+- Critical constraints and rules
+
+### `./docs/echo-desk-fsm.md`
+Detailed finite state machine (FSM) specification for call flow:
+- Complete state diagram
+- All 12 state definitions with:
+  - Purpose and entry prompts
+  - Expected inputs and hints
+  - Session data read/write
+  - State transitions and rules
+  - Implementation references
+- State transition validation rules
+- Session context schema (CallContext interface)
+- Persistence and recovery mechanisms
+- Error handling per state
+- Future enhancement plans
+- Testing requirements
+
+### `./docs/echo-desk-roadmap.md`
+8-12 week development roadmap with 6 stages:
+- **Stage 1** (2 weeks): Core stability and appointment correctness
+- **Stage 2** (3 weeks): QA engine, conversation quality scoring, FAQ knowledge base
+- **Stage 3** (3 weeks): Multi-tenant support, advanced dashboard, analytics
+- **Stage 4** (2 weeks): Barge-in, conversational AI, reschedule/cancel flows
+- **Stage 5** (1 week): Production hardening, security audit, load testing
+- **Stage 6** (Ongoing): Launch, pilot deployment, iteration
+- Success metrics for each stage
+- Technical debt tracking
+- Refactoring priorities
+
+### `./docs/echo-desk-bugs.md`
+Bug tracking and QA log including:
+- Bug report template
+- Critical historical bugs:
+  - BUG-001: "Michael Bishopp" patient identity issue (fixed)
+  - Recording race condition (open)
+  - Form timeout edge cases (open)
+  - Multiple patient disambiguation (open)
+- Fixed bugs archive
+- Known issues and limitations
+- Pre-deployment QA checklist
+- Testing procedures for all flows
+- Bug reporting guidelines
+- Priority definitions
+- Monitoring and alerting strategy
+
+## How to Use These Files
+
+**For Development**:
+1. Read `echo-desk-architecture.md` first to understand the system
+2. Refer to `echo-desk-fsm.md` when modifying call flow logic
+3. Check `echo-desk-bugs.md` before making changes (avoid regressions)
+4. Update `echo-desk-roadmap.md` when planning new features
+
+**For Bug Fixes**:
+1. Check `echo-desk-bugs.md` to see if already documented
+2. Follow the bug template to report new issues
+3. Reference FSM documentation to understand expected behavior
+4. Update bug log when issue is fixed
+
+**For New Features**:
+1. Review roadmap to align with planned stages
+2. Understand architecture constraints
+3. Design FSM states if adding new flows
+4. Add to roadmap with priority and timeline
+
+**For Onboarding**:
+1. Start with `echo-desk-architecture.md` (big picture)
+2. Read `echo-desk-fsm.md` (understand call flow)
+3. Review `echo-desk-bugs.md` (learn from past issues)
+4. Check `echo-desk-roadmap.md` (understand future direction)
+
+---
+
 # END OF FILE
 
 Claude must obey this document every session.

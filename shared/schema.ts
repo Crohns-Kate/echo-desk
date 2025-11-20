@@ -85,6 +85,21 @@ export const appointments = pgTable("appointments", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// QA Reports - stores detailed quality analysis for each call
+export const qaReports = pgTable("qa_reports", {
+  id: serial("id").primaryKey(),
+  callSid: text("call_sid").notNull().unique(),
+  callLogId: integer("call_log_id"),
+  identityDetectionScore: integer("identity_detection_score"), // 0-10
+  patientClassificationScore: integer("patient_classification_score"), // 0-10
+  emailCaptureScore: integer("email_capture_score"), // 0-10
+  appointmentTypeScore: integer("appointment_type_score"), // 0-10
+  promptClarityScore: integer("prompt_clarity_score"), // 0-10
+  overallScore: integer("overall_score"), // 0-10
+  issues: jsonb("issues").default(sql`'[]'::jsonb`), // Array of detected issues
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   callLogs: many(callLogs),
@@ -140,6 +155,11 @@ export const insertAppointmentSchema = createInsertSchema(appointments).omit({
   updatedAt: true,
 });
 
+export const insertQaReportSchema = createInsertSchema(qaReports).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type Tenant = typeof tenants.$inferSelect;
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
@@ -159,3 +179,6 @@ export type InsertAlert = z.infer<typeof insertAlertSchema>;
 
 export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
+
+export type QaReport = typeof qaReports.$inferSelect;
+export type InsertQaReport = z.infer<typeof insertQaReportSchema>;

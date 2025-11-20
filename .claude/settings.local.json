@@ -22,7 +22,9 @@
       "Bash(node check-twilio-config.mjs:*)",
       "Bash(node check-recent-twilio-calls.mjs:*)",
       "Bash(node analyze-specific-twilio-call.mjs:*)",
-      "Bash(node verify-env.mjs:*)"
+      "Bash(node verify-env.mjs:*)",
+      "Bash(npm run db:push:*)",
+      "Bash(npx drizzle-kit push:*)"
     ],
     "deny": [],
     "ask": []
