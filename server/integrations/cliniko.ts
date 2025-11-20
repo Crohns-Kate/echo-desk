@@ -361,8 +361,27 @@ export async function getOrCreatePatient({
     console.log('[Cliniko] getOrCreatePatient: Searching by phone:', phone);
     const p = await findPatientByPhone(phone);
     if (p) {
-      console.log('[Cliniko] Found existing patient by phone:', p.id);
-      return p;
+      // Check if the name matches (if fullName is provided)
+      if (fullName && fullName.trim()) {
+        const existingFullName = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
+        const newFullName = fullName.trim().toLowerCase();
+
+        // If names don't match, this is a different person using the same phone
+        if (existingFullName !== newFullName) {
+          console.log('[Cliniko] Found patient by phone BUT name mismatch:');
+          console.log('[Cliniko]   Existing:', existingFullName);
+          console.log('[Cliniko]   New:', newFullName);
+          console.log('[Cliniko]   → Creating NEW patient for different person');
+          // Don't return p - fall through to create new patient
+        } else {
+          console.log('[Cliniko] Found existing patient by phone with matching name:', p.id);
+          return p;
+        }
+      } else {
+        // No name provided to check, assume it's the same person
+        console.log('[Cliniko] Found existing patient by phone (no name to verify):', p.id);
+        return p;
+      }
     }
   }
 

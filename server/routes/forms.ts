@@ -343,4 +343,543 @@ export function registerForms(app: Express) {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  /**
+   * GET /email-collect - Email collection form
+   */
+  app.get("/email-collect", async (req: Request, res: Response) => {
+    const { callSid } = req.query;
+
+    if (!callSid) {
+      return res.status(400).send('<h1>Invalid Link</h1><p>Missing call information</p>');
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Email Collection - Echo Desk</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            max-width: 400px;
+            width: 100%;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 32px;
+          }
+          h1 {
+            font-size: 24px;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+            text-align: center;
+          }
+          .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 32px;
+          }
+          .form-group {
+            margin-bottom: 20px;
+          }
+          label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+          }
+          input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+          }
+          input:focus {
+            outline: none;
+            border-color: #667eea;
+          }
+          button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+          }
+          button:hover {
+            transform: translateY(-2px);
+          }
+          button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+          }
+          .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            text-align: center;
+          }
+          .error {
+            background: #ffebee;
+            color: #d32f2f;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px;
+            display: none;
+            font-size: 14px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>📧 Email Address</h1>
+          <p class="subtitle">Enter your email for confirmation</p>
+
+          <form id="emailForm">
+            <div class="form-group">
+              <label for="email">Email Address</label>
+              <input type="email" id="email" name="email" required autocomplete="email" placeholder="your.email@example.com">
+            </div>
+
+            <button type="submit" id="submitBtn">Submit</button>
+          </form>
+
+          <div class="success" id="successMessage">
+            ✓ Thanks! Your email has been saved.
+          </div>
+          <div class="error" id="errorMessage"></div>
+        </div>
+
+        <script>
+          const form = document.getElementById('emailForm');
+          const submitBtn = document.getElementById('submitBtn');
+          const errorMessage = document.getElementById('errorMessage');
+          const successMessage = document.getElementById('successMessage');
+          const callSid = '${callSid}';
+
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Saving...';
+            errorMessage.style.display = 'none';
+
+            const email = document.getElementById('email').value.trim();
+
+            try {
+              const response = await fetch('/api/email-collect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callSid, email })
+              });
+
+              const result = await response.json();
+
+              if (response.ok) {
+                form.style.display = 'none';
+                successMessage.style.display = 'block';
+              } else {
+                throw new Error(result.error || 'Failed to save email');
+              }
+            } catch (err) {
+              console.error(err);
+              errorMessage.textContent = err.message || 'Failed to save. Please try again.';
+              errorMessage.style.display = 'block';
+              submitBtn.disabled = false;
+              submitBtn.textContent = 'Submit';
+            }
+          });
+        </script>
+      </body>
+      </html>
+    `);
+  });
+
+  /**
+   * GET /name-verify - Name verification form
+   */
+  app.get("/name-verify", async (req: Request, res: Response) => {
+    const { callSid } = req.query;
+
+    if (!callSid) {
+      return res.status(400).send('<h1>Invalid Link</h1><p>Missing call information</p>');
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Name Verification - Echo Desk</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            max-width: 400px;
+            width: 100%;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 32px;
+          }
+          h1 {
+            font-size: 24px;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+            text-align: center;
+          }
+          .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 32px;
+          }
+          .form-group {
+            margin-bottom: 20px;
+          }
+          label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+          }
+          input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+          }
+          input:focus {
+            outline: none;
+            border-color: #667eea;
+          }
+          button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+          }
+          button:hover {
+            transform: translateY(-2px);
+          }
+          button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+          }
+          .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            text-align: center;
+          }
+          .error {
+            background: #ffebee;
+            color: #d32f2f;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px;
+            display: none;
+            font-size: 14px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>✏️ Verify Your Name</h1>
+          <p class="subtitle">Please enter your full name</p>
+
+          <form id="nameForm">
+            <div class="form-group">
+              <label for="firstName">First Name</label>
+              <input type="text" id="firstName" name="firstName" required autocomplete="given-name">
+            </div>
+
+            <div class="form-group">
+              <label for="lastName">Last Name</label>
+              <input type="text" id="lastName" name="lastName" required autocomplete="family-name">
+            </div>
+
+            <button type="submit" id="submitBtn">Submit</button>
+          </form>
+
+          <div class="success" id="successMessage">
+            ✓ Thanks! Your name has been saved.
+          </div>
+          <div class="error" id="errorMessage"></div>
+        </div>
+
+        <script>
+          const form = document.getElementById('nameForm');
+          const submitBtn = document.getElementById('submitBtn');
+          const errorMessage = document.getElementById('errorMessage');
+          const successMessage = document.getElementById('successMessage');
+          const callSid = '${callSid}';
+
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Saving...';
+            errorMessage.style.display = 'none';
+
+            const firstName = document.getElementById('firstName').value.trim();
+            const lastName = document.getElementById('lastName').value.trim();
+
+            try {
+              const response = await fetch('/api/name-verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callSid, firstName, lastName })
+              });
+
+              const result = await response.json();
+
+              if (response.ok) {
+                form.style.display = 'none';
+                successMessage.style.display = 'block';
+              } else {
+                throw new Error(result.error || 'Failed to save name');
+              }
+            } catch (err) {
+              console.error(err);
+              errorMessage.textContent = err.message || 'Failed to save. Please try again.';
+              errorMessage.style.display = 'block';
+              submitBtn.disabled = false;
+              submitBtn.textContent = 'Submit';
+            }
+          });
+        </script>
+      </body>
+      </html>
+    `);
+  });
+
+  /**
+   * GET /verify-details - Post-call data verification form
+   */
+  app.get("/verify-details", async (req: Request, res: Response) => {
+    const { callSid } = req.query;
+
+    if (!callSid) {
+      return res.status(400).send('<h1>Invalid Link</h1><p>Missing call information</p>');
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Verify Details - Echo Desk</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            max-width: 400px;
+            width: 100%;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 32px;
+          }
+          h1 {
+            font-size: 24px;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+            text-align: center;
+          }
+          .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 32px;
+          }
+          .form-group {
+            margin-bottom: 20px;
+          }
+          label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+          }
+          input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+          }
+          input:focus {
+            outline: none;
+            border-color: #667eea;
+          }
+          button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+          }
+          button:hover {
+            transform: translateY(-2px);
+          }
+          button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+          }
+          .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            text-align: center;
+          }
+          .error {
+            background: #ffebee;
+            color: #d32f2f;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px;
+            display: none;
+            font-size: 14px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>✓ Verify Your Details</h1>
+          <p class="subtitle">Please confirm your information</p>
+
+          <form id="detailsForm">
+            <div class="form-group">
+              <label for="firstName">First Name</label>
+              <input type="text" id="firstName" name="firstName" required autocomplete="given-name">
+            </div>
+
+            <div class="form-group">
+              <label for="lastName">Last Name</label>
+              <input type="text" id="lastName" name="lastName" required autocomplete="family-name">
+            </div>
+
+            <div class="form-group">
+              <label for="email">Email Address</label>
+              <input type="email" id="email" name="email" required autocomplete="email" placeholder="your.email@example.com">
+            </div>
+
+            <button type="submit" id="submitBtn">Submit</button>
+          </form>
+
+          <div class="success" id="successMessage">
+            ✓ Thanks! Your details have been saved.
+          </div>
+          <div class="error" id="errorMessage"></div>
+        </div>
+
+        <script>
+          const form = document.getElementById('detailsForm');
+          const submitBtn = document.getElementById('submitBtn');
+          const errorMessage = document.getElementById('errorMessage');
+          const successMessage = document.getElementById('successMessage');
+          const callSid = '${callSid}';
+
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Saving...';
+            errorMessage.style.display = 'none';
+
+            const firstName = document.getElementById('firstName').value.trim();
+            const lastName = document.getElementById('lastName').value.trim();
+            const email = document.getElementById('email').value.trim();
+
+            try {
+              // Save name
+              await fetch('/api/name-verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callSid, firstName, lastName })
+              });
+
+              // Save email
+              await fetch('/api/email-collect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callSid, email })
+              });
+
+              form.style.display = 'none';
+              successMessage.style.display = 'block';
+            } catch (err) {
+              console.error(err);
+              errorMessage.textContent = err.message || 'Failed to save. Please try again.';
+              errorMessage.style.display = 'block';
+              submitBtn.disabled = false;
+              submitBtn.textContent = 'Submit';
+            }
+          });
+        </script>
+      </body>
+      </html>
+    `);
+  });
 }
