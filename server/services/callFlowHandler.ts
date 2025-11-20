@@ -4,6 +4,8 @@ import { findPatientByPhoneRobust, createAppointmentForPatient, getAvailability 
 import { sendNewPatientForm } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { AUST_TZ } from '../time';
+import { parseNaturalDate, formatDateRange } from '../utils/date-parser';
+import { classifyIntent } from './intent';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
@@ -47,6 +49,7 @@ export interface CallContext {
     phone: string;
   };
   complaint?: string;
+  preferredDay?: string; // Natural language day extracted from complaint (e.g., "saturday", "today")
   appointmentSlots?: Array<{
     startISO: string;
     speakable: string;
@@ -414,7 +417,7 @@ export class CallFlowHandler {
       return;
     }
 
-    saySafe(this.vr, `Got it! Thanks ${this.ctx.formData.firstName}. What brings you in today?`);
+    saySafe(this.vr, `Got it! Thanks. What brings you in today?`);
 
     this.transitionTo(CallState.CHIEF_COMPLAINT);
     const g = this.vr.gather({
@@ -435,7 +438,19 @@ export class CallFlowHandler {
   async handleChiefComplaint(speechRaw: string): Promise<void> {
     this.ctx.complaint = speechRaw.toLowerCase().trim();
 
-    saySafe(this.vr, `Sorry to hear about your ${this.ctx.complaint}. Let me find the next available appointment.`);
+    // Extract preferred day/time from the complaint using intent classification
+    try {
+      const intent = await classifyIntent(this.ctx.complaint);
+      if (intent.day) {
+        this.ctx.preferredDay = intent.day;
+        console.log('[handleChiefComplaint] Extracted preferred day:', intent.day);
+      }
+    } catch (err) {
+      console.warn('[handleChiefComplaint] Failed to classify intent:', err);
+      // Continue without preferred day
+    }
+
+    saySafe(this.vr, `Let me find the next available appointment.`);
 
     this.transitionTo(CallState.APPOINTMENT_SEARCH);
     await this.handleAppointmentSearch();
@@ -447,23 +462,57 @@ export class CallFlowHandler {
    */
   async handleAppointmentSearch(): Promise<void> {
     try {
-      const now = dayjs();
-      const twoWeeksLater = now.add(14, 'days');
+      // Parse the preferred day into a date range
+      const dateRange = parseNaturalDate(this.ctx.preferredDay, AUST_TZ);
+
+      console.log('[handleAppointmentSearch] Searching for appointments:');
+      console.log('[handleAppointmentSearch]   - Preferred day:', this.ctx.preferredDay || 'none specified');
+      console.log('[handleAppointmentSearch]   - Date range:', formatDateRange(dateRange));
 
       const { slots } = await getAvailability({
-        fromISO: now.toISOString(),
-        toISO: twoWeeksLater.toISOString(),
+        fromISO: dateRange.from.toISOString(),
+        toISO: dateRange.to.toISOString(),
         timezone: AUST_TZ
       });
 
       if (slots.length === 0) {
+        // No slots found for the requested day - try to find alternatives
+        if (this.ctx.preferredDay) {
+          // They requested a specific day but we have no slots
+          const fallbackRange = parseNaturalDate(undefined, AUST_TZ); // Get next 2 weeks
+          const { slots: fallbackSlots } = await getAvailability({
+            fromISO: fallbackRange.from.toISOString(),
+            toISO: fallbackRange.to.toISOString(),
+            timezone: AUST_TZ
+          });
+
+          if (fallbackSlots.length > 0) {
+            // Offer alternatives
+            this.ctx.appointmentSlots = fallbackSlots.slice(0, 3).map(slot => ({
+              startISO: slot.startISO,
+              speakable: this.formatSpeakableTime(slot.startISO),
+              practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
+              appointmentTypeId: process.env.CLINIKO_APPT_TYPE_ID
+            }));
+
+            saySafe(this.vr, `I don't have any openings on ${this.ctx.preferredDay}, but here are the nearest available times.`);
+
+            this.transitionTo(CallState.PRESENT_OPTIONS);
+            await this.handlePresentOptions();
+            await this.saveContext();
+            return;
+          }
+        }
+
+        // No slots at all
         this.transitionTo(CallState.ERROR_RECOVERY);
         saySafe(this.vr, "I don't have any openings in the next two weeks. Would you like me to add you to our waitlist? Let me transfer you to our reception.");
         this.vr.hangup();
+        await this.saveContext();
         return;
       }
 
-      // Take top 3 slots
+      // Found slots for the requested day
       this.ctx.appointmentSlots = slots.slice(0, 3).map(slot => ({
         startISO: slot.startISO,
         speakable: this.formatSpeakableTime(slot.startISO),

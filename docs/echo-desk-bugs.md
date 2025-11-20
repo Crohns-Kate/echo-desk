@@ -6,6 +6,86 @@ This document tracks known bugs, issues, and quality assurance findings for Echo
 
 ---
 
+## Recently Fixed
+
+### [BUG-005] Name Overused in Conversation
+
+**Severity**: Low
+**Status**: Fixed
+**Reported**: 2025-11-21
+**Fixed**: 2025-11-21
+
+**Description**:
+Caller's name was repeated too frequently during the conversation, making it feel overwhelming and unnatural.
+
+**Fix Applied**:
+- Removed name from "Got it! Thanks {name}." → Now just "Got it! Thanks."
+- Removed entire "Sorry to hear about your {complaint}" message
+- Kept name usage only for:
+  - Initial greeting: "Hi {name}! What brings you in?"
+  - Final confirmation: "{name}, perfect! You're all set..."
+
+**Related Files**:
+- `server/services/callFlowHandler.ts:420` (handleFormReceived)
+- `server/services/callFlowHandler.ts:453` (handleChiefComplaint)
+- `server/services/callFlowHandler.ts:643` (handleConfirmBooking)
+
+---
+
+### [BUG-006] Appointment Date Logic Incorrect (Saturday/Today/Other Days)
+
+**Severity**: High
+**Status**: Fixed
+**Reported**: 2025-11-21
+**Fixed**: 2025-11-21
+
+**Description**:
+When caller said "I'd like an appointment for Saturday", the system:
+- Booked it 8 days away instead of the upcoming Saturday
+- Got confused when booking "today" and failed to find same-day appointments
+- Didn't properly parse natural language dates
+
+**Root Cause**:
+- System collected chief complaint which included date preferences
+- Intent classification extracted `day` field (e.g., "saturday", "today")
+- But the appointment search ignored this and always searched next 14 days from now
+- No date parsing logic to convert "saturday" → actual Saturday date
+
+**Fix Applied**:
+1. Created new `server/utils/date-parser.ts` module:
+   - `parseNaturalDate()` - Converts "saturday", "today", "tomorrow" to date ranges
+   - Handles "this saturday" vs "next saturday"
+   - Finds next occurrence of weekday correctly
+   - If it's Saturday morning, offers today; if afternoon, offers next week
+
+2. Updated `server/services/callFlowHandler.ts`:
+   - Added `preferredDay` field to CallContext
+   - `handleChiefComplaint()` now extracts day using `classifyIntent()`
+   - `handleAppointmentSearch()` uses `parseNaturalDate()` to get correct date range
+   - Offers alternatives if requested day has no slots
+
+3. Behavior Changes:
+   - "Saturday" → Next upcoming Saturday (0-7 days away)
+   - "Today" → Today's remaining hours (or error if no slots)
+   - "Tomorrow" → Tomorrow all day
+   - "This Saturday" → Upcoming Saturday
+   - "Next Saturday" → Saturday after this one (8-14 days away)
+   - If no day specified → Next 14 days (original behavior)
+
+**Related Files**:
+- `server/utils/date-parser.ts` (NEW)
+- `server/services/callFlowHandler.ts:7-8` (imports)
+- `server/services/callFlowHandler.ts:52` (preferredDay field)
+- `server/services/callFlowHandler.ts:438-458` (handleChiefComplaint)
+- `server/services/callFlowHandler.ts:463-534` (handleAppointmentSearch)
+
+**Notes**:
+- Date logic uses Australia/Brisbane timezone (AUST_TZ)
+- Falls back gracefully if day can't be parsed
+- Offers alternatives if preferred day has no availability
+
+---
+
 ## Bug Template
 
 ```markdown

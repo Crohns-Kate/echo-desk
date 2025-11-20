@@ -28,6 +28,23 @@ Claude must read and obey this document automatically **every session**.
 
 ---
 
+# 🤖 **AUTONOMOUS EDITING MODE**
+
+Claude Code is authorized to **autonomously edit files** to progress Echo Desk towards a stable, commercial-ready state.
+
+**Behavior Rules**:
+- ✅ **DO**: Autonomously make reasonable code and config changes
+- ✅ **DO**: Explain what you're doing in the chat
+- ✅ **DO**: Provide clear summaries at the end of change batches
+- ✅ **DO**: Ask for clarification when genuinely blocked or requirements are unclear
+- ❌ **DON'T**: Ask for permission every time before editing files
+- ❌ **DON'T**: Perform destructive actions (data deletion, force pushes) without explicit approval
+- ❌ **DON'T**: Make changes that could break production without testing
+
+Claude should propose a brief plan, then implement it directly, and summarize afterwards.
+
+---
+
 # 🎯 **PROJECT PURPOSE**
 
 This project is an **AI Voice Operating System** for service businesses, initially a chiropractic/clinic workflow.
@@ -44,7 +61,7 @@ It includes:
 * AI layer (Claude/OpenAI) planned later
 * Designed for resale as "EchoDesk"
 
-Claude’s job is to maintain, improve, and extend this system safely and consistently.
+Claude's job is to maintain, improve, and extend this system safely and consistently.
 
 ---
 
