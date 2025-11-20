@@ -2433,13 +2433,13 @@ export function registerVoice(app: Express) {
         } else {
           // Returning patient - proceed to week selection with empathy
           const empathyLines = firstName ? [
-            `${firstName}, ${EMOTIONS.empathetic("ahh sorry to hear that", "high")}. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
-            `${firstName}, ${EMOTIONS.empathetic("oh you poor thing", "high")}. We'll take care of you. Let me see what's available to get you in soon.`,
-            `${firstName}, ${EMOTIONS.empathetic("that's not great", "high")}. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
+            `${firstName}, oh I'm so sorry to hear that. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
+            `${firstName}, oh you poor thing. We'll take care of you. Let me see what's available to get you in soon.`,
+            `${firstName}, oh dear, that's not great. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
             `${firstName}, ahh that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
           ] : [
-            `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
-            `${EMOTIONS.empathetic("Ahh that's not great", "high")}. We'll take care of you. Hang on while I check the schedule.`
+            `Oh I'm so sorry to hear that. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
+            `Oh dear, that's not great. We'll take care of you. Hang on while I check the schedule.`
           ];
           const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
           saySafeSSML(vr, randomEmpathy);
@@ -2470,12 +2470,12 @@ export function registerVoice(app: Express) {
 
         // Warm intro - because it's their first visit
         const introLines = firstName ? [
-          `${firstName}, ${EMOTIONS.empathetic("ahh sorry to hear that", "high")}. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
-          `${firstName}, ${EMOTIONS.empathetic("oh you poor thing", "high")}. We'll take care of you. Since you haven't been before, let me run you through what happens on your first visit.`,
-          `${firstName}, ${EMOTIONS.empathetic("that's not great", "high")}. Before we book you in, let me just explain what to expect on your first visit.`
+          `${firstName}, oh I'm so sorry to hear that. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
+          `${firstName}, oh you poor thing. We'll take care of you. Since you haven't been before, let me run you through what happens on your first visit.`,
+          `${firstName}, oh dear, that's not great. Before we book you in, let me just explain what to expect on your first visit.`
         ] : [
-          `${EMOTIONS.empathetic("Sorry to hear that", "high")}. That doesn't sound fun. Because it's your first visit, let me quickly tell you what to expect.`,
-          `${EMOTIONS.empathetic("Ahh that's not great", "high")}. Before we book you in, let me run you through what happens on your first visit.`
+          `Oh I'm so sorry to hear that. That doesn't sound fun. Because it's your first visit, let me quickly tell you what to expect.`,
+          `Oh dear, that's not great. Before we book you in, let me run you through what happens on your first visit.`
         ];
         const randomIntro = introLines[Math.floor(Math.random() * introLines.length)];
         saySafeSSML(vr, randomIntro);
@@ -4014,11 +4014,11 @@ export function registerVoice(app: Express) {
 
           // Warm, reassuring confirmation messages
           const confirmationMessages = firstName ? [
-            `${firstName}, ${EMOTIONS.excited("beautiful", "medium")}! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
-            `${firstName}, ${EMOTIONS.excited("perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
-            `${firstName}, ${EMOTIONS.excited("lovely", "medium")}! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+            `${firstName}, beautiful! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+            `${firstName}, perfect! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+            `${firstName}, lovely! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
           ] : [
-            `${EMOTIONS.excited("Wonderful", "medium")}! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
+            `Wonderful! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
           ];
           const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
           saySafeSSML(g, randomConfirmation);
