@@ -24,7 +24,14 @@
       "Bash(node analyze-specific-twilio-call.mjs:*)",
       "Bash(node verify-env.mjs:*)",
       "Bash(npm run db:push:*)",
-      "Bash(npx drizzle-kit push:*)"
+      "Bash(npx drizzle-kit push:*)",
+      "Bash(psql:*)",
+      "Bash(pgrep:*)",
+      "Bash(netstat:*)",
+      "Bash(ss:*)",
+      "Bash(node run-qa-analysis.mjs:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)"
     ],
     "deny": [],
     "ask": []
