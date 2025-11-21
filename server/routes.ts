@@ -511,8 +511,415 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const { registerForms } = await import('./routes/forms');
   registerForms(app);
 
+  // Register SMS webhook routes
+  const { registerSMS } = await import('./routes/sms');
+  registerSMS(app);
+
   // Register dashboard API routes
   registerApp(app);
+
+  // ═══════════════════════════════════════════════════════════
+  // TENANT ADMIN API
+  // ═══════════════════════════════════════════════════════════
+
+  // List all tenants
+  app.get('/api/admin/tenants', async (_req, res) => {
+    try {
+      const tenants = await storage.listTenants();
+      // Remove sensitive fields
+      const safeTenants = tenants.map(t => ({
+        id: t.id,
+        slug: t.slug,
+        clinicName: t.clinicName,
+        phoneNumber: t.phoneNumber,
+        email: t.email,
+        timezone: t.timezone,
+        voiceName: t.voiceName,
+        isActive: t.isActive,
+        subscriptionTier: t.subscriptionTier,
+        subscriptionStatus: t.subscriptionStatus,
+        createdAt: t.createdAt
+      }));
+      res.json(safeTenants);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get single tenant by slug
+  app.get('/api/admin/tenants/:slug', async (req, res) => {
+    try {
+      const tenant = await storage.getTenant(req.params.slug);
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+      // Remove encrypted API key from response
+      const { clinikoApiKeyEncrypted, ...safeTenant } = tenant;
+      res.json({
+        ...safeTenant,
+        hasClinikoKey: !!clinikoApiKeyEncrypted
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Create new tenant
+  app.post('/api/admin/tenants', async (req, res) => {
+    try {
+      const { slug, clinicName, phoneNumber, email, timezone, voiceName, greeting } = req.body;
+
+      if (!slug || !clinicName) {
+        return res.status(400).json({ error: 'slug and clinicName are required' });
+      }
+
+      // Check if slug already exists
+      const existing = await storage.getTenant(slug);
+      if (existing) {
+        return res.status(409).json({ error: 'Tenant with this slug already exists' });
+      }
+
+      const tenant = await storage.createTenant({
+        slug,
+        clinicName,
+        phoneNumber,
+        email,
+        timezone: timezone || 'Australia/Brisbane',
+        voiceName: voiceName || 'Polly.Olivia-Neural',
+        greeting: greeting || 'Thanks for calling'
+      });
+
+      res.status(201).json(tenant);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Update tenant
+  app.patch('/api/admin/tenants/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const {
+        clinicName, phoneNumber, email, address, timezone,
+        voiceName, greeting, fallbackMessage, businessHours,
+        clinikoApiKey, clinikoShard, clinikoPractitionerId,
+        clinikoStandardApptTypeId, clinikoNewPatientApptTypeId,
+        recordingEnabled, transcriptionEnabled, qaAnalysisEnabled,
+        faqEnabled, smsEnabled, isActive
+      } = req.body;
+
+      const updates: any = {};
+
+      // Only include fields that were provided
+      if (clinicName !== undefined) updates.clinicName = clinicName;
+      if (phoneNumber !== undefined) updates.phoneNumber = phoneNumber;
+      if (email !== undefined) updates.email = email;
+      if (address !== undefined) updates.address = address;
+      if (timezone !== undefined) updates.timezone = timezone;
+      if (voiceName !== undefined) updates.voiceName = voiceName;
+      if (greeting !== undefined) updates.greeting = greeting;
+      if (fallbackMessage !== undefined) updates.fallbackMessage = fallbackMessage;
+      if (businessHours !== undefined) updates.businessHours = businessHours;
+      if (clinikoShard !== undefined) updates.clinikoShard = clinikoShard;
+      if (clinikoPractitionerId !== undefined) updates.clinikoPractitionerId = clinikoPractitionerId;
+      if (clinikoStandardApptTypeId !== undefined) updates.clinikoStandardApptTypeId = clinikoStandardApptTypeId;
+      if (clinikoNewPatientApptTypeId !== undefined) updates.clinikoNewPatientApptTypeId = clinikoNewPatientApptTypeId;
+      if (recordingEnabled !== undefined) updates.recordingEnabled = recordingEnabled;
+      if (transcriptionEnabled !== undefined) updates.transcriptionEnabled = transcriptionEnabled;
+      if (qaAnalysisEnabled !== undefined) updates.qaAnalysisEnabled = qaAnalysisEnabled;
+      if (faqEnabled !== undefined) updates.faqEnabled = faqEnabled;
+      if (smsEnabled !== undefined) updates.smsEnabled = smsEnabled;
+      if (isActive !== undefined) updates.isActive = isActive;
+
+      // Handle Cliniko API key encryption
+      if (clinikoApiKey) {
+        const { encrypt } = await import('./services/tenantResolver');
+        updates.clinikoApiKeyEncrypted = encrypt(clinikoApiKey);
+      }
+
+      const tenant = await storage.updateTenant(id, updates);
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      // Remove sensitive data from response
+      const { clinikoApiKeyEncrypted, ...safeTenant } = tenant;
+      res.json({
+        ...safeTenant,
+        hasClinikoKey: !!clinikoApiKeyEncrypted
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get tenant stats
+  app.get('/api/admin/tenants/:id/stats', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const stats = await storage.getStats(id);
+      res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================
+  // FAQ Management API
+  // ============================================
+
+  // List FAQs (optionally filtered by tenant)
+  app.get('/api/faqs', async (req, res) => {
+    try {
+      const tenantId = req.query.tenantId ? parseInt(req.query.tenantId as string, 10) : undefined;
+      const activeOnly = req.query.activeOnly !== 'false';
+      const faqs = await storage.listFaqs(tenantId, activeOnly);
+      res.json(faqs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get single FAQ
+  app.get('/api/faqs/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid FAQ ID' });
+      }
+      const faq = await storage.getFaqById(id);
+      if (!faq) {
+        return res.status(404).json({ error: 'FAQ not found' });
+      }
+      res.json(faq);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Create new FAQ
+  app.post('/api/faqs', async (req, res) => {
+    try {
+      const { tenantId, category, question, answer, keywords, priority, isActive } = req.body;
+
+      if (!category || !question || !answer) {
+        return res.status(400).json({ error: 'category, question, and answer are required' });
+      }
+
+      const faq = await storage.createFaq({
+        tenantId: tenantId || null,
+        category,
+        question,
+        answer,
+        keywords: keywords || [],
+        priority: priority ?? 0,
+        isActive: isActive ?? true
+      });
+
+      res.status(201).json(faq);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Update FAQ
+  app.patch('/api/faqs/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid FAQ ID' });
+      }
+
+      const existing = await storage.getFaqById(id);
+      if (!existing) {
+        return res.status(404).json({ error: 'FAQ not found' });
+      }
+
+      const { category, question, answer, keywords, priority, isActive } = req.body;
+      const updates: any = {};
+
+      if (category !== undefined) updates.category = category;
+      if (question !== undefined) updates.question = question;
+      if (answer !== undefined) updates.answer = answer;
+      if (keywords !== undefined) updates.keywords = keywords;
+      if (priority !== undefined) updates.priority = priority;
+      if (isActive !== undefined) updates.isActive = isActive;
+
+      const faq = await storage.updateFaq(id, updates);
+      res.json(faq);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete FAQ
+  app.delete('/api/faqs/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid FAQ ID' });
+      }
+
+      const existing = await storage.getFaqById(id);
+      if (!existing) {
+        return res.status(404).json({ error: 'FAQ not found' });
+      }
+
+      await storage.deleteFaq(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================
+  // Stripe Billing API
+  // ============================================
+
+  // Get subscription tiers and current tenant subscription
+  app.get('/api/billing/tiers', async (_req, res) => {
+    try {
+      const { SUBSCRIPTION_TIERS, isStripeConfigured } = await import('./services/stripe');
+      res.json({
+        configured: isStripeConfigured(),
+        tiers: Object.entries(SUBSCRIPTION_TIERS).map(([key, tier]) => ({
+          id: key,
+          name: tier.name,
+          price: tier.price,
+          features: tier.features,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get tenant subscription status
+  app.get('/api/billing/:tenantId/subscription', async (req, res) => {
+    try {
+      const tenantId = parseInt(req.params.tenantId, 10);
+      if (isNaN(tenantId)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const { getSubscription, checkCallLimit } = await import('./services/stripe');
+      const subscription = await getSubscription(tenantId);
+      const limits = await checkCallLimit(tenantId);
+
+      if (!subscription) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      res.json({ ...subscription, limits });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Create checkout session for subscription upgrade
+  app.post('/api/billing/:tenantId/checkout', async (req, res) => {
+    try {
+      const tenantId = parseInt(req.params.tenantId, 10);
+      if (isNaN(tenantId)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const { tier } = req.body;
+      if (!tier) {
+        return res.status(400).json({ error: 'Tier is required' });
+      }
+
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const successUrl = `${baseUrl}/tenants?billing=success`;
+      const cancelUrl = `${baseUrl}/tenants?billing=canceled`;
+
+      const { createCheckoutSession } = await import('./services/stripe');
+      const result = await createCheckoutSession(tenantId, tier, successUrl, cancelUrl);
+
+      if ('error' in result) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Create billing portal session
+  app.post('/api/billing/:tenantId/portal', async (req, res) => {
+    try {
+      const tenantId = parseInt(req.params.tenantId, 10);
+      if (isNaN(tenantId)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const returnUrl = `${baseUrl}/tenants`;
+
+      const { createPortalSession } = await import('./services/stripe');
+      const result = await createPortalSession(tenantId, returnUrl);
+
+      if ('error' in result) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Cancel subscription
+  app.post('/api/billing/:tenantId/cancel', async (req, res) => {
+    try {
+      const tenantId = parseInt(req.params.tenantId, 10);
+      if (isNaN(tenantId)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      const { cancelSubscription } = await import('./services/stripe');
+      const result = await cancelSubscription(tenantId);
+
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Stripe webhook endpoint (raw body required)
+  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+    try {
+      const signature = req.headers['stripe-signature'] as string;
+      if (!signature) {
+        return res.status(400).json({ error: 'Missing stripe-signature header' });
+      }
+
+      const { handleWebhook } = await import('./services/stripe');
+      const result = await handleWebhook(req.body, signature);
+
+      if (!result.received) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error('[Stripe Webhook] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   const httpServer = createServer(app);
   

@@ -419,6 +419,15 @@ export async function getOrCreatePatient({
   }
 }
 
+/**
+ * Update a patient's email address only
+ * Convenience wrapper around updateClinikoPatient
+ */
+export async function updateClinikoPatientEmail(patientId: string, email: string) {
+  console.log('[Cliniko] Updating patient email:', patientId, '→', email);
+  return updateClinikoPatient(patientId, { email });
+}
+
 // --- Update existing patient ---
 export async function updateClinikoPatient(patientId: string, updates: {
   first_name?: string;

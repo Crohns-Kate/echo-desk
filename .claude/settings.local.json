@@ -31,7 +31,15 @@
       "Bash(ss:*)",
       "Bash(node run-qa-analysis.mjs:*)",
       "Bash(lsof:*)",
-      "Bash(xargs kill:*)"
+      "Bash(xargs kill:*)",
+      "Bash(node test-qa-engine.mjs:*)",
+      "Bash(node --import tsx:*)",
+      "Bash(npm run test:booking:*)",
+      "Bash(npm run test:dates:*)",
+      "Bash(npm run test:multi-patient:*)",
+      "Bash(npm test:*)",
+      "Bash(./node_modules/.bin/tsc:*)",
+      "Bash(mkdir:*)"
     ],
     "deny": [],
     "ask": []

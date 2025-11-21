@@ -439,6 +439,96 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
+  // SMS webhook - handles inbound SMS for email updates
+  app.post("/api/sms/incoming", async (req: Request, res: Response) => {
+    try {
+      const from = (req.body.From as string) || "";
+      const body = (req.body.Body as string) || "";
+      const messageSid = (req.body.MessageSid as string) || "";
+
+      console.log("[SMS][INCOMING] 📨 Received SMS");
+      console.log("[SMS][INCOMING]   - From:", from);
+      console.log("[SMS][INCOMING]   - Body:", body);
+      console.log("[SMS][INCOMING]   - MessageSid:", messageSid);
+
+      // Import SMS functions and Cliniko integration
+      const { sendEmailUpdateConfirmation, sendEmailUpdateError } = await import("../services/sms");
+      const { findPatientByPhone } = await import("../services/cliniko");
+      const { updateClinikoPatient, sanitizeEmail, sanitizePhoneE164AU } = await import("../integrations/cliniko");
+      const { env } = await import("../utils/env");
+
+      const clinicName = env.CLINIC_NAME || "our clinic";
+
+      // Validate phone number
+      const sanitizedPhone = sanitizePhoneE164AU(from);
+      if (!sanitizedPhone) {
+        console.warn("[SMS][INCOMING] Invalid phone format:", from);
+        await sendEmailUpdateError({
+          to: from,
+          clinicName,
+          reason: "Invalid phone number format"
+        });
+        return res.sendStatus(200); // Always return 200 to Twilio
+      }
+
+      // Extract and validate email from message body
+      const sanitizedEmail = sanitizeEmail(body);
+      if (!sanitizedEmail) {
+        console.warn("[SMS][INCOMING] Invalid email format:", body);
+        await sendEmailUpdateError({
+          to: from,
+          clinicName,
+          reason: "Please send a valid email address (e.g., yourname@email.com)"
+        });
+        return res.sendStatus(200);
+      }
+
+      // Find patient by phone
+      console.log("[SMS][INCOMING] Looking up patient by phone:", sanitizedPhone);
+      const patient = await findPatientByPhone(sanitizedPhone);
+
+      if (!patient) {
+        console.warn("[SMS][INCOMING] No patient found for phone:", sanitizedPhone);
+        await sendEmailUpdateError({
+          to: from,
+          clinicName,
+          reason: "We couldn't find your record. Please call us to update your email"
+        });
+        return res.sendStatus(200);
+      }
+
+      console.log("[SMS][INCOMING] Found patient:", patient.id, patient.first_name, patient.last_name);
+
+      // Update patient email in Cliniko
+      try {
+        await updateClinikoPatient(patient.id, { email: sanitizedEmail });
+        console.log("[SMS][INCOMING] ✅ Successfully updated email for patient:", patient.id);
+
+        // Send confirmation SMS
+        await sendEmailUpdateConfirmation({
+          to: from,
+          email: sanitizedEmail,
+          clinicName
+        });
+
+        console.log("[SMS][INCOMING] ✅ Sent confirmation SMS to:", from);
+      } catch (updateErr) {
+        console.error("[SMS][INCOMING] ❌ Failed to update patient email:", updateErr);
+        await sendEmailUpdateError({
+          to: from,
+          clinicName,
+          reason: "There was a technical issue updating your email. Please call us"
+        });
+      }
+
+      return res.sendStatus(200);
+    } catch (e) {
+      console.error("[SMS][INCOMING][ERROR]", e);
+      return res.sendStatus(200); // Always return 200 to Twilio to prevent retries
+    }
+  });
+
+  // ───────────────────────────────────────────────
   // Entry point for each call
   app.post("/api/voice/incoming", async (req: Request, res: Response) => {
     const callSid =
@@ -446,15 +536,18 @@ export function registerVoice(app: Express) {
       (req.query?.callSid as string) ||
       "";
     const from = (req.body?.From as string) || "";
-    const to = (req.body?.To as string) || "";
+    const to = (req.body?.To as string) || (req.body?.Called as string) || "";
+
+    // Resolve tenant from called number (multi-tenant support)
+    const { resolveTenantWithFallback, getTenantContext } = await import("../services/tenantResolver");
+    const tenantCtx = await resolveTenantWithFallback(to);
 
     // Log call start and load conversation memory
     try {
-      const tenant = await storage.getTenant("default");
-      if (tenant) {
-        let conversation = await storage.createConversation(tenant.id, undefined, true);
+      if (tenantCtx) {
+        let conversation = await storage.createConversation(tenantCtx.id, undefined, true);
         const call = await storage.logCall({
-          tenantId: tenant.id,
+          tenantId: tenantCtx.id,
           conversationId: conversation.id,
           callSid,
           fromNumber: from,
@@ -463,6 +556,7 @@ export function registerVoice(app: Express) {
           summary: "Call initiated",
         });
         emitCallStarted(call);
+        console.log(`[VOICE][TENANT] Resolved tenant: ${tenantCtx.slug} (${tenantCtx.clinicName})`);
       }
     } catch (e) {
       console.error("[VOICE][LOG ERROR]", e);
@@ -4335,6 +4429,18 @@ export function registerVoice(app: Express) {
 
         case 'choose_slot':
           await handler.handleChooseSlot(speechRaw, digits);
+          break;
+
+        case 'disambiguate_patient':
+          await handler.handleDisambiguatePatient(speechRaw, digits);
+          break;
+
+        case 'faq':
+          await handler.handleFAQ(speechRaw);
+          break;
+
+        case 'faq_followup':
+          await handler.handleFAQFollowup(speechRaw);
           break;
 
         case 'final_check':

@@ -6,10 +6,12 @@
 import dayjs, { Dayjs } from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
+import customParseFormat from 'dayjs/plugin/customParseFormat.js';
 import { AUST_TZ } from '../time';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.extend(customParseFormat);
 
 export interface DateRange {
   from: Dayjs;
@@ -105,6 +107,27 @@ export function parseNaturalDate(
     }
   }
 
+  // Handle "next week" - return Monday to Friday of next week
+  if (expr === 'next week') {
+    const currentWeekday = now.day();
+    // Calculate days until next Monday (day 1)
+    const daysUntilNextMonday = currentWeekday === 0 ? 1 : (8 - currentWeekday);
+    const nextMonday = today.add(daysUntilNextMonday, 'days');
+    const nextFriday = nextMonday.add(4, 'days');
+
+    return {
+      from: nextMonday.startOf('day'),
+      to: nextFriday.endOf('day'),
+      description: `next week (${nextMonday.format('MMM D')} - ${nextFriday.format('MMM D')})`
+    };
+  }
+
+  // Handle explicit dates: "23rd", "the 23rd", "on the 23rd", "may 23rd", "23rd of may", etc.
+  const explicitDateResult = parseExplicitDate(expr, now, timezone);
+  if (explicitDateResult) {
+    return explicitDateResult;
+  }
+
   // Fallback - no specific date parsed, return next 14 days
   console.warn('[DateParser] Could not parse date expression:', expr);
   return {
@@ -112,6 +135,174 @@ export function parseNaturalDate(
     to: now.add(14, 'days'),
     description: `next 2 weeks (couldn't parse "${expr}")`
   };
+}
+
+/**
+ * Parse explicit date expressions like:
+ * - "23rd", "the 23rd", "on the 23rd"
+ * - "may 23rd", "23rd of may", "may 23"
+ * - "23 may", "23/05", "23-05"
+ */
+function parseExplicitDate(
+  expr: string,
+  now: Dayjs,
+  tz: string
+): DateRange | null {
+  const months = [
+    'january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december'
+  ];
+  const monthAbbrs = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+  // Remove common prefixes
+  let cleaned = expr
+    .replace(/^(on\s+)?(the\s+)?/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Pattern 1: Day with ordinal only (e.g., "23rd", "1st", "15th")
+  const dayOnlyMatch = cleaned.match(/^(\d{1,2})(st|nd|rd|th)?$/i);
+  if (dayOnlyMatch) {
+    const day = parseInt(dayOnlyMatch[1], 10);
+    if (day >= 1 && day <= 31) {
+      const targetDate = findNextDateWithDay(now, day, tz);
+      return {
+        from: targetDate.startOf('day'),
+        to: targetDate.endOf('day'),
+        description: `the ${day}${getOrdinalSuffix(day)} (${targetDate.format('MMM D')})`
+      };
+    }
+  }
+
+  // Pattern 2: "23rd of may", "15th of december"
+  const dayOfMonthMatch = cleaned.match(/^(\d{1,2})(st|nd|rd|th)?\s+(of\s+)?(\w+)$/i);
+  if (dayOfMonthMatch) {
+    const day = parseInt(dayOfMonthMatch[1], 10);
+    const monthStr = dayOfMonthMatch[4].toLowerCase();
+    const monthIndex = months.indexOf(monthStr) !== -1
+      ? months.indexOf(monthStr)
+      : monthAbbrs.indexOf(monthStr);
+
+    if (monthIndex !== -1 && day >= 1 && day <= 31) {
+      const targetDate = findDateWithMonthDay(now, monthIndex, day, tz);
+      return {
+        from: targetDate.startOf('day'),
+        to: targetDate.endOf('day'),
+        description: `${months[monthIndex]} ${day} (${targetDate.format('YYYY-MM-DD')})`
+      };
+    }
+  }
+
+  // Pattern 3: "may 23rd", "december 15"
+  const monthDayMatch = cleaned.match(/^(\w+)\s+(\d{1,2})(st|nd|rd|th)?$/i);
+  if (monthDayMatch) {
+    const monthStr = monthDayMatch[1].toLowerCase();
+    const day = parseInt(monthDayMatch[2], 10);
+    const monthIndex = months.indexOf(monthStr) !== -1
+      ? months.indexOf(monthStr)
+      : monthAbbrs.indexOf(monthStr);
+
+    if (monthIndex !== -1 && day >= 1 && day <= 31) {
+      const targetDate = findDateWithMonthDay(now, monthIndex, day, tz);
+      return {
+        from: targetDate.startOf('day'),
+        to: targetDate.endOf('day'),
+        description: `${months[monthIndex]} ${day} (${targetDate.format('YYYY-MM-DD')})`
+      };
+    }
+  }
+
+  // Pattern 4: "23/5", "23-5", "23/05", "05/23" (ambiguous - assume DD/MM for AU)
+  const slashMatch = cleaned.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+  if (slashMatch) {
+    // Assume DD/MM format for Australian locale
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1; // 0-indexed
+
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      const targetDate = findDateWithMonthDay(now, month, day, tz);
+      return {
+        from: targetDate.startOf('day'),
+        to: targetDate.endOf('day'),
+        description: `${day}/${month + 1} (${targetDate.format('MMM D, YYYY')})`
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find the next occurrence of a specific day of month
+ * If the day has already passed this month, returns next month's date
+ */
+function findNextDateWithDay(now: Dayjs, day: number, tz: string): Dayjs {
+  const currentDay = now.date();
+  const currentMonth = now.month();
+  const currentYear = now.year();
+
+  // If the requested day is today or later this month, use this month
+  if (day >= currentDay) {
+    const candidate = now.date(day);
+    // Check if the date is valid (e.g., Feb 30 doesn't exist)
+    if (candidate.date() === day) {
+      return candidate;
+    }
+  }
+
+  // Otherwise, try next month
+  let nextMonth = now.add(1, 'month').startOf('month');
+  let attempts = 0;
+
+  while (attempts < 12) {
+    const candidate = nextMonth.date(day);
+    if (candidate.date() === day) {
+      return candidate;
+    }
+    // Day doesn't exist in this month, try next
+    nextMonth = nextMonth.add(1, 'month');
+    attempts++;
+  }
+
+  // Fallback to next occurrence
+  return now.add(1, 'month').date(Math.min(day, 28));
+}
+
+/**
+ * Find the next occurrence of a specific month and day
+ * If the date has passed this year, returns next year's date
+ */
+function findDateWithMonthDay(now: Dayjs, month: number, day: number, tz: string): Dayjs {
+  const currentYear = now.year();
+
+  // Try this year first
+  let candidate = dayjs.tz(`${currentYear}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`, tz);
+
+  // Validate the date exists (e.g., Feb 30 doesn't exist)
+  if (candidate.month() !== month || candidate.date() !== day) {
+    // Invalid date, try to get the last valid day of that month
+    candidate = dayjs.tz(`${currentYear}-${String(month + 1).padStart(2, '0')}-01`, tz).endOf('month');
+  }
+
+  // If date is in the past, use next year
+  if (candidate.isBefore(now.startOf('day'))) {
+    candidate = dayjs.tz(`${currentYear + 1}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`, tz);
+    // Validate again
+    if (candidate.month() !== month || candidate.date() !== day) {
+      candidate = dayjs.tz(`${currentYear + 1}-${String(month + 1).padStart(2, '0')}-01`, tz).endOf('month');
+    }
+  }
+
+  return candidate;
+}
+
+/**
+ * Get ordinal suffix for a number (1st, 2nd, 3rd, etc.)
+ */
+function getOrdinalSuffix(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
 }
 
 /**

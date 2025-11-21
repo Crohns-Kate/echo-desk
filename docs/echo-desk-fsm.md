@@ -14,26 +14,27 @@ The Echo Desk voice receptionist implements a finite state machine (FSM) to mana
 └──────┬──────┘
        ↓
 ┌─────────────────────┐
-│ PATIENT_TYPE_DETECT │ Parse "new" vs "returning"
+│ PATIENT_TYPE_DETECT │ Parse "new" vs "returning" OR detect FAQ intent
 └──────┬──────────────┘
-       ├─ new ─────────────────────────┐
-       ↓                                ↓
-┌──────────────────────┐      ┌────────────────────────┐
-│ RETURNING_PATIENT    │      │ NEW_PATIENT_PHONE      │
-│ _LOOKUP              │      │ _CONFIRM               │
-└──────┬───────────────┘      └───────┬────────────────┘
-       ├─ found                       ↓
-       │                        ┌──────────────────┐
-       ├─ not found ───────────→│ SEND_FORM_LINK   │
-       ↓                        └───────┬──────────┘
-┌────────────────────┐                 ↓
-│ CHIEF_COMPLAINT    │          ┌──────────────────┐
-│                    │          │ WAITING_FOR_FORM │ (polls every 3s)
-└──────┬─────────────┘          └───────┬──────────┘
-       ↓                                ↓
-┌────────────────────┐          ┌──────────────────┐
-│ APPOINTMENT_SEARCH │←─────────│ FORM_RECEIVED    │
-└──────┬─────────────┘          └──────────────────┘
+       ├─ FAQ question detected ────────┐
+       ├─ new ────────────────────┐     ↓
+       ↓                           ↓   ┌──────────────────┐
+┌──────────────────────┐  ┌────────────────────────┐   │ FAQ_ANSWERING    │
+│ RETURNING_PATIENT    │  │ NEW_PATIENT_PHONE      │   │ Answer question  │
+│ _LOOKUP              │  │ _CONFIRM               │   └────┬─────────────┘
+└──────┬───────────────┘  └───────┬────────────────┘        │
+       ├─ found                   ↓                          ├─ book appointment
+       │                    ┌──────────────────┐             ├─ another FAQ
+       ├─ not found ───────→│ SEND_FORM_LINK   │             ├─ done (hangup)
+       ↓                    └───────┬──────────┘             ↓
+┌────────────────────┐             ↓              ┌──────────────────┐
+│ CHIEF_COMPLAINT    │      ┌──────────────────┐  │ FAQ_FOLLOWUP     │
+│                    │      │ WAITING_FOR_FORM │  │ What else?       │
+└──────┬─────────────┘      └───────┬──────────┘  └──────────────────┘
+       ↓                            ↓
+┌────────────────────┐      ┌──────────────────┐
+│ APPOINTMENT_SEARCH │←─────│ FORM_RECEIVED    │
+└──────┬─────────────┘      └──────────────────┘
        ↓
 ┌────────────────────┐
 │ PRESENT_OPTIONS    │ Offer 3 slots
@@ -83,14 +84,20 @@ The Echo Desk voice receptionist implements a finite state machine (FSM) to mana
 
 ### PATIENT_TYPE_DETECT
 
-**Purpose**: Determine if caller is new or returning patient
+**Purpose**: Determine if caller is new or returning patient, OR detect FAQ intent
 
 **Entry Prompt**: (none - processes response from GREETING)
 
 **Expected Input**:
 - "new", "first", "yes" → new patient
 - "returning", "no", "been before" → returning patient
+- FAQ question (e.g., "what are your hours?") → FAQ answering
 - Unclear response → retry (max 2 attempts)
+
+**FAQ Detection**:
+- Uses `detectFaqIntent()` from `server/services/faq.ts`
+- Checks for question keywords (hours, location, cost, services, etc.)
+- If FAQ detected and speech length > 10 chars → transitions to `FAQ_ANSWERING`
 
 **Session Data Written**:
 - `ctx.retryCount` - incremented on unclear response
@@ -106,10 +113,77 @@ The Echo Desk voice receptionist implements a finite state machine (FSM) to mana
 
 **Retry Prompt**:
 ```
-"Sorry, I didn't catch that. Is this your first visit? Say yes for new patient, or no if you've been here before."
+"Sorry, I didn't catch that. Have you been here before? Say yes if you're a returning patient, or no if this is your first visit."
 ```
 
+**Improved Features**:
+- Conversational retry prompt variations
+- FAQ intent detection before patient type determination
+- Better handling of unclear responses
+
 **Implementation**: `handlePatientTypeDetect(speechRaw, digits)`
+
+---
+
+### FAQ_ANSWERING
+
+**Purpose**: Answer frequently asked questions about the clinic
+
+**Entry Prompt**: (none - answers question immediately)
+
+**Process**:
+1. Search FAQ database using `searchFaqByQuery(speechRaw)`
+2. If match found:
+   - Format answer for TTS using `formatFaqAnswerForSpeech()`
+   - Speak the answer
+   - Ask "Is there anything else I can help you with? I can book an appointment if you need one."
+3. If no match found:
+   - Say "I can help you book an appointment. Let me get some details."
+   - Transition to `PATIENT_TYPE_DETECT`
+
+**Expected Input** (after answering):
+- "book", "appointment", "yes", "schedule" → wants to book
+- "no", "nothing", "that's all" → done
+- Another question → answer another FAQ
+
+**Session Data Written**: None
+
+**Session Data Read**: None
+
+**Transitions**:
+- FAQ found → `FAQ_FOLLOWUP` (via gather action)
+- FAQ not found → `PATIENT_TYPE_DETECT`
+- No response → hangup with farewell
+
+**Implementation**: `handleFAQ(speechRaw)`
+
+**Supported FAQ Categories**:
+- hours, location, parking, billing, services, preparation
+- cancellation, first-visit, urgent, booking
+
+---
+
+### FAQ_FOLLOWUP
+
+**Purpose**: Handle followup after answering an FAQ
+
+**Entry Prompt**: (already spoken in FAQ_ANSWERING)
+
+**Expected Input**:
+- "book", "appointment", "yes" → book appointment
+- "no", "nothing", "that's all" → done
+- Another question → answer FAQ
+
+**Session Data Written**: None
+
+**Session Data Read**: None
+
+**Transitions**:
+- Wants to book → `PATIENT_TYPE_DETECT`
+- Done → `CLOSING` (hangup)
+- Another FAQ → `FAQ_ANSWERING`
+
+**Implementation**: `handleFAQFollowup(speechRaw)`
 
 ---
 

@@ -6,6 +6,7 @@ import { saySafe } from '../utils/voice-constants';
 import { AUST_TZ } from '../time';
 import { parseNaturalDate, formatDateRange } from '../utils/date-parser';
 import { classifyIntent } from './intent';
+import type { TenantContext } from './tenantResolver';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
@@ -20,6 +21,7 @@ dayjs.extend(timezone);
 export enum CallState {
   GREETING = 'GREETING',
   PATIENT_TYPE_DETECT = 'PATIENT_TYPE_DETECT',
+  FAQ_ANSWERING = 'FAQ_ANSWERING',
   RETURNING_PATIENT_LOOKUP = 'RETURNING_PATIENT_LOOKUP',
   NEW_PATIENT_PHONE_CONFIRM = 'NEW_PATIENT_PHONE_CONFIRM',
   SEND_FORM_LINK = 'SEND_FORM_LINK',
@@ -37,6 +39,9 @@ export interface CallContext {
   state: CallState;
   callSid: string;
   callerPhone: string;
+  tenantId?: number;
+  clinicName?: string;
+  timezone?: string;
   patientId?: string;
   patientName?: string;
   patientFirstName?: string;
@@ -64,13 +69,14 @@ export interface CallContext {
 // Valid state transitions
 const VALID_TRANSITIONS: Record<CallState, CallState[]> = {
   [CallState.GREETING]: [CallState.PATIENT_TYPE_DETECT],
-  [CallState.PATIENT_TYPE_DETECT]: [CallState.RETURNING_PATIENT_LOOKUP, CallState.NEW_PATIENT_PHONE_CONFIRM],
+  [CallState.PATIENT_TYPE_DETECT]: [CallState.RETURNING_PATIENT_LOOKUP, CallState.NEW_PATIENT_PHONE_CONFIRM, CallState.FAQ_ANSWERING],
+  [CallState.FAQ_ANSWERING]: [CallState.PATIENT_TYPE_DETECT, CallState.CHIEF_COMPLAINT, CallState.CLOSING],
   [CallState.RETURNING_PATIENT_LOOKUP]: [CallState.CHIEF_COMPLAINT, CallState.NEW_PATIENT_PHONE_CONFIRM],
   [CallState.NEW_PATIENT_PHONE_CONFIRM]: [CallState.SEND_FORM_LINK],
   [CallState.SEND_FORM_LINK]: [CallState.WAITING_FOR_FORM],
   [CallState.WAITING_FOR_FORM]: [CallState.FORM_RECEIVED, CallState.ERROR_RECOVERY],
   [CallState.FORM_RECEIVED]: [CallState.CHIEF_COMPLAINT],
-  [CallState.CHIEF_COMPLAINT]: [CallState.APPOINTMENT_SEARCH],
+  [CallState.CHIEF_COMPLAINT]: [CallState.APPOINTMENT_SEARCH, CallState.FAQ_ANSWERING],
   [CallState.APPOINTMENT_SEARCH]: [CallState.PRESENT_OPTIONS, CallState.ERROR_RECOVERY],
   [CallState.PRESENT_OPTIONS]: [CallState.CONFIRM_BOOKING, CallState.APPOINTMENT_SEARCH],
   [CallState.CONFIRM_BOOKING]: [CallState.CLOSING],
@@ -85,15 +91,34 @@ const VALID_TRANSITIONS: Record<CallState, CallState[]> = {
 export class CallFlowHandler {
   private ctx: CallContext;
   private vr: twilio.twiml.VoiceResponse;
+  private tenantCtx?: TenantContext;
 
-  constructor(callSid: string, callerPhone: string, vr: twilio.twiml.VoiceResponse) {
+  constructor(callSid: string, callerPhone: string, vr: twilio.twiml.VoiceResponse, tenantCtx?: TenantContext) {
     this.vr = vr;
+    this.tenantCtx = tenantCtx;
     this.ctx = {
       state: CallState.GREETING,
       callSid,
       callerPhone,
+      tenantId: tenantCtx?.id,
+      clinicName: tenantCtx?.clinicName || 'Echo Desk Chiropractic',
+      timezone: tenantCtx?.timezone || AUST_TZ,
       retryCount: 0
     };
+  }
+
+  /**
+   * Get clinic name from context
+   */
+  getClinicName(): string {
+    return this.ctx.clinicName || this.tenantCtx?.clinicName || 'Echo Desk Chiropractic';
+  }
+
+  /**
+   * Get timezone from context
+   */
+  getTimezone(): string {
+    return this.ctx.timezone || this.tenantCtx?.timezone || AUST_TZ;
   }
 
   /**
@@ -162,6 +187,7 @@ export class CallFlowHandler {
       input: ['speech', 'dtmf'],
       timeout: 5,
       speechTimeout: 'auto',
+      actionOnEmptyResult: true,
       hints: 'yes, no, new, returning, first visit',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
       method: 'POST'
@@ -176,6 +202,18 @@ export class CallFlowHandler {
    */
   async handlePatientTypeDetect(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
+
+    // Check for FAQ intent first (if they're asking a question instead of answering)
+    const { detectFaqIntent } = await import('./faq');
+    const faqCategory = detectFaqIntent(speechRaw);
+
+    if (faqCategory && speechRaw.length > 10) {
+      // They're asking a question, not answering our question
+      console.log('[handlePatientTypeDetect] Detected FAQ intent:', faqCategory);
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQ(speechRaw);
+      return;
+    }
 
     // Check if they said new/first/yes
     const isNew = speech.includes('new') || speech.includes('first') ||
@@ -194,7 +232,7 @@ export class CallFlowHandler {
       this.transitionTo(CallState.RETURNING_PATIENT_LOOKUP);
       await this.handleReturningPatientLookup();
     } else {
-      // Unclear response - retry
+      // Unclear response - retry with more helpful prompt
       this.ctx.retryCount++;
       if (this.ctx.retryCount >= 2) {
         // Assume new patient after 2 failed attempts
@@ -206,11 +244,20 @@ export class CallFlowHandler {
           input: ['speech', 'dtmf'],
           timeout: 5,
           speechTimeout: 'auto',
-          hints: 'yes, no, new, returning',
+          actionOnEmptyResult: true,
+          hints: 'yes, no, new, returning, first visit, been before',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
           method: 'POST'
         });
-        saySafe(g, "Sorry, I didn't catch that. Is this your first visit? Say yes for new patient, or no if you've been here before.");
+
+        // More conversational and helpful retry prompt
+        const retryPrompts = [
+          "Sorry, I didn't catch that. Have you been here before? Say yes if you're a returning patient, or no if this is your first visit.",
+          "I didn't quite get that. Are you a new patient with us, or have you visited us before?",
+          "Apologies, could you clarify? Is this your first appointment, or are you an existing patient?"
+        ];
+        const randomPrompt = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
+        saySafe(g, randomPrompt);
       }
     }
 
@@ -239,23 +286,39 @@ export class CallFlowHandler {
           input: ['speech'],
           timeout: 5,
           speechTimeout: 'auto',
+          actionOnEmptyResult: true,
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=chief_complaint`,
           method: 'POST'
         });
         g.pause({ length: 1 });
 
       } else if (patients.length > 1) {
-        // Multiple patients - ask to disambiguate
-        const names = patients.slice(0, 2).map(p => p.firstName).join(' or ');
+        // Multiple patients - store options and ask to disambiguate
+        // Store patient options in context for disambiguation step
+        (this.ctx as any).disambiguationPatients = patients.slice(0, 3).map(p => ({
+          id: p.id,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          email: p.email
+        }));
+
+        const names = patients.slice(0, 2).map((p, idx) => `${p.firstName}${idx === 0 ? '' : ''}`).join(' or ');
+        const optionsText = patients.slice(0, 2).map((p, idx) => `Press ${idx + 1} for ${p.firstName}`).join('. ');
+
         const g = this.vr.gather({
           input: ['speech', 'dtmf'],
-          timeout: 5,
+          timeout: 8,
           speechTimeout: 'auto',
-          hints: patients.map(p => p.firstName).join(', '),
+          actionOnEmptyResult: true,
+          numDigits: 1,
+          hints: patients.map(p => p.firstName).join(', ') + ', someone new, new patient, different person',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=disambiguate_patient`,
           method: 'POST'
         });
-        saySafe(g, `I see a few accounts with this number. Are you ${names}? Or press 3 if neither.`);
+
+        saySafe(g, `I see a few accounts with this number. Is this ${names}, or someone new? ${optionsText}. Or press 3 if you're someone new.`);
+
+        await this.saveContext();
 
       } else {
         // No patients found - treat as new
@@ -274,6 +337,121 @@ export class CallFlowHandler {
   }
 
   /**
+   * Handle multi-patient disambiguation
+   * Called when multiple patients share the same phone number
+   */
+  async handleDisambiguatePatient(speechRaw: string, digits: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+    const patients = (this.ctx as any).disambiguationPatients || [];
+
+    console.log('[handleDisambiguatePatient] Speech:', speechRaw, 'Digits:', digits);
+    console.log('[handleDisambiguatePatient] Available patients:', patients.map((p: any) => p.firstName));
+
+    // Check for "someone new" / "new patient" / press 3
+    const isSomeoneNew = digits === '3' ||
+                         speech.includes('new') ||
+                         speech.includes('different') ||
+                         speech.includes('someone else') ||
+                         speech.includes('not me');
+
+    if (isSomeoneNew) {
+      // Booking for a NEW person - go to new patient flow
+      console.log('[handleDisambiguatePatient] Selected: Someone new');
+      saySafe(this.vr, "No problem! Let's set up a new account.");
+      this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
+      await this.handleNewPatientPhoneConfirm();
+      return;
+    }
+
+    // Check for selection by digit (1 or 2)
+    if (digits === '1' && patients[0]) {
+      const patient = patients[0];
+      this.ctx.patientId = patient.id;
+      this.ctx.patientName = `${patient.firstName} ${patient.lastName}`;
+      this.ctx.patientFirstName = patient.firstName;
+      this.ctx.patientEmail = patient.email;
+      console.log('[handleDisambiguatePatient] Selected patient 1:', patient.firstName);
+
+      saySafe(this.vr, `Great, ${patient.firstName}! What brings you in today?`);
+      this.transitionTo(CallState.CHIEF_COMPLAINT);
+      await this.promptForChiefComplaint();
+      return;
+    }
+
+    if (digits === '2' && patients[1]) {
+      const patient = patients[1];
+      this.ctx.patientId = patient.id;
+      this.ctx.patientName = `${patient.firstName} ${patient.lastName}`;
+      this.ctx.patientFirstName = patient.firstName;
+      this.ctx.patientEmail = patient.email;
+      console.log('[handleDisambiguatePatient] Selected patient 2:', patient.firstName);
+
+      saySafe(this.vr, `Great, ${patient.firstName}! What brings you in today?`);
+      this.transitionTo(CallState.CHIEF_COMPLAINT);
+      await this.promptForChiefComplaint();
+      return;
+    }
+
+    // Check for name match in speech
+    for (let i = 0; i < patients.length; i++) {
+      const patient = patients[i];
+      if (speech.includes(patient.firstName.toLowerCase())) {
+        this.ctx.patientId = patient.id;
+        this.ctx.patientName = `${patient.firstName} ${patient.lastName}`;
+        this.ctx.patientFirstName = patient.firstName;
+        this.ctx.patientEmail = patient.email;
+        console.log('[handleDisambiguatePatient] Selected by name:', patient.firstName);
+
+        saySafe(this.vr, `Perfect, ${patient.firstName}! What brings you in today?`);
+        this.transitionTo(CallState.CHIEF_COMPLAINT);
+        await this.promptForChiefComplaint();
+        return;
+      }
+    }
+
+    // Unclear response - ask again
+    this.ctx.retryCount++;
+    if (this.ctx.retryCount >= 2) {
+      // Too many retries - treat as new patient
+      console.log('[handleDisambiguatePatient] Max retries, treating as new patient');
+      saySafe(this.vr, "No worries, let's set you up fresh.");
+      this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
+      await this.handleNewPatientPhoneConfirm();
+    } else {
+      const names = patients.slice(0, 2).map((p: any) => p.firstName).join(' or ');
+      const g = this.vr.gather({
+        input: ['speech', 'dtmf'],
+        timeout: 8,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        numDigits: 1,
+        hints: patients.map((p: any) => p.firstName).join(', ') + ', new',
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=disambiguate_patient`,
+        method: 'POST'
+      });
+      saySafe(g, `Sorry, I didn't catch that. Are you ${names}? Or press 3 if you're someone new.`);
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Prompt for chief complaint (helper)
+   */
+  private async promptForChiefComplaint(): Promise<void> {
+    const g = this.vr.gather({
+      input: ['speech'],
+      timeout: 5,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=chief_complaint`,
+      method: 'POST'
+    });
+    g.pause({ length: 1 });
+    await this.saveContext();
+  }
+
+  /**
    * Handle new patient phone confirmation
    */
   async handleNewPatientPhoneConfirm(): Promise<void> {
@@ -283,6 +461,7 @@ export class CallFlowHandler {
       input: ['speech', 'dtmf'],
       timeout: 5,
       speechTimeout: 'auto',
+      actionOnEmptyResult: true,
       hints: 'yes, no',
       numDigits: 1,
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=phone_confirm`,
@@ -308,6 +487,7 @@ export class CallFlowHandler {
       const g = this.vr.gather({
         input: ['dtmf'],
         timeout: 10,
+        actionOnEmptyResult: true,
         numDigits: 10,
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=alternate_phone`,
         method: 'POST'
@@ -338,7 +518,7 @@ export class CallFlowHandler {
       await sendNewPatientForm({
         to: this.ctx.callerPhone,
         token: token,
-        clinicName: 'Echo Desk Chiropractic'
+        clinicName: this.getClinicName()
       });
 
       saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out - takes about 30 seconds.");
@@ -424,6 +604,7 @@ export class CallFlowHandler {
       input: ['speech'],
       timeout: 5,
       speechTimeout: 'auto',
+      actionOnEmptyResult: true,
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=chief_complaint`,
       method: 'POST'
     });
@@ -577,6 +758,7 @@ export class CallFlowHandler {
       input: ['speech', 'dtmf'],
       timeout: 10,
       speechTimeout: 'auto',
+      actionOnEmptyResult: true,
       numDigits: 1,
       hints: 'one, two, three, option one, option two, option three',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=choose_slot`,
@@ -699,14 +881,11 @@ export class CallFlowHandler {
       try {
         const { sendAppointmentConfirmation } = await import('../services/sms');
         const { storage } = await import('../storage');
-        const tenant = await storage.getTenant("default");
-        if (tenant) {
-          await sendAppointmentConfirmation({
-            to: this.ctx.callerPhone,
-            appointmentDate: slot.speakable,
-            clinicName: tenant.clinicName
-          });
-        }
+        await sendAppointmentConfirmation({
+          to: this.ctx.callerPhone,
+          appointmentDate: slot.speakable,
+          clinicName: this.getClinicName()
+        });
       } catch (smsErr) {
         console.error('[handleConfirmBooking] Failed to send SMS:', smsErr);
       }
@@ -732,6 +911,7 @@ export class CallFlowHandler {
       input: ['speech'],
       timeout: 3,
       speechTimeout: 'auto',
+      actionOnEmptyResult: true,
       hints: 'no, nothing, that\'s all',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=final_check`,
       method: 'POST'
@@ -743,6 +923,91 @@ export class CallFlowHandler {
     // Default to goodbye if no response
     saySafe(this.vr, "Perfect! See you soon. Bye!");
     this.vr.hangup();
+
+    await this.saveContext();
+  }
+
+  /**
+   * Handle FAQ answering
+   */
+  async handleFAQ(speechRaw: string): Promise<void> {
+    try {
+      const { searchFaqByQuery, formatFaqAnswerForSpeech } = await import('./faq');
+
+      console.log('[handleFAQ] Searching for FAQ answer:', speechRaw);
+
+      // Search for matching FAQ
+      const faq = await searchFaqByQuery(speechRaw);
+
+      if (faq) {
+        // Found an answer
+        const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
+        console.log('[handleFAQ] Found FAQ answer:', faq.question);
+
+        // Answer the question and ask what else they need
+        const g = this.vr.gather({
+          input: ['speech'],
+          timeout: 5,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          hints: 'appointment, booking, book, new patient, returning',
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
+          method: 'POST'
+        });
+
+        saySafe(g, formattedAnswer);
+        g.pause({ length: 1 });
+        saySafe(g, "Is there anything else I can help you with? I can book an appointment if you need one.");
+
+        // Fallback if no response
+        saySafe(this.vr, "Feel free to call back anytime. Bye!");
+        this.vr.hangup();
+      } else {
+        // No FAQ found - continue to booking flow
+        console.log('[handleFAQ] No FAQ match found, continuing to patient type detection');
+        saySafe(this.vr, "I can help you book an appointment. Let me get some details.");
+        this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+        await this.handlePatientTypeDetect('', '');
+      }
+
+      await this.saveContext();
+    } catch (err) {
+      console.error('[handleFAQ] Error:', err);
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      saySafe(this.vr, "Let me help you book an appointment instead.");
+      await this.handlePatientTypeDetect('', '');
+    }
+  }
+
+  /**
+   * Handle FAQ followup (after answering a question)
+   */
+  async handleFAQFollowup(speechRaw: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+
+    // Check if they want to book
+    const wantsToBook = speech.includes('book') || speech.includes('appointment') ||
+                        speech.includes('yes') || speech.includes('schedule');
+
+    // Check if they're done
+    const isDone = speech.includes('no') || speech.includes('nothing') ||
+                   speech.includes("that's all") || speech.includes("that's it");
+
+    if (wantsToBook) {
+      // Continue to booking flow
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      saySafe(this.vr, "Great! Let's get you booked in.");
+      await this.handlePatientTypeDetect('', '');
+    } else if (isDone) {
+      // They're done
+      this.transitionTo(CallState.CLOSING);
+      saySafe(this.vr, "Perfect! Have a great day. Bye!");
+      this.vr.hangup();
+    } else {
+      // Try to answer another FAQ
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQ(speechRaw);
+    }
 
     await this.saveContext();
   }

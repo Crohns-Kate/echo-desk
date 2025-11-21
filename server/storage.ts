@@ -7,6 +7,7 @@ import {
   alerts,
   appointments,
   qaReports,
+  faqs,
   type Tenant,
   type PhoneMap,
   type Conversation,
@@ -14,12 +15,14 @@ import {
   type Alert,
   type Appointment,
   type QaReport,
+  type Faq,
   type InsertTenant,
   type InsertPhoneMap,
   type InsertCallLog,
   type InsertAlert,
   type InsertAppointment,
-  type InsertQaReport
+  type InsertQaReport,
+  type InsertFaq
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, gt } from "drizzle-orm";
@@ -27,8 +30,11 @@ import { eq, desc, and, sql, gt } from "drizzle-orm";
 export interface IStorage {
   // Tenants
   getTenant(slug: string): Promise<Tenant | undefined>;
+  getTenantByPhone(phoneNumber: string): Promise<Tenant | undefined>;
+  getTenantById(id: number): Promise<Tenant | undefined>;
   listTenants(): Promise<Tenant[]>;
   createTenant(tenant: InsertTenant): Promise<Tenant>;
+  updateTenant(id: number, updates: Partial<InsertTenant>): Promise<Tenant | undefined>;
 
   // Phone mapping
   getPhoneMap(phone: string): Promise<PhoneMap | undefined>;
@@ -36,6 +42,7 @@ export interface IStorage {
 
   // Conversations
   createConversation(tenantId: number, leadId?: number, isVoice?: boolean): Promise<Conversation>;
+  getConversation(id: number): Promise<Conversation | undefined>;
   updateConversation(id: number, updates: Partial<Conversation>): Promise<Conversation | undefined>;
 
   // Call logs
@@ -60,6 +67,14 @@ export interface IStorage {
   getQaReportByCallSid(callSid: string): Promise<QaReport | undefined>;
   listQaReports(limit?: number): Promise<QaReport[]>;
 
+  // FAQs
+  createFaq(data: InsertFaq): Promise<Faq>;
+  updateFaq(id: number, updates: Partial<InsertFaq>): Promise<Faq | undefined>;
+  deleteFaq(id: number): Promise<boolean>;
+  getFaqById(id: number): Promise<Faq | undefined>;
+  listFaqs(tenantId?: number, activeOnly?: boolean): Promise<Faq[]>;
+  searchFaqs(query: string, tenantId?: number): Promise<Faq[]>;
+
   // Stats
   getStats(tenantId?: number): Promise<{
     activeCalls: number;
@@ -81,6 +96,19 @@ export class DatabaseStorage implements IStorage {
     return tenant || undefined;
   }
 
+  async getTenantByPhone(phoneNumber: string): Promise<Tenant | undefined> {
+    if (!phoneNumber) return undefined;
+    const [tenant] = await db.select().from(tenants)
+      .where(eq(tenants.phoneNumber, phoneNumber))
+      .limit(1);
+    return tenant || undefined;
+  }
+
+  async getTenantById(id: number): Promise<Tenant | undefined> {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, id)).limit(1);
+    return tenant || undefined;
+  }
+
   async listTenants(): Promise<Tenant[]> {
     return db.select().from(tenants).orderBy(tenants.clinicName);
   }
@@ -88,6 +116,14 @@ export class DatabaseStorage implements IStorage {
   async createTenant(insertTenant: InsertTenant): Promise<Tenant> {
     const [tenant] = await db.insert(tenants).values(insertTenant).returning();
     return tenant;
+  }
+
+  async updateTenant(id: number, updates: Partial<InsertTenant>): Promise<Tenant | undefined> {
+    const [tenant] = await db.update(tenants)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(tenants.id, id))
+      .returning();
+    return tenant || undefined;
   }
 
   async getPhoneMap(phone: string): Promise<PhoneMap | undefined> {
@@ -353,6 +389,97 @@ export class DatabaseStorage implements IStorage {
       .from(qaReports)
       .orderBy(desc(qaReports.createdAt))
       .limit(limit);
+  }
+
+  async createFaq(data: InsertFaq): Promise<Faq> {
+    const [faq] = await db
+      .insert(faqs)
+      .values(data)
+      .returning();
+    return faq;
+  }
+
+  async updateFaq(id: number, updates: Partial<InsertFaq>): Promise<Faq | undefined> {
+    const [faq] = await db
+      .update(faqs)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(faqs.id, id))
+      .returning();
+    return faq || undefined;
+  }
+
+  async deleteFaq(id: number): Promise<boolean> {
+    const result = await db
+      .delete(faqs)
+      .where(eq(faqs.id, id));
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async getFaqById(id: number): Promise<Faq | undefined> {
+    const [faq] = await db
+      .select()
+      .from(faqs)
+      .where(eq(faqs.id, id))
+      .limit(1);
+    return faq || undefined;
+  }
+
+  async listFaqs(tenantId?: number, activeOnly: boolean = true): Promise<Faq[]> {
+    let query = db.select().from(faqs);
+
+    if (tenantId) {
+      query = query.where(eq(faqs.tenantId, tenantId));
+    }
+
+    if (activeOnly) {
+      query = query.where(eq(faqs.isActive, true));
+    }
+
+    return query.orderBy(desc(faqs.priority), faqs.category);
+  }
+
+  async searchFaqs(query: string, tenantId?: number): Promise<Faq[]> {
+    const searchLower = query.toLowerCase();
+
+    // Get all FAQs (filtered by tenant if specified)
+    const allFaqs = await this.listFaqs(tenantId, true);
+
+    // Score each FAQ based on keyword matches
+    const scored = allFaqs.map(faq => {
+      let score = 0;
+
+      // Check question match
+      if (faq.question.toLowerCase().includes(searchLower)) {
+        score += 10;
+      }
+
+      // Check answer match
+      if (faq.answer.toLowerCase().includes(searchLower)) {
+        score += 5;
+      }
+
+      // Check keyword matches
+      if (faq.keywords && faq.keywords.length > 0) {
+        for (const keyword of faq.keywords) {
+          if (searchLower.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(searchLower)) {
+            score += 7;
+          }
+        }
+      }
+
+      // Category match
+      if (faq.category.toLowerCase() === searchLower) {
+        score += 8;
+      }
+
+      return { faq, score };
+    });
+
+    // Filter by score > 0 and sort by score descending
+    return scored
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.faq);
   }
 
   async seed(): Promise<void> {

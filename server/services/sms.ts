@@ -183,3 +183,43 @@ export async function sendNewPatientForm(params: {
     console.error('[SMS] Failed to send new patient form link', e);
   }
 }
+
+export async function sendEmailUpdateConfirmation(params: {
+  to: string;
+  email: string;
+  clinicName: string;
+}): Promise<void> {
+  try {
+    const message = `Thanks! Your email has been updated to ${params.email} in our records at ${params.clinicName}.`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent email update confirmation to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send email update confirmation', e);
+  }
+}
+
+export async function sendEmailUpdateError(params: {
+  to: string;
+  clinicName: string;
+  reason: string;
+}): Promise<void> {
+  try {
+    const message = `Sorry, we couldn't update your email at ${params.clinicName}. ${params.reason}. Please call us if you need help.`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent email update error to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send email update error', e);
+  }
+}

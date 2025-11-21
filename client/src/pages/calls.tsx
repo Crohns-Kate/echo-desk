@@ -15,6 +15,16 @@ export default function Calls() {
     queryKey: ["/api/calls"],
   });
 
+  const { data: qaReports } = useQuery<any[]>({
+    queryKey: ["/api/qa/reports"],
+  });
+
+  // Map QA reports by callSid for quick lookup
+  const qaReportMap = qaReports?.reduce((acc, report) => {
+    acc[report.callSid] = report;
+    return acc;
+  }, {} as Record<string, any>) || {};
+
   const filteredCalls = calls?.filter((call) => {
     const search = searchTerm.toLowerCase();
     return (
@@ -87,6 +97,7 @@ export default function Calls() {
                       <th className="text-left py-3 px-4 text-sm font-medium text-muted-foreground">From</th>
                       <th className="text-left py-3 px-4 text-sm font-medium text-muted-foreground">Intent</th>
                       <th className="text-left py-3 px-4 text-sm font-medium text-muted-foreground">Duration</th>
+                      <th className="text-left py-3 px-4 text-sm font-medium text-muted-foreground">QA</th>
                       <th className="text-left py-3 px-4 text-sm font-medium text-muted-foreground">Status</th>
                       <th className="text-right py-3 px-4 text-sm font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -128,11 +139,27 @@ export default function Calls() {
                         </td>
                         <td className="py-3 px-4">
                           <span className="text-sm" data-testid={`text-duration-${call.id}`}>
-                            {call.duration 
+                            {call.duration
                               ? `${Math.floor(call.duration / 60)}m ${call.duration % 60}s`
                               : "—"
                             }
                           </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          {call.callSid && qaReportMap[call.callSid] ? (
+                            <Badge
+                              variant={
+                                qaReportMap[call.callSid].overallScore >= 8 ? "default" :
+                                qaReportMap[call.callSid].overallScore >= 6 ? "secondary" :
+                                "destructive"
+                              }
+                              className="text-xs"
+                            >
+                              {qaReportMap[call.callSid].overallScore}/10
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2">

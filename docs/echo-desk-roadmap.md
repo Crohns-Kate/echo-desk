@@ -4,16 +4,21 @@
 
 This roadmap outlines the development plan for Echo Desk from current state (basic appointment booking) to production-ready AI voice receptionist with advanced features.
 
-**Current State** (as of November 2025):
-- ✅ Core call flow FSM implemented
+**Current State** (as of November 2025 - Phase 3 Complete):
+- ✅ Core call flow FSM implemented with FAQ support
 - ✅ New patient intake via SMS form
 - ✅ Returning patient recognition by phone
 - ✅ Cliniko appointment booking (standard + new patient types)
 - ✅ Real-time dashboard with WebSockets
-- ✅ Call recording and basic logging
+- ✅ Call recording and logging
 - ✅ Alert system for errors
 - ✅ SMS confirmations
-- ⚠️ Transcription integration (AssemblyAI) - partially implemented
+- ✅ Transcription integration (AssemblyAI)
+- ✅ QA Engine with automatic quality analysis
+- ✅ FAQ Knowledge Brain with 10 seeded FAQs
+- ✅ SMS → Cliniko email update pipeline
+- ✅ Comprehensive dashboard (Calls, QA Reports, Transcripts, Settings)
+- ✅ Intelligent error recovery with conversational fallbacks
 - ⚠️ Intent classification - basic regex fallback
 
 **Target**: Production-ready multi-tenant AI voice receptionist platform
@@ -85,19 +90,26 @@ This roadmap outlines the development plan for Echo Desk from current state (bas
 **Duration**: 3 weeks
 **Focus**: Conversation quality analysis and FAQ handling
 
+**Status**: ✅ **COMPLETED** (November 2025)
+
 ### Week 3-5 Tasks
 
 #### High Priority
-- [ ] **Per-Call Quality Scoring**
-  - Implement `server/services/communication-quality.ts` (currently stubbed)
-  - Score dimensions:
-    - **Correctness**: Was appointment booked correctly?
-    - **Efficiency**: How many turns to completion?
-    - **Clarity**: Did caller understand prompts?
-    - **Sentiment**: Was caller satisfied?
-    - **Error handling**: How well were errors recovered?
-  - Store scores in `call_logs` table (add `quality_score` JSONB column)
-  - Display quality scores in dashboard
+- [✅] **Per-Call Quality Scoring** (Completed)
+  - ✅ Implemented `server/services/qa-engine.ts` with LLM + rule-based analysis
+  - ✅ Score dimensions (0-10 scale):
+    - **Identity Detection**: Patient identification and verification accuracy
+    - **Patient Classification**: New vs returning patient accuracy
+    - **Email Capture**: Email collection effectiveness
+    - **Appointment Type**: Correct appointment duration selection
+    - **Prompt Clarity**: Quality of AI prompts and caller comprehension
+    - **Overall**: Weighted average of all dimensions
+  - ✅ Store scores in `qa_reports` table (dedicated table with JSONB issues)
+  - ✅ Display quality scores in dashboard (call list + detail views)
+  - ✅ Automatic execution after transcription completes
+  - ✅ Issue detection with causes and recommended fixes
+  - ✅ LLM-powered analysis (OpenAI GPT-4o-mini) with rule-based fallback
+  - ✅ API endpoints: `GET /api/qa/reports` and `GET /api/qa/report/:callId`
 
 - [ ] **Conversation Tagging**
   - Add automatic tagging based on call patterns:
@@ -107,25 +119,30 @@ This roadmap outlines the development plan for Echo Desk from current state (bas
   - Add tags to `call_logs` (add `tags` TEXT[] column)
   - Add tag filtering in dashboard
 
-- [ ] **FAQ Knowledge Base**
-  - Create `faqs` table:
-    - `id`, `category`, `question`, `answer`, `keywords`, `embedding` (for semantic search)
-  - Add FAQ seed data:
-    - Hours of operation
-    - Location/directions
-    - Parking information
-    - What to bring to appointment
-    - Cancellation policy
-    - Insurance/payment accepted
-    - Types of treatments offered
-  - Add FAQ admin UI (CRUD)
+- [✅] **FAQ Knowledge Base** (Completed)
+  - ✅ Created `faqs` table with category, question, answer, keywords, priority
+  - ✅ Implemented `server/services/faq.ts` with search and intent detection
+  - ✅ Added FAQ seed data (`server/scripts/seed-faqs.ts`):
+    - ✅ Hours of operation
+    - ✅ Location/directions
+    - ✅ Parking information
+    - ✅ What to bring to appointment
+    - ✅ Cancellation policy
+    - ✅ Insurance/payment accepted
+    - ✅ Types of treatments offered
+    - ✅ First visit process
+    - ✅ Emergency/urgent care
+    - ✅ Online booking options
+  - ⚠️ FAQ admin UI - not yet implemented (low priority)
 
-- [ ] **FAQ State Handler**
-  - Add `FAQ_HANDLER` state to FSM
-  - Detect FAQ intent in `GREETING`, `CHIEF_COMPLAINT`, `CLOSING`
-  - Match keywords or use OpenAI embeddings for semantic search
-  - Speak answer from knowledge base
-  - Return to previous state after answering
+- [✅] **FAQ State Handler** (Completed)
+  - ✅ Added `FAQ_ANSWERING` state to FSM (`CallFlowHandler`)
+  - ✅ Added `FAQ_FOLLOWUP` state for post-answer interactions
+  - ✅ Detect FAQ intent in `PATIENT_TYPE_DETECT` using `detectFaqIntent()`
+  - ✅ Keyword-based matching with semantic relevance scoring
+  - ✅ Format answers for TTS using `formatFaqAnswerForSpeech()`
+  - ✅ Seamless return to booking flow after answering
+  - ✅ Multi-turn FAQ support (answer multiple questions in one call)
 
 #### Medium Priority
 - [ ] **Transcription Integration**
@@ -310,11 +327,19 @@ This roadmap outlines the development plan for Echo Desk from current state (bas
   - Add callback request form (caller leaves number + preferred time)
   - Add admin UI to manage callbacks
 
-- [ ] **SMS Two-Way Conversation**
-  - Add SMS webhook handler
+- [✅] **SMS Email Update Pipeline** (Completed)
+  - ✅ SMS webhook handler (`POST /api/sms/incoming`)
+  - ✅ Parse email address from inbound SMS
+  - ✅ Validate email format with `sanitizeEmail()`
+  - ✅ Look up patient by phone number in Cliniko
+  - ✅ Update patient email via `updateClinikoPatient()`
+  - ✅ Send confirmation or error SMS
+  - ✅ Full error handling and logging
+
+- [ ] **SMS Two-Way Conversation (Extended)**
   - Detect inbound SMS reply to appointment confirmation
   - Parse "CANCEL", "RESCHEDULE", "CONFIRM"
-  - Trigger appropriate flow
+  - Trigger appropriate flow based on keywords
   - Reply with confirmation or further instructions
 
 #### Low Priority
@@ -492,9 +517,10 @@ This roadmap outlines the development plan for Echo Desk from current state (bas
 - 🎯 **<2% abandoned calls** (caller hangs up mid-flow)
 
 ### Stage 2: QA Engine
-- 🎯 **80% high-quality calls** (quality score >0.8)
-- 🎯 **FAQ resolution rate >70%** (FAQ answered without human)
-- 🎯 **Positive sentiment >85%** (based on transcription analysis)
+- ✅ **QA Engine deployed and analyzing calls automatically**
+- 🎯 **80% high-quality calls** (overall score >8/10) - *in progress*
+- 🎯 **FAQ resolution rate >70%** (FAQ answered without human) - *pending FAQ implementation*
+- 🎯 **Positive sentiment >85%** (based on transcription analysis) - *tracked via Prompt Clarity Score*
 
 ### Stage 3: Multi-Clinic
 - 🎯 **10 active tenants** (paying clinics)

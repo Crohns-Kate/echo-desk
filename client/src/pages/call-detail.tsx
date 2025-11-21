@@ -3,8 +3,8 @@ import { useRoute, Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, Clock, MapPin, User, Mail, ArrowLeft, Download, Play, AlertCircle } from "lucide-react";
-import type { CallLog } from "@shared/schema";
+import { Phone, Clock, MapPin, User, Mail, ArrowLeft, Download, Play, AlertCircle, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
+import type { CallLog, QaReport } from "@shared/schema";
 
 export default function CallDetail() {
   const [, params] = useRoute("/calls/:id");
@@ -13,6 +13,11 @@ export default function CallDetail() {
   const { data: call, isLoading } = useQuery<CallLog>({
     queryKey: ["/api/calls", callId],
     enabled: !!callId,
+  });
+
+  const { data: qaReport } = useQuery<any>({
+    queryKey: ["/api/qa/report", call?.callSid],
+    enabled: !!call?.callSid,
   });
 
   if (isLoading) {
@@ -269,8 +274,118 @@ export default function CallDetail() {
                 )}
               </CardContent>
             </Card>
+
+            {/* QA Report Section */}
+            {qaReport && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center justify-between gap-2">
+                    <span>QA Quality Report</span>
+                    <Badge variant={qaReport.overallScore >= 8 ? "default" : qaReport.overallScore >= 6 ? "secondary" : "destructive"}>
+                      {qaReport.overallScore}/10
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {/* Score Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    <ScoreItem
+                      label="Overall"
+                      score={qaReport.overallScore}
+                    />
+                    <ScoreItem
+                      label="Identity Detection"
+                      score={qaReport.identityDetectionScore}
+                    />
+                    <ScoreItem
+                      label="Patient Classification"
+                      score={qaReport.patientClassificationScore}
+                    />
+                    <ScoreItem
+                      label="Email Capture"
+                      score={qaReport.emailCaptureScore}
+                    />
+                    <ScoreItem
+                      label="Appointment Type"
+                      score={qaReport.appointmentTypeScore}
+                    />
+                    <ScoreItem
+                      label="Prompt Clarity"
+                      score={qaReport.promptClarityScore}
+                    />
+                  </div>
+
+                  {/* Issues List */}
+                  {qaReport.issues && qaReport.issues.length > 0 && (
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-medium text-foreground flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                        Issues Detected ({qaReport.issues.length})
+                      </h4>
+                      <div className="space-y-3">
+                        {qaReport.issues.map((issue: any, idx: number) => (
+                          <div key={idx} className="bg-muted/50 rounded-lg p-4 space-y-2">
+                            <div className="flex items-start gap-3">
+                              <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                              <div className="flex-1 space-y-2">
+                                <p className="text-sm font-medium">{issue.issue}</p>
+                                <div className="space-y-1 text-xs text-muted-foreground">
+                                  <p><span className="font-medium">Cause:</span> {issue.cause}</p>
+                                  {issue.locationInTranscript && (
+                                    <p><span className="font-medium">Location:</span> "{issue.locationInTranscript}"</p>
+                                  )}
+                                  <p className="text-green-600 dark:text-green-400">
+                                    <span className="font-medium">Fix:</span> {issue.recommendedFix}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {qaReport.issues && qaReport.issues.length === 0 && (
+                    <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                      <CheckCircle className="h-4 w-4" />
+                      <span>No issues detected - excellent call quality!</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ScoreItem({ label, score }: { label: string; score: number }) {
+  const getScoreColor = (score: number) => {
+    if (score >= 9) return "text-green-600 dark:text-green-400";
+    if (score >= 7) return "text-blue-600 dark:text-blue-400";
+    if (score >= 5) return "text-yellow-600 dark:text-yellow-400";
+    return "text-red-600 dark:text-red-400";
+  };
+
+  const getScoreIcon = (score: number) => {
+    if (score >= 9) return <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />;
+    if (score >= 7) return <CheckCircle className="h-5 w-5 text-blue-600 dark:text-blue-400" />;
+    if (score >= 5) return <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />;
+    return <XCircle className="h-5 w-5 text-red-600 dark:text-red-400" />;
+  };
+
+  return (
+    <div className="bg-muted/30 rounded-lg p-3 space-y-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-2">
+        {getScoreIcon(score)}
+        <span className={`text-2xl font-bold ${getScoreColor(score)}`}>
+          {score}
+          <span className="text-sm text-muted-foreground">/10</span>
+        </span>
       </div>
     </div>
   );
