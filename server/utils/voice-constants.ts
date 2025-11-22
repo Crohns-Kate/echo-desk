@@ -172,9 +172,9 @@ export const EMOTIONS = {
 
   disappointed: (text: string, intensity: 'low' | 'medium' | 'high' = 'medium') => {
     const prefixes = {
-      low: ['Oh,', 'Hmm,', 'I see,'],
-      medium: ['Oh dear,', 'Oh no,', 'I\'m so sorry,'],
-      high: ['Oh I\'m really sorry about that,', 'Oh dear, that\'s not ideal,', 'I\'m so sorry to hear that,']
+      low: ['Hmm,', 'I see,', 'Okay,'],
+      medium: ['I understand,', 'I see,', 'Thank you for letting me know,'],
+      high: ['I appreciate you letting me know,', 'Thank you for telling me that,', 'I understand,']
     };
     const prefix = prefixes[intensity][Math.floor(Math.random() * prefixes[intensity].length)];
     return `${prefix} ${text}`;

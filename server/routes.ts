@@ -609,7 +609,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         clinikoApiKey, clinikoShard, clinikoPractitionerId,
         clinikoStandardApptTypeId, clinikoNewPatientApptTypeId,
         recordingEnabled, transcriptionEnabled, qaAnalysisEnabled,
-        faqEnabled, smsEnabled, isActive
+        faqEnabled, smsEnabled, isActive,
+        // New clinic settings fields
+        parkingText, servicesText, firstVisitText, aboutText, healthText, faqJson
       } = req.body;
 
       const updates: any = {};
@@ -634,6 +636,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (faqEnabled !== undefined) updates.faqEnabled = faqEnabled;
       if (smsEnabled !== undefined) updates.smsEnabled = smsEnabled;
       if (isActive !== undefined) updates.isActive = isActive;
+      // New clinic settings fields
+      if (parkingText !== undefined) updates.parkingText = parkingText;
+      if (servicesText !== undefined) updates.servicesText = servicesText;
+      if (firstVisitText !== undefined) updates.firstVisitText = firstVisitText;
+      if (aboutText !== undefined) updates.aboutText = aboutText;
+      if (healthText !== undefined) updates.healthText = healthText;
+      if (faqJson !== undefined) updates.faqJson = faqJson;
 
       // Handle Cliniko API key encryption
       if (clinikoApiKey) {
@@ -667,6 +676,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const stats = await storage.getStats(id);
       res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================
+  // Clinic Settings API (for Admin dashboard)
+  // ============================================
+
+  // GET /api/admin/settings - Get clinic settings for default tenant
+  app.get('/api/admin/settings', async (_req, res) => {
+    try {
+      const tenant = await storage.getTenant('default');
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      // Return clinic settings (exclude sensitive data)
+      res.json({
+        id: tenant.id,
+        clinicName: tenant.clinicName,
+        address: tenant.address,
+        phoneNumber: tenant.phoneNumber,
+        email: tenant.email,
+        timezone: tenant.timezone,
+        businessHours: tenant.businessHours,
+        greeting: tenant.greeting,
+        voiceName: tenant.voiceName,
+        // New clinic settings
+        parkingText: tenant.parkingText || '',
+        servicesText: tenant.servicesText || '',
+        firstVisitText: tenant.firstVisitText || '',
+        aboutText: tenant.aboutText || '',
+        healthText: tenant.healthText || '',
+        faqJson: tenant.faqJson || [],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /api/admin/settings - Update clinic settings for default tenant
+  app.put('/api/admin/settings', async (req, res) => {
+    try {
+      const tenant = await storage.getTenant('default');
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      const {
+        clinicName, address, phoneNumber, email, timezone,
+        businessHours, greeting, voiceName,
+        parkingText, servicesText, firstVisitText, aboutText, healthText, faqJson
+      } = req.body;
+
+      const updates: any = {};
+
+      // Only include fields that were provided
+      if (clinicName !== undefined) updates.clinicName = clinicName;
+      if (address !== undefined) updates.address = address;
+      if (phoneNumber !== undefined) updates.phoneNumber = phoneNumber;
+      if (email !== undefined) updates.email = email;
+      if (timezone !== undefined) updates.timezone = timezone;
+      if (businessHours !== undefined) updates.businessHours = businessHours;
+      if (greeting !== undefined) updates.greeting = greeting;
+      if (voiceName !== undefined) updates.voiceName = voiceName;
+      if (parkingText !== undefined) updates.parkingText = parkingText;
+      if (servicesText !== undefined) updates.servicesText = servicesText;
+      if (firstVisitText !== undefined) updates.firstVisitText = firstVisitText;
+      if (aboutText !== undefined) updates.aboutText = aboutText;
+      if (healthText !== undefined) updates.healthText = healthText;
+      if (faqJson !== undefined) updates.faqJson = faqJson;
+
+      const updated = await storage.updateTenant(tenant.id, updates);
+      if (!updated) {
+        return res.status(500).json({ error: 'Failed to update settings' });
+      }
+
+      res.json({
+        success: true,
+        message: 'Settings saved successfully',
+        settings: {
+          id: updated.id,
+          clinicName: updated.clinicName,
+          address: updated.address,
+          phoneNumber: updated.phoneNumber,
+          email: updated.email,
+          timezone: updated.timezone,
+          businessHours: updated.businessHours,
+          greeting: updated.greeting,
+          voiceName: updated.voiceName,
+          parkingText: updated.parkingText || '',
+          servicesText: updated.servicesText || '',
+          firstVisitText: updated.firstVisitText || '',
+          aboutText: updated.aboutText || '',
+          healthText: updated.healthText || '',
+          faqJson: updated.faqJson || [],
+        }
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

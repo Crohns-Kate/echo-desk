@@ -1,7 +1,7 @@
 import { env } from '../utils/env';
 
 export interface IntentResult {
-  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'unknown';
+  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'unknown';
   day?: string;
   part?: 'morning' | 'afternoon';
   confidence?: number;
@@ -34,15 +34,19 @@ async function classifyWithLLM(text: string): Promise<IntentResult> {
 
   const prompt = `Classify the caller's intent from their utterance. Return ONLY a JSON object with this schema:
 {
-  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "unknown",
+  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "unknown",
   "day": string (optional - e.g., "monday", "tomorrow", "today"),
   "part": "morning" | "afternoon" (optional),
   "confidence": number (0-1)
 }
 
 Actions:
-- "info": Asking what happens in a first visit, what to expect, what they get
+- "info": Asking what happens in a first visit, what to expect, what they get, what to bring
 - "fees": Asking about cost, price, how much, fees
+- "faq_parking": Asking about parking, where to park
+- "faq_hours": Asking about opening hours, when open, when closed, what time
+- "faq_location": Asking about address, location, where you are, directions
+- "faq_services": Asking about services offered, what treatments, what you do
 - "book": Wants to book an appointment
 - "reschedule": Wants to change an existing appointment
 - "cancel": Wants to cancel an appointment
@@ -107,12 +111,48 @@ function classifyWithKeywords(text: string): IntentResult {
   ) {
     action = 'fees';
   } else if (
+    text.includes('parking') ||
+    text.includes('where to park') ||
+    text.includes('where do i park')
+  ) {
+    action = 'faq_parking';
+  } else if (
+    text.includes('hour') ||
+    text.includes('when are you open') ||
+    text.includes('what time do you open') ||
+    text.includes('what time do you close') ||
+    text.includes('when do you close') ||
+    text.includes('open until') ||
+    text.includes('closing time')
+  ) {
+    action = 'faq_hours';
+  } else if (
+    text.includes('where are you') ||
+    text.includes('address') ||
+    text.includes('location') ||
+    text.includes('directions') ||
+    text.includes('how do i get there') ||
+    text.includes('where is your')
+  ) {
+    action = 'faq_location';
+  } else if (
+    text.includes('what services') ||
+    text.includes('what do you do') ||
+    text.includes('what treatments') ||
+    text.includes('what do you offer') ||
+    text.includes('services offered') ||
+    text.includes('do you do')
+  ) {
+    action = 'faq_services';
+  } else if (
     text.includes('what happens') ||
     text.includes('what do i get') ||
     text.includes('what to expect') ||
     text.includes('first visit') ||
     text.includes('first appointment') ||
-    text.includes('what will happen')
+    text.includes('what will happen') ||
+    text.includes('what should i bring') ||
+    text.includes('what to bring')
   ) {
     action = 'info';
   } else if (text.includes('book') || text.includes('appointment') || text.includes('schedule')) {
