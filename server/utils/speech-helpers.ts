@@ -5,6 +5,28 @@
  * These handle variations in how people say yes/no/confirmation.
  */
 
+/**
+ * Normalize speech text for matching
+ * - Removes trailing/leading punctuation
+ * - Handles common transcription artifacts like "Okay." or "OK!"
+ * - Preserves internal punctuation for phrases like "o.k."
+ */
+function normalizeSpeech(speech: string): string {
+  if (!speech) return '';
+
+  // Lowercase and trim
+  let text = speech.toLowerCase().trim();
+
+  // Remove leading/trailing punctuation but preserve internal (for o.k.)
+  text = text.replace(/^[.,!?;:'"]+/, '').replace(/[.,!?;:'"]+$/, '');
+
+  // Handle common transcription variations
+  // "o. k." -> "ok", "o.k" -> "ok"
+  text = text.replace(/o\.\s*k\.?/g, 'ok');
+
+  return text.trim();
+}
+
 // Affirmative words and phrases
 const AFFIRMATIVE_WORDS = [
   'yes', 'yeah', 'yep', 'yup', 'yea',
@@ -32,12 +54,17 @@ const NEGATIVE_WORDS = [
 
 /**
  * Check if speech contains an affirmative response
- * @param speech - The speech text to analyze (will be lowercased)
+ * @param speech - The speech text to analyze (will be lowercased and normalized)
  * @returns true if the speech is affirmative
  */
 export function isAffirmative(speech: string): boolean {
   if (!speech) return false;
-  const text = speech.toLowerCase().trim();
+  const text = normalizeSpeech(speech);
+
+  // Quick exact match for common short responses (handles "Okay.", "Yes!", etc.)
+  if (AFFIRMATIVE_WORDS.includes(text)) {
+    return true;
+  }
 
   return AFFIRMATIVE_WORDS.some(word => {
     // Check for exact word match or phrase match
@@ -53,12 +80,17 @@ export function isAffirmative(speech: string): boolean {
 
 /**
  * Check if speech contains a negative response
- * @param speech - The speech text to analyze (will be lowercased)
+ * @param speech - The speech text to analyze (will be lowercased and normalized)
  * @returns true if the speech is negative
  */
 export function isNegative(speech: string): boolean {
   if (!speech) return false;
-  const text = speech.toLowerCase().trim();
+  const text = normalizeSpeech(speech);
+
+  // Quick exact match for common short responses (handles "No.", "Nope!", etc.)
+  if (NEGATIVE_WORDS.includes(text)) {
+    return true;
+  }
 
   return NEGATIVE_WORDS.some(word => {
     if (word.includes(' ')) {
@@ -88,7 +120,7 @@ export function classifyYesNo(speech: string): 'yes' | 'no' | 'unclear' {
  * More specific than general affirmative - includes name-related confirmations
  */
 export function isIdentityConfirmation(speech: string, expectedName?: string): boolean {
-  const text = speech.toLowerCase().trim();
+  const text = normalizeSpeech(speech);
 
   // Check general affirmatives
   if (isAffirmative(speech) && !isNegative(speech)) {
@@ -111,7 +143,7 @@ export function isIdentityConfirmation(speech: string, expectedName?: string): b
  * Check if the caller wants to book an appointment
  */
 export function wantsToBook(speech: string): boolean {
-  const text = speech.toLowerCase().trim();
+  const text = normalizeSpeech(speech);
 
   // Explicit booking words
   const bookingWords = ['book', 'appointment', 'schedule', 'reserve'];
@@ -127,5 +159,5 @@ export function wantsToBook(speech: string): boolean {
   return false;
 }
 
-// Export the word lists for testing
-export { AFFIRMATIVE_WORDS, NEGATIVE_WORDS };
+// Export the word lists and helpers for testing
+export { AFFIRMATIVE_WORDS, NEGATIVE_WORDS, normalizeSpeech };

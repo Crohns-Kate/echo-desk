@@ -50,6 +50,28 @@ function extractFirstName(fullName: string): string {
 }
 
 /**
+ * Helper function to get tenant from call record
+ * Uses call's tenantId if available, falls back to default
+ */
+async function getTenantForCall(callSid: string): Promise<{ id: number; slug: string; clinicName: string } | null> {
+  try {
+    const call = await storage.getCallByCallSid(callSid);
+    if (call?.tenantId) {
+      const tenant = await storage.getTenantById(call.tenantId);
+      if (tenant) {
+        return { id: tenant.id, slug: tenant.slug, clinicName: tenant.clinicName };
+      }
+    }
+    // Fallback to default
+    const defaultTenant = await storage.getTenant("default");
+    return defaultTenant ? { id: defaultTenant.id, slug: defaultTenant.slug, clinicName: defaultTenant.clinicName } : null;
+  } catch (err) {
+    console.error("[getTenantForCall] Error:", err);
+    return null;
+  }
+}
+
+/**
  * Helper function to parse day of week from speech
  */
 function parseDayOfWeek(speechRaw: string): string | undefined {
@@ -619,7 +641,7 @@ export function registerVoice(app: Express) {
 
             // Create alert for failed recording
             try {
-              const tenant = await storage.getTenant("default");
+              const tenant = await getTenantForCall(callSid);
               if (tenant) {
                 await storage.createAlert({
                   tenantId: tenant.id,
@@ -645,7 +667,7 @@ export function registerVoice(app: Express) {
 
           // Create alert for failed recording
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               await storage.createAlert({
                 tenantId: tenant.id,
@@ -865,7 +887,7 @@ export function registerVoice(app: Express) {
         // Create an alert for the reception team
         try {
           const call = await storage.getCallByCallSid(callSid);
-          const tenant = await storage.getTenant("default");
+          const tenant = await getTenantForCall(callSid);
 
           if (tenant && call) {
             await storage.createAlert({
@@ -2191,7 +2213,7 @@ export function registerVoice(app: Express) {
 
           // Send SMS link immediately using caller's phone number
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             const clinicName = tenant?.clinicName || "the clinic";
 
             await sendEmailCollectionLink({
@@ -2986,7 +3008,7 @@ export function registerVoice(app: Express) {
         const question = speechRaw || "";
 
         try {
-          const tenant = await storage.getTenant("default");
+          const tenant = await getTenantForCall(callSid);
           if (tenant) {
             const alert = await storage.createAlert({
               tenantId: tenant.id,
@@ -3501,7 +3523,7 @@ export function registerVoice(app: Express) {
             isNewPatient
           });
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -3523,7 +3545,7 @@ export function registerVoice(app: Express) {
           // Get clinic phone number for fallback
           let clinicPhone = "";
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant?.clinicName) {
               // If we have a clinic phone, we could get it here
               // For now, we'll ask them to call back
@@ -3541,7 +3563,7 @@ export function registerVoice(app: Express) {
         if (available.length === 0) {
           console.log("[GET-AVAILABILITY] No slots found - creating alert");
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -3943,7 +3965,7 @@ export function registerVoice(app: Express) {
           console.error("[BOOK-CHOOSE] Patient will be created in Cliniko with default name. Phone:", from);
           // Create an alert for the reception team
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             const call = await storage.getCallByCallSid(callSid);
             if (tenant && call) {
               await storage.createAlert({
@@ -3986,7 +4008,7 @@ export function registerVoice(app: Express) {
 
             const spokenTime = labelForSpeech(chosen, AUST_TZ);
             try {
-              const tenant = await storage.getTenant("default");
+              const tenant = await getTenantForCall(callSid);
               if (tenant) {
                 await sendAppointmentConfirmation({
                   to: from,
@@ -4147,7 +4169,7 @@ export function registerVoice(app: Express) {
 
           const spokenTime = labelForSpeech(chosen, AUST_TZ);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               await sendAppointmentConfirmation({
                 to: from,
@@ -4233,7 +4255,7 @@ export function registerVoice(app: Express) {
         } catch (e: any) {
           console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -4351,7 +4373,7 @@ export function registerVoice(app: Express) {
         } catch (e: any) {
           console.error("[GET-AVAILABILITY-SPECIFIC-DAY][getAvailability ERROR]", e);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -4378,7 +4400,7 @@ export function registerVoice(app: Express) {
         const available = slots.slice(0, 2);
         if (available.length === 0) {
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,

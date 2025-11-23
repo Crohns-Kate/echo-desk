@@ -14,6 +14,86 @@ export function registerApp(app: Express) {
     res.json(BUILD);
   });
 
+  // Comprehensive system health check for admin
+  app.get('/api/admin/system-health', async (req: Request, res: Response) => {
+    const healthChecks: Record<string, { status: 'ok' | 'warning' | 'error'; message?: string; latency?: number }> = {};
+    const startTime = Date.now();
+
+    // 1. Database connectivity
+    try {
+      const dbStart = Date.now();
+      const tenant = await storage.getTenant('default');
+      healthChecks.database = {
+        status: tenant ? 'ok' : 'warning',
+        message: tenant ? 'Connected' : 'Default tenant not found',
+        latency: Date.now() - dbStart
+      };
+    } catch (err: any) {
+      healthChecks.database = { status: 'error', message: err.message };
+    }
+
+    // 2. Environment configuration
+    const requiredEnvVars = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER', 'DATABASE_URL'];
+    const optionalEnvVars = ['CLINIKO_API_KEY', 'ASSEMBLYAI_API_KEY', 'STRIPE_SECRET_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
+
+    const missingRequired = requiredEnvVars.filter(v => !process.env[v]);
+    const missingOptional = optionalEnvVars.filter(v => !process.env[v]);
+
+    healthChecks.environment = {
+      status: missingRequired.length === 0 ? 'ok' : 'error',
+      message: missingRequired.length === 0
+        ? `All required vars set, ${missingOptional.length} optional missing`
+        : `Missing: ${missingRequired.join(', ')}`
+    };
+
+    // 3. External services availability check
+    const services = {
+      twilio: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN,
+      cliniko: !!process.env.CLINIKO_API_KEY,
+      transcription: !!process.env.ASSEMBLYAI_API_KEY,
+      stripe: !!process.env.STRIPE_SECRET_KEY,
+      llm: !!process.env.OPENAI_API_KEY || !!process.env.ANTHROPIC_API_KEY
+    };
+
+    healthChecks.services = {
+      status: services.twilio ? 'ok' : 'error',
+      message: `Twilio: ${services.twilio ? '✓' : '✗'}, Cliniko: ${services.cliniko ? '✓' : '✗'}, Transcription: ${services.transcription ? '✓' : '✗'}, LLM: ${services.llm ? '✓' : '✗'}, Stripe: ${services.stripe ? '✓' : '✗'}`
+    };
+
+    // 4. Memory usage
+    const memUsage = process.memoryUsage();
+    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    const memPercent = Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100);
+    healthChecks.memory = {
+      status: memPercent > 90 ? 'warning' : 'ok',
+      message: `${memMB}MB used (${memPercent}% of heap)`
+    };
+
+    // 5. Recent activity stats
+    try {
+      const stats = await storage.getStats();
+      healthChecks.activity = {
+        status: 'ok',
+        message: `${stats.todayCalls || 0} calls today, ${stats.pendingAlerts || 0} pending alerts`
+      };
+    } catch (err: any) {
+      healthChecks.activity = { status: 'warning', message: 'Could not fetch stats' };
+    }
+
+    // Overall status
+    const statuses = Object.values(healthChecks).map(c => c.status);
+    const overallStatus = statuses.includes('error') ? 'error' : statuses.includes('warning') ? 'warning' : 'ok';
+
+    res.json({
+      status: overallStatus,
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      checkDuration: Date.now() - startTime,
+      checks: healthChecks,
+      version: BUILD
+    });
+  });
+
   // Debug endpoint to check environment configuration
   app.get('/api/debug/config', (req: Request, res: Response) => {
     const dotEnvValue = 'https://echo-desk-mbjltd70.replit.app'; // What .env file says
