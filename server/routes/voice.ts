@@ -19,6 +19,7 @@ import { sendAppointmentConfirmation, sendEmailCollectionLink, sendNameVerificat
 import { emitCallStarted, emitCallUpdated, emitAlertCreated } from "../services/websocket";
 import { classifyIntent } from "../services/intent";
 import { env } from "../utils/env";
+import { isAffirmative, isNegative, wantsToBook, isIdentityConfirmation } from "../utils/speech-helpers";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -933,8 +934,8 @@ export function registerVoice(app: Express) {
       // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
       if (route === "confirm-caller-identity") {
         const knownName = (req.query.knownName as string) || "";
-        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's me") || speechRaw.includes("yep") || speechRaw.includes("yeah");
-        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong") || speechRaw.includes("nah");
+        const confirmed = isIdentityConfirmation(speechRaw, knownName);
+        const denied = isNegative(speechRaw);
 
         if (confirmed) {
           // Identity confirmed - store name and first name in context
@@ -1916,10 +1917,10 @@ export function registerVoice(app: Express) {
 
       // 3d) PROCESS-INFO-RESPONSE → Handle response after explaining info/fees
       if (route === "process-info-response") {
-        const wantsToBook = speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("okay") || speechRaw.includes("book");
-        const doesntWantToBook = speechRaw.includes("no") || speechRaw.includes("not now");
+        const wantsBooking = wantsToBook(speechRaw);
+        const doesntWantToBook = isNegative(speechRaw);
 
-        if (wantsToBook) {
+        if (wantsBooking) {
           // Proceed to booking flow
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -1999,8 +2000,8 @@ export function registerVoice(app: Express) {
 
       // 4a) PROCESS-CONFIRM-IDENTITY → Handle identity confirmation response
       if (route === "process-confirm-identity") {
-        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right");
-        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("wrong");
+        const confirmed = isAffirmative(speechRaw);
+        const denied = isNegative(speechRaw);
 
         if (confirmed) {
           // Identity confirmed - proceed to week selection
@@ -2415,8 +2416,8 @@ export function registerVoice(app: Express) {
 
       // 5c) PROCESS-PHONE-CONFIRM → Handle phone confirmation response
       if (route === "process-phone-confirm") {
-        const confirmed = speechRaw.includes("yes") || speechRaw.includes("correct") || speechRaw.includes("right") || speechRaw.includes("that's right");
-        const denied = speechRaw.includes("no") || speechRaw.includes("not") || speechRaw.includes("different");
+        const confirmed = isAffirmative(speechRaw);
+        const denied = isNegative(speechRaw);
 
         if (confirmed) {
           // Phone confirmed - store it in context
@@ -3049,10 +3050,10 @@ export function registerVoice(app: Express) {
       // PROCESS-NO-APPOINTMENT → Handle response when no appointment is found
       if (route === "process-no-appointment") {
         const intent = (req.query.intent as string) || "";
-        const wantsToBook = speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("yeah") || speechRaw.includes("book");
-        const doesNotWant = speechRaw.includes("no") || speechRaw.includes("nah") || speechRaw.includes("not");
+        const wantsBooking = wantsToBook(speechRaw);
+        const doesNotWant = isNegative(speechRaw);
 
-        if (wantsToBook) {
+        if (wantsBooking) {
           // Redirect to booking flow
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
