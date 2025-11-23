@@ -30,33 +30,47 @@ export interface ClinicKnowledge {
   faqs: Faq[];
 }
 
-// Cache knowledge to avoid hitting DB on every request
-let knowledgeCache: ClinicKnowledge | null = null;
-let cacheTimestamp: number = 0;
+// Cache knowledge per tenant to avoid hitting DB on every request
+const knowledgeCacheByTenant: Map<number, ClinicKnowledge> = new Map();
+const cacheTimetampByTenant: Map<number, number> = new Map();
 const CACHE_TTL_MS = 60000; // 1 minute cache
 
 /**
- * Load clinic knowledge from database
+ * Load clinic knowledge from database for a specific tenant
+ * @param tenantId - The tenant ID to load knowledge for (defaults to looking up 'default' tenant)
+ * @param forceRefresh - Force refresh the cache
  */
-export async function loadClinicKnowledge(forceRefresh = false): Promise<ClinicKnowledge | null> {
+export async function loadClinicKnowledge(tenantId?: number, forceRefresh = false): Promise<ClinicKnowledge | null> {
   const now = Date.now();
 
+  // If no tenantId provided, look up the default tenant
+  let tenant;
+  if (tenantId) {
+    tenant = await storage.getTenantById(tenantId);
+  } else {
+    tenant = await storage.getTenant('default');
+  }
+
+  if (!tenant) {
+    console.warn('[Knowledge] No tenant found for ID:', tenantId || 'default');
+    return null;
+  }
+
+  const effectiveTenantId = tenant.id;
+
   // Return cached if valid
-  if (!forceRefresh && knowledgeCache && (now - cacheTimestamp) < CACHE_TTL_MS) {
-    return knowledgeCache;
+  const cachedKnowledge = knowledgeCacheByTenant.get(effectiveTenantId);
+  const cachedTimestamp = cacheTimetampByTenant.get(effectiveTenantId) || 0;
+  if (!forceRefresh && cachedKnowledge && (now - cachedTimestamp) < CACHE_TTL_MS) {
+    console.log('[Knowledge] Using cached knowledge for tenant:', tenant.slug);
+    return cachedKnowledge;
   }
 
   try {
-    const tenant = await storage.getTenant('default');
-    if (!tenant) {
-      console.warn('[Knowledge] No default tenant found');
-      return null;
-    }
-
     // Load FAQs from database
     const faqs = await storage.listFaqs(tenant.id, true);
 
-    knowledgeCache = {
+    const knowledge: ClinicKnowledge = {
       clinicName: tenant.clinicName,
       address: tenant.address,
       phoneNumber: tenant.phoneNumber,
@@ -72,31 +86,41 @@ export async function loadClinicKnowledge(forceRefresh = false): Promise<ClinicK
       faqs,
     };
 
-    cacheTimestamp = now;
-    console.log('[Knowledge] Loaded clinic knowledge from database');
+    // Cache it
+    knowledgeCacheByTenant.set(effectiveTenantId, knowledge);
+    cacheTimetampByTenant.set(effectiveTenantId, now);
+    console.log('[Knowledge] Loaded knowledge for tenant:', tenant.slug, '- Clinic:', tenant.clinicName);
 
-    return knowledgeCache;
+    return knowledge;
   } catch (error) {
-    console.error('[Knowledge] Failed to load clinic knowledge:', error);
+    console.error('[Knowledge] Failed to load clinic knowledge for tenant', tenant.slug, ':', error);
     return null;
   }
 }
 
 /**
  * Clear the knowledge cache (call when settings are updated)
+ * @param tenantId - Optional tenant ID to clear cache for. If not provided, clears all caches.
  */
-export function clearKnowledgeCache(): void {
-  knowledgeCache = null;
-  cacheTimestamp = 0;
-  console.log('[Knowledge] Cache cleared');
+export function clearKnowledgeCache(tenantId?: number): void {
+  if (tenantId) {
+    knowledgeCacheByTenant.delete(tenantId);
+    cacheTimetampByTenant.delete(tenantId);
+    console.log('[Knowledge] Cache cleared for tenant:', tenantId);
+  } else {
+    knowledgeCacheByTenant.clear();
+    cacheTimetampByTenant.clear();
+    console.log('[Knowledge] All caches cleared');
+  }
 }
 
 /**
  * Build a knowledge context string for LLM system prompts
  * This injects clinic information into the AI's context
+ * @param tenantId - The tenant ID to build context for
  */
-export async function buildKnowledgeContext(): Promise<string> {
-  const knowledge = await loadClinicKnowledge();
+export async function buildKnowledgeContext(tenantId?: number): Promise<string> {
+  const knowledge = await loadClinicKnowledge(tenantId);
 
   if (!knowledge) {
     return '';
@@ -182,9 +206,11 @@ If you cannot find the answer in the knowledge base, politely say you'll transfe
 /**
  * Get a direct answer for a specific query from the knowledge base
  * Returns null if no answer found
+ * @param query - The question to answer
+ * @param tenantId - The tenant ID to look up knowledge for
  */
-export async function getDirectAnswer(query: string): Promise<string | null> {
-  const knowledge = await loadClinicKnowledge();
+export async function getDirectAnswer(query: string, tenantId?: number): Promise<string | null> {
+  const knowledge = await loadClinicKnowledge(tenantId);
   if (!knowledge) return null;
 
   const text = query.toLowerCase();

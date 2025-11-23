@@ -115,11 +115,11 @@ export async function resolveTenant(calledNumber: string): Promise<Tenant | null
   const normalized = normalizePhoneNumber(calledNumber);
 
   if (!normalized) {
-    console.warn('[TenantResolver] Invalid phone number:', calledNumber);
+    console.warn('[TenantResolver] ⚠️ Invalid phone number:', calledNumber);
     return null;
   }
 
-  console.log('[TenantResolver] Looking up tenant for phone:', normalized);
+  console.log('[TenantResolver] 🔍 Looking up tenant for phone:', normalized, '(raw:', calledNumber, ')');
 
   // Query tenant by phone number
   const tenant = await storage.getTenantByPhone(normalized);
@@ -129,20 +129,20 @@ export async function resolveTenant(calledNumber: string): Promise<Tenant | null
     const withoutPlus = normalized.replace(/^\+/, '');
     const tenantAlt = await storage.getTenantByPhone(withoutPlus);
     if (tenantAlt) {
-      console.log('[TenantResolver] Found tenant (alt format):', tenantAlt.slug);
+      console.log('[TenantResolver] ✅ Found tenant (alt format):', tenantAlt.slug, '- Clinic:', tenantAlt.clinicName);
       return tenantAlt;
     }
 
-    console.warn('[TenantResolver] No tenant found for phone:', normalized);
+    console.warn('[TenantResolver] ❌ No tenant found for phone:', normalized);
     return null;
   }
 
   if (!tenant.isActive) {
-    console.warn('[TenantResolver] Tenant inactive:', tenant.slug);
+    console.warn('[TenantResolver] ⚠️ Tenant inactive:', tenant.slug);
     return null;
   }
 
-  console.log('[TenantResolver] Resolved tenant:', tenant.slug);
+  console.log('[TenantResolver] ✅ Resolved tenant:', tenant.slug, '- Clinic:', tenant.clinicName);
   return tenant;
 }
 
@@ -222,19 +222,28 @@ export async function getDefaultTenant(): Promise<Tenant | null> {
  * Get tenant context with fallback to default tenant
  */
 export async function resolveTenantWithFallback(calledNumber: string): Promise<TenantContext | null> {
+  console.log('[TenantResolver] 📞 Resolving tenant for incoming call to:', calledNumber);
+
   // Try to resolve by phone number
   let tenant = await resolveTenant(calledNumber);
+  let matchType = 'phone_match';
 
   // Fallback to default tenant
   if (!tenant) {
-    console.log('[TenantResolver] Falling back to default tenant');
+    console.log('[TenantResolver] ⏬ Falling back to default tenant');
     tenant = await getDefaultTenant();
+    matchType = 'fallback_default';
   }
 
   if (!tenant) {
-    console.error('[TenantResolver] No tenant found and no default tenant configured');
+    console.error('[TenantResolver] ❌ No tenant found and no default tenant configured');
     return null;
   }
 
-  return getTenantContext(tenant);
+  const context = getTenantContext(tenant);
+
+  // Single consolidated log line for production debugging
+  console.log(`[TenantResolver] 📋 RESOLVED: To=${calledNumber} → Tenant=${tenant.slug} (${tenant.clinicName}) [${matchType}]`);
+
+  return context;
 }

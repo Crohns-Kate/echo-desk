@@ -7,32 +7,60 @@ import { describe, it, expect } from 'vitest';
 import { normalizePhoneNumber } from '../services/tenantResolver';
 
 describe('Phone Number Normalization', () => {
-  it('should normalize Australian mobile numbers starting with 04', () => {
-    expect(normalizePhoneNumber('0468035585')).toBe('+61468035585');
+  describe('Australian mobile numbers', () => {
+    it('should normalize 04xx numbers to E.164', () => {
+      expect(normalizePhoneNumber('0468035585')).toBe('+61468035585');
+      expect(normalizePhoneNumber('0412345678')).toBe('+61412345678');
+    });
+
+    it('should normalize numbers starting with 61', () => {
+      expect(normalizePhoneNumber('61468035585')).toBe('+61468035585');
+    });
+
+    it('should keep E.164 format unchanged', () => {
+      expect(normalizePhoneNumber('+61468035585')).toBe('+61468035585');
+    });
   });
 
-  it('should normalize Australian numbers starting with 61', () => {
-    expect(normalizePhoneNumber('61468035585')).toBe('+61468035585');
+  describe('formatting cleanup', () => {
+    it('should strip spaces', () => {
+      expect(normalizePhoneNumber('+61 468 035 585')).toBe('+61468035585');
+      expect(normalizePhoneNumber('04 6803 5585')).toBe('+61468035585');
+    });
+
+    it('should strip parentheses and dashes', () => {
+      expect(normalizePhoneNumber('(04) 6803-5585')).toBe('+61468035585');
+      expect(normalizePhoneNumber('+61-468-035-585')).toBe('+61468035585');
+    });
+
+    it('should handle dots', () => {
+      expect(normalizePhoneNumber('04.6803.5585')).toBe('+61468035585');
+    });
   });
 
-  it('should keep E.164 format unchanged', () => {
-    expect(normalizePhoneNumber('+61468035585')).toBe('+61468035585');
+  describe('Australian landline numbers', () => {
+    it('should normalize landlines starting with 07 (QLD)', () => {
+      expect(normalizePhoneNumber('0733001234')).toBe('+61733001234');
+    });
+
+    it('should normalize landlines starting with 02 (NSW)', () => {
+      expect(normalizePhoneNumber('0299998888')).toBe('+61299998888');
+    });
+
+    it('should keep landlines with country code', () => {
+      expect(normalizePhoneNumber('+61733001234')).toBe('+61733001234');
+    });
   });
 
-  it('should strip non-digit characters', () => {
-    expect(normalizePhoneNumber('+61 468 035 585')).toBe('+61468035585');
-    expect(normalizePhoneNumber('(04) 6803-5585')).toBe('+61468035585');
-  });
+  describe('edge cases', () => {
+    it('should return empty string for empty input', () => {
+      expect(normalizePhoneNumber('')).toBe('');
+    });
 
-  it('should return empty string for empty input', () => {
-    expect(normalizePhoneNumber('')).toBe('');
-  });
-
-  it('should handle various Australian landline formats', () => {
-    // Landline starting with 07 (QLD)
-    expect(normalizePhoneNumber('0733001234')).toBe('+61733001234');
-    // Already with country code
-    expect(normalizePhoneNumber('+61733001234')).toBe('+61733001234');
+    it('should return empty string for null-ish input', () => {
+      expect(normalizePhoneNumber(null as any)).toBe('');
+      expect(normalizePhoneNumber(undefined as any)).toBe('');
+    });
   });
 });
 
