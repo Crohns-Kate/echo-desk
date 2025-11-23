@@ -16,7 +16,9 @@ const AFFIRMATIVE_WORDS = [
   'uh huh', 'uh-huh', 'mm hmm', 'mhm',
   'affirmative', 'confirmed',
   'that\'s me', 'thats me', 'it is', 'i am',
-  'please', 'go ahead'
+  'please', 'go ahead', 'proceed', 'proceed ahead',
+  'true', 'for sure', 'totally', 'okay then', 'ok then',
+  'done', 'let\'s do it', 'lets do it'
 ];
 
 // Negative words and phrases
