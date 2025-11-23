@@ -143,7 +143,21 @@ export async function respondToQuery(
     category?: KnowledgeCategory;
   } = {}
 ): Promise<{ answer: string; source: 'database' | 'file' | 'llm' | 'fallback'; category?: string }> {
-  const { tenantId, clinicId = 'default', clinicName = 'the clinic' } = options;
+  let { tenantId, clinicId = 'default', clinicName = 'the clinic' } = options;
+
+  // If we have tenantId, try to get the clinicId (slug) from the tenant
+  if (tenantId && clinicId === 'default') {
+    try {
+      const tenant = await storage.getTenantById(tenantId);
+      if (tenant) {
+        clinicId = tenant.slug;
+        clinicName = tenant.clinicName || clinicName;
+        console.log(`[KnowledgeResponder] Using tenant: ${clinicId} (${clinicName})`);
+      }
+    } catch (err) {
+      console.error('[KnowledgeResponder] Error loading tenant:', err);
+    }
+  }
 
   // 1. Try database FAQs first (most specific)
   const dbFaq = await searchDatabaseFaqs(query, tenantId);

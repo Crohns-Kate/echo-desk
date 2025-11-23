@@ -1850,9 +1850,21 @@ export function registerVoice(app: Express) {
         const faqType = (req.query.faqType as string) || "";
         const question = (req.query.question as string) || "";
 
-        // Load knowledge from database
+        // Get tenant ID from call record
+        let tenantId: number | undefined;
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.tenantId) {
+            tenantId = call.tenantId;
+          }
+        } catch (err) {
+          console.error("[ANSWER-FAQ] Error getting tenant from call:", err);
+        }
+
+        // Load knowledge from database for the correct tenant
         const { loadClinicKnowledge } = await import("../services/knowledge");
-        const knowledge = await loadClinicKnowledge();
+        const knowledge = await loadClinicKnowledge(tenantId);
+        console.log("[ANSWER-FAQ] Loaded knowledge for tenantId:", tenantId, "- Clinic:", knowledge?.clinicName);
 
         let answer = "";
         let fallbackUsed = false;

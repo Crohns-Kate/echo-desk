@@ -8,15 +8,16 @@
 // Affirmative words and phrases
 const AFFIRMATIVE_WORDS = [
   'yes', 'yeah', 'yep', 'yup', 'yea',
-  'ok', 'okay', 'o.k.',
+  'ok', 'okay', 'o.k.', 'okey',
   'sure', 'alright', 'all right',
   'correct', 'right', 'that\'s right', 'thats right',
   'absolutely', 'definitely', 'certainly',
-  'perfect', 'sounds good', 'that works',
+  'perfect', 'sounds good', 'that works', 'that\'s fine', 'thats fine',
   'uh huh', 'uh-huh', 'mm hmm', 'mhm',
   'affirmative', 'confirmed',
   'that\'s me', 'thats me', 'it is', 'i am',
-  'please', 'go ahead'
+  'please', 'go ahead', 'let\'s do it', 'lets do it',
+  'fine', 'great', 'good', 'cool', 'awesome'
 ];
 
 // Negative words and phrases
