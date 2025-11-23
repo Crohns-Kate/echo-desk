@@ -26,6 +26,14 @@ export const tenants = pgTable("tenants", {
   // Business Hours (JSON)
   businessHours: jsonb("business_hours").default(sql`'{}'::jsonb`),
 
+  // Clinic Settings (for knowledge base and voice responses)
+  parkingText: text("parking_text"),
+  servicesText: text("services_text"),
+  firstVisitText: text("first_visit_text"),
+  aboutText: text("about_text"),
+  healthText: text("health_text"),
+  faqJson: jsonb("faq_json").default(sql`'[]'::jsonb`),
+
   // Cliniko Integration
   clinikoApiKeyEncrypted: text("cliniko_api_key_encrypted"),
   clinikoShard: text("cliniko_shard").default("au1"),

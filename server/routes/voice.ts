@@ -706,15 +706,10 @@ export function registerVoice(app: Express) {
       }
     }
 
-    // Get clinic name for greeting
+    // Get clinic name for greeting from resolved tenant context
     let clinicName = "the clinic";
-    try {
-      const tenant = await storage.getTenant("default");
-      if (tenant?.clinicName) {
-        clinicName = tenant.clinicName;
-      }
-    } catch (err) {
-      console.error("[VOICE] Error getting clinic name:", err);
+    if (tenantCtx?.clinicName) {
+      clinicName = tenantCtx.clinicName;
     }
 
     if (knownPatientName) {
@@ -1655,6 +1650,12 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         }
 
+        // FAQ intents - use knowledge service for answers
+        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services") {
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
         if (intent === "book" || intent === "unknown") {
           // For booking intent, ask if they've been to the office before
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
@@ -1843,7 +1844,77 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // 3c) PROCESS-INFO-RESPONSE → Handle response after explaining info/fees
+      // 3c) ANSWER-FAQ → Answer FAQ questions using knowledge service
+      if (route === "answer-faq") {
+        const faqType = (req.query.faqType as string) || "";
+        const question = (req.query.question as string) || "";
+
+        // Load knowledge from database
+        const { loadClinicKnowledge } = await import("../services/knowledge");
+        const knowledge = await loadClinicKnowledge();
+
+        let answer = "";
+        let fallbackUsed = false;
+
+        // Try to get answer from knowledge base
+        if (knowledge) {
+          if (faqType === "faq_parking" && knowledge.parkingText) {
+            answer = knowledge.parkingText;
+          } else if (faqType === "faq_hours") {
+            if (knowledge.businessHours && Object.keys(knowledge.businessHours).length > 0) {
+              // Try to format business hours nicely
+              const hours = knowledge.businessHours;
+              if (typeof hours === 'string') {
+                answer = hours;
+              } else {
+                answer = "We're open during regular business hours. For specific times, I can transfer you to reception.";
+              }
+            }
+          } else if (faqType === "faq_location" && knowledge.address) {
+            answer = `Our address is ${knowledge.address}.`;
+          } else if (faqType === "faq_services" && knowledge.servicesText) {
+            answer = knowledge.servicesText;
+          }
+        }
+
+        // Fallback answers if not configured
+        if (!answer) {
+          fallbackUsed = true;
+          if (faqType === "faq_parking") {
+            answer = "We have parking available for patients. The details will be in your confirmation email when you book.";
+          } else if (faqType === "faq_hours") {
+            answer = "We're generally open Monday to Friday during business hours. For specific times, I can transfer you to reception.";
+          } else if (faqType === "faq_location") {
+            answer = "Our address will be in your confirmation email when you book. There's parking available nearby.";
+          } else if (faqType === "faq_services") {
+            answer = "We offer chiropractic adjustments, soft tissue therapy, and rehabilitation exercises. For more details, I can transfer you to reception.";
+          } else {
+            answer = "I don't have that specific information, but our reception team can help you with that.";
+          }
+        }
+
+        console.log(`[ANSWER-FAQ] Type: ${faqType}, Answer from: ${fallbackUsed ? 'fallback' : 'database'}`);
+
+        // Say the answer
+        saySafeSSML(vr, answer);
+        vr.pause({ length: 1 });
+
+        // Ask if they want to book or have other questions
+        const g = vr.gather({
+          input: ["speech"],
+          timeout: 5,
+          speechTimeout: "auto",
+          actionOnEmptyResult: true,
+          action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
+          method: "POST",
+        });
+        saySafeSSML(g, "Is there anything else I can help you with, or would you like to book an appointment?");
+        g.pause({ length: 1 });
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // 3d) PROCESS-INFO-RESPONSE → Handle response after explaining info/fees
       if (route === "process-info-response") {
         const wantsToBook = speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("okay") || speechRaw.includes("book");
         const doesntWantToBook = speechRaw.includes("no") || speechRaw.includes("not now");
@@ -2546,18 +2617,18 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-visit-proactive&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // Returning patient - proceed to week selection with empathy
-          const empathyLines = firstName ? [
-            `${firstName}, oh I'm so sorry to hear that. That doesn't sound fun at all. Let me get you sorted - hang on a sec while I check what we've got.`,
-            `${firstName}, oh you poor thing. We'll take care of you. Let me see what's available to get you in soon.`,
-            `${firstName}, oh dear, that's not great. Don't worry, we'll look after you. Let me have a quick look at the schedule.`,
-            `${firstName}, ahh that doesn't sound good at all. Let me find you something as soon as we can. Just bear with me a sec.`
+          // Returning patient - proceed to week selection with professional acknowledgment
+          const acknowledgmentLines = firstName ? [
+            `${firstName}, thanks for telling me that. I'm sure the team here can help you. Let me check what we have available.`,
+            `${firstName}, thanks for letting me know. The team will take good care of you. Let me see what appointments we have.`,
+            `${firstName}, I appreciate you sharing that. Let me have a look at the schedule to get you in soon.`,
+            `${firstName}, thanks for that. Let me find you a time that works - just bear with me a moment.`
           ] : [
-            `Oh I'm so sorry to hear that. That doesn't sound fun. Let me see what we have available to get you in quickly.`,
-            `Oh dear, that's not great. We'll take care of you. Hang on while I check the schedule.`
+            `Thanks for telling me that. I'm sure the team here can help you. Let me see what we have available.`,
+            `Thanks for letting me know. The team will take good care of you. Let me check the schedule.`
           ];
-          const randomEmpathy = empathyLines[Math.floor(Math.random() * empathyLines.length)];
-          saySafeSSML(vr, randomEmpathy);
+          const randomAcknowledgment = acknowledgmentLines[Math.floor(Math.random() * acknowledgmentLines.length)];
+          saySafeSSML(vr, randomAcknowledgment);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
           return res.type("text/xml").send(vr.toString());
         }
@@ -2583,14 +2654,14 @@ export function registerVoice(app: Express) {
         const infoBlurb = getNewPatientInfoBlurb();
         const segments = splitBlurbIntoSaySegments(infoBlurb);
 
-        // Warm intro - because it's their first visit
+        // Professional intro - because it's their first visit
         const introLines = firstName ? [
-          `${firstName}, oh I'm so sorry to hear that. That doesn't sound fun at all. Because it's your first visit, let me quickly tell you what to expect, so there are no surprises.`,
-          `${firstName}, oh you poor thing. We'll take care of you. Since you haven't been before, let me run you through what happens on your first visit.`,
-          `${firstName}, oh dear, that's not great. Before we book you in, let me just explain what to expect on your first visit.`
+          `${firstName}, thanks for telling me that. I'm sure the team here can help you. Since it's your first visit, here's how it usually works.`,
+          `${firstName}, thanks for letting me know. The team will take good care of you. Let me run you through what to expect on your first visit.`,
+          `${firstName}, I appreciate you sharing that. Before we book you in, let me explain what to expect on your first visit.`
         ] : [
-          `Oh I'm so sorry to hear that. That doesn't sound fun. Because it's your first visit, let me quickly tell you what to expect.`,
-          `Oh dear, that's not great. Before we book you in, let me run you through what happens on your first visit.`
+          `Thanks for telling me that. I'm sure the team here can help you. Since it's your first visit, here's how it usually works.`,
+          `Thanks for letting me know. Before we book you in, let me run you through what happens on your first visit.`
         ];
         const randomIntro = introLines[Math.floor(Math.random() * introLines.length)];
         saySafeSSML(vr, randomIntro);
@@ -4379,13 +4450,36 @@ export function registerVoice(app: Express) {
       const speechRaw = ((req.body?.SpeechResult as string) || "").trim();
       const digits = (req.body?.Digits as string) || "";
       const from = (req.body?.From as string) || "";
+      const to = (req.body?.To as string) || (req.body?.Called as string) || "";
 
       console.log("[VOICE][HANDLE-FLOW]", { step, callSid, speechRaw, digits, from });
 
       const vr = new twilio.twiml.VoiceResponse();
       const { CallFlowHandler, CallState } = await import('../services/callFlowHandler');
+      const { resolveTenantWithFallback, getTenantContext } = await import("../services/tenantResolver");
 
-      const handler = new CallFlowHandler(callSid, from, vr);
+      // Resolve tenant context from call record or phone number
+      let tenantCtx = null;
+      try {
+        // First try to get tenant from the stored call record
+        const call = await storage.getCallByCallSid(callSid);
+        if (call?.tenantId) {
+          const tenant = await storage.getTenantById(call.tenantId);
+          if (tenant) {
+            tenantCtx = getTenantContext(tenant);
+            console.log("[VOICE][HANDLE-FLOW] Resolved tenant from call record:", tenantCtx.slug);
+          }
+        }
+        // Fallback: resolve from To number
+        if (!tenantCtx && to) {
+          tenantCtx = await resolveTenantWithFallback(to);
+          console.log("[VOICE][HANDLE-FLOW] Resolved tenant from phone:", tenantCtx?.slug);
+        }
+      } catch (err) {
+        console.error("[VOICE][HANDLE-FLOW] Error resolving tenant:", err);
+      }
+
+      const handler = new CallFlowHandler(callSid, from, vr, tenantCtx || undefined);
       await handler.loadContext();
 
       switch (step) {

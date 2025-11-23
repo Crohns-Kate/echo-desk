@@ -210,7 +210,45 @@ export function registerApp(app: Express) {
   app.get('/api/alerts', async (req: Request, res: Response) => {
     try {
       const alerts = await storage.listAlerts();
-      res.json(alerts);
+
+      // Enrich alerts with recording and transcript from call logs
+      const enrichedAlerts = await Promise.all(
+        alerts.map(async (alert) => {
+          let recordingUrl: string | null = null;
+          let recordingSid: string | null = null;
+          let transcript: string | null = null;
+          let callSid: string | null = null;
+          let fromNumber: string | null = null;
+
+          // Get callSid from payload
+          const payload = alert.payload as any;
+          if (payload?.callSid) {
+            callSid = payload.callSid;
+            try {
+              const call = await storage.getCallByCallSid(callSid as string);
+              if (call) {
+                recordingUrl = call.recordingUrl || null;
+                recordingSid = call.recordingSid || null;
+                transcript = call.transcript || null;
+                fromNumber = call.fromNumber || null;
+              }
+            } catch (err) {
+              console.error('Error fetching call for alert:', err);
+            }
+          }
+
+          return {
+            ...alert,
+            recordingUrl,
+            recordingSid,
+            transcript,
+            callSid,
+            fromNumber,
+          };
+        })
+      );
+
+      res.json(enrichedAlerts);
     } catch (error) {
       console.error('List alerts error:', error);
       res.status(500).json({ error: 'Failed to fetch alerts' });
@@ -220,7 +258,41 @@ export function registerApp(app: Express) {
   app.get('/api/alerts/recent', async (req: Request, res: Response) => {
     try {
       const alerts = await storage.listAlerts(undefined, 5);
-      res.json(alerts);
+
+      // Enrich alerts with recording and transcript from call logs
+      const enrichedAlerts = await Promise.all(
+        alerts.map(async (alert) => {
+          let recordingUrl: string | null = null;
+          let recordingSid: string | null = null;
+          let transcript: string | null = null;
+          let callSid: string | null = null;
+
+          const payload = alert.payload as any;
+          if (payload?.callSid) {
+            callSid = payload.callSid;
+            try {
+              const call = await storage.getCallByCallSid(callSid as string);
+              if (call) {
+                recordingUrl = call.recordingUrl || null;
+                recordingSid = call.recordingSid || null;
+                transcript = call.transcript || null;
+              }
+            } catch (err) {
+              console.error('Error fetching call for alert:', err);
+            }
+          }
+
+          return {
+            ...alert,
+            recordingUrl,
+            recordingSid,
+            transcript,
+            callSid,
+          };
+        })
+      );
+
+      res.json(enrichedAlerts);
     } catch (error) {
       console.error('Recent alerts error:', error);
       res.status(500).json({ error: 'Failed to fetch recent alerts' });
