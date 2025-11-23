@@ -706,15 +706,10 @@ export function registerVoice(app: Express) {
       }
     }
 
-    // Get clinic name for greeting
+    // Get clinic name for greeting from resolved tenant context
     let clinicName = "the clinic";
-    try {
-      const tenant = await storage.getTenant("default");
-      if (tenant?.clinicName) {
-        clinicName = tenant.clinicName;
-      }
-    } catch (err) {
-      console.error("[VOICE] Error getting clinic name:", err);
+    if (tenantCtx?.clinicName) {
+      clinicName = tenantCtx.clinicName;
     }
 
     if (knownPatientName) {
@@ -4455,13 +4450,36 @@ export function registerVoice(app: Express) {
       const speechRaw = ((req.body?.SpeechResult as string) || "").trim();
       const digits = (req.body?.Digits as string) || "";
       const from = (req.body?.From as string) || "";
+      const to = (req.body?.To as string) || (req.body?.Called as string) || "";
 
       console.log("[VOICE][HANDLE-FLOW]", { step, callSid, speechRaw, digits, from });
 
       const vr = new twilio.twiml.VoiceResponse();
       const { CallFlowHandler, CallState } = await import('../services/callFlowHandler');
+      const { resolveTenantWithFallback, getTenantContext } = await import("../services/tenantResolver");
 
-      const handler = new CallFlowHandler(callSid, from, vr);
+      // Resolve tenant context from call record or phone number
+      let tenantCtx = null;
+      try {
+        // First try to get tenant from the stored call record
+        const call = await storage.getCallByCallSid(callSid);
+        if (call?.tenantId) {
+          const tenant = await storage.getTenantById(call.tenantId);
+          if (tenant) {
+            tenantCtx = getTenantContext(tenant);
+            console.log("[VOICE][HANDLE-FLOW] Resolved tenant from call record:", tenantCtx.slug);
+          }
+        }
+        // Fallback: resolve from To number
+        if (!tenantCtx && to) {
+          tenantCtx = await resolveTenantWithFallback(to);
+          console.log("[VOICE][HANDLE-FLOW] Resolved tenant from phone:", tenantCtx?.slug);
+        }
+      } catch (err) {
+        console.error("[VOICE][HANDLE-FLOW] Error resolving tenant:", err);
+      }
+
+      const handler = new CallFlowHandler(callSid, from, vr, tenantCtx || undefined);
       await handler.loadContext();
 
       switch (step) {

@@ -193,7 +193,8 @@ export class CallFlowHandler {
       method: 'POST'
     });
 
-    saySafe(g, "Thanks for calling. Is this your first visit with us?");
+    const clinicName = this.getClinicName();
+    saySafe(g, `Thanks for calling ${clinicName}. Is this your first visit with us?`);
     await this.saveContext();
   }
 
