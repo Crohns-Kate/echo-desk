@@ -1883,52 +1883,81 @@ export function registerVoice(app: Express) {
           console.error("[ANSWER-FAQ] Error getting tenant from call:", err);
         }
 
-        // Load knowledge from database for the correct tenant
-        const { loadClinicKnowledge } = await import("../services/knowledge");
-        const knowledge = await loadClinicKnowledge(tenantId);
-        console.log("[ANSWER-FAQ] Loaded knowledge for tenantId:", tenantId, "- Clinic:", knowledge?.clinicName);
-
         let answer = "";
-        let fallbackUsed = false;
+        let answeredSuccessfully = false;
 
-        // Try to get answer from knowledge base
-        if (knowledge) {
-          if (faqType === "faq_parking" && knowledge.parkingText) {
-            answer = knowledge.parkingText;
-          } else if (faqType === "faq_hours") {
-            if (knowledge.businessHours && Object.keys(knowledge.businessHours).length > 0) {
-              // Try to format business hours nicely
-              const hours = knowledge.businessHours;
-              if (typeof hours === 'string') {
-                answer = hours;
-              } else {
-                answer = "We're open during regular business hours. For specific times, I can transfer you to reception.";
-              }
-            }
-          } else if (faqType === "faq_location" && knowledge.address) {
-            answer = `Our address is ${knowledge.address}.`;
-          } else if (faqType === "faq_services" && knowledge.servicesText) {
-            answer = knowledge.servicesText;
-          }
-        }
+        // Try to get answer using AI knowledge responder (reads markdown files)
+        try {
+          const { answerQuestion } = await import("../ai/knowledgeResponder");
+          const result = await answerQuestion(question, tenantId);
 
-        // Fallback answers if not configured
-        if (!answer) {
-          fallbackUsed = true;
-          if (faqType === "faq_parking") {
-            answer = "We have parking available for patients. The details will be in your confirmation email when you book.";
-          } else if (faqType === "faq_hours") {
-            answer = "We're generally open Monday to Friday during business hours. For specific times, I can transfer you to reception.";
-          } else if (faqType === "faq_location") {
-            answer = "Our address will be in your confirmation email when you book. There's parking available nearby.";
-          } else if (faqType === "faq_services") {
-            answer = "We offer chiropractic adjustments, soft tissue therapy, and rehabilitation exercises. For more details, I can transfer you to reception.";
+          if (result && result.answer && !result.answer.includes("I don't have") && !result.answer.includes("I'm not sure")) {
+            answer = result.answer;
+            answeredSuccessfully = true;
+            console.log(`[ANSWER-FAQ] ✅ AI answered from knowledge base: "${question}"`);
           } else {
-            answer = "I don't have that specific information, but our reception team can help you with that.";
+            console.log(`[ANSWER-FAQ] ❌ AI couldn't answer: "${question}"`);
+          }
+        } catch (err) {
+          console.error("[ANSWER-FAQ] Error using AI responder:", err);
+        }
+
+        // Fallback to database fields if AI didn't answer
+        if (!answeredSuccessfully) {
+          const { loadClinicKnowledge } = await import("../services/knowledge");
+          const knowledge = await loadClinicKnowledge(tenantId);
+
+          if (knowledge) {
+            if (faqType === "faq_parking" && knowledge.parkingText) {
+              answer = knowledge.parkingText;
+              answeredSuccessfully = true;
+            } else if (faqType === "faq_hours") {
+              if (knowledge.businessHours && Object.keys(knowledge.businessHours).length > 0) {
+                const hours = knowledge.businessHours;
+                if (typeof hours === 'string') {
+                  answer = hours;
+                  answeredSuccessfully = true;
+                }
+              }
+            } else if (faqType === "faq_location" && knowledge.address) {
+              answer = `Our address is ${knowledge.address}.`;
+              answeredSuccessfully = true;
+            } else if (faqType === "faq_services" && knowledge.servicesText) {
+              answer = knowledge.servicesText;
+              answeredSuccessfully = true;
+            }
           }
         }
 
-        console.log(`[ANSWER-FAQ] Type: ${faqType}, Answer from: ${fallbackUsed ? 'fallback' : 'database'}`);
+        // Create alert for unanswered questions so team can add to knowledge base
+        if (!answeredSuccessfully) {
+          console.log(`[ANSWER-FAQ] ⚠️  Creating alert for unanswered question: "${question}"`);
+          try {
+            const tenant = await getTenantForCall(callSid);
+            const call = await storage.getCallByCallSid(callSid);
+            if (tenant && call) {
+              await storage.createAlert({
+                tenantId: tenant.id,
+                conversationId: call.conversationId || undefined,
+                reason: "unanswered_faq",
+                payload: {
+                  question: question,
+                  faqType: faqType,
+                  fromNumber: from,
+                  callSid: callSid,
+                  timestamp: new Date().toISOString()
+                },
+                status: "open"
+              });
+              console.log("[ANSWER-FAQ] Alert created for unanswered FAQ");
+            }
+          } catch (alertErr) {
+            console.error("[ANSWER-FAQ] Failed to create alert:", alertErr);
+          }
+
+          // Generic fallback
+          answer = "I don't have that specific information right now, but our reception team can help you with that. Let me note your question and we'll get back to you.";
+        }
 
         // Say the answer
         saySafeSSML(vr, answer);

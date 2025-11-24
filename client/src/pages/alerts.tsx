@@ -115,6 +115,8 @@ export default function Alerts() {
         return "destructive";
       case "caller_question":
         return "secondary";
+      case "unanswered_faq":
+        return "default";
       default:
         return "secondary";
     }
@@ -123,6 +125,8 @@ export default function Alerts() {
   const getAlertIcon = (reason: string) => {
     switch (reason) {
       case "caller_question":
+        return <MessageSquare className="h-4 w-4" />;
+      case "unanswered_faq":
         return <MessageSquare className="h-4 w-4" />;
       case "human_request":
         return <Phone className="h-4 w-4" />;
@@ -143,6 +147,10 @@ export default function Alerts() {
         return payload.question
           ? `Caller asked: "${payload.question}"`
           : "Caller had a question";
+      case "unanswered_faq":
+        return payload.question
+          ? `📚 Unanswered FAQ: "${payload.question}" - Add to knowledge base`
+          : "Question couldn't be answered from knowledge base";
       default:
         return alert.reason || "Alert notification";
     }
