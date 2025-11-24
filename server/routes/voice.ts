@@ -836,10 +836,8 @@ export function registerVoice(app: Express) {
 
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
       if (route === "anything-else") {
-        const sayingNo = speechRaw.includes("no") || speechRaw.includes("nope") || speechRaw.includes("nah") ||
-                         speechRaw.includes("that's all") || speechRaw.includes("that's it") || speechRaw.includes("i'm good");
-
-        const wantsToBook = speechRaw.includes("book") || speechRaw.includes("reschedule") || speechRaw.includes("cancel");
+        const sayingNo = isNegative(speechRaw);
+        const wantsBooking = wantsToBook(speechRaw);
 
         if (sayingNo) {
           // They're done - warm, reassuring goodbye
@@ -853,12 +851,23 @@ export function registerVoice(app: Express) {
           saySafe(vr, randomGoodbye);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
-        } else if (wantsToBook) {
+        } else if (wantsBooking) {
           // They want to manage appointments - send to start
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // They have a question or said "yes" - gather the question and create an alert
+          // They have a question - use intent classification to route properly
+          const intentResult = await classifyIntent(speechRaw);
+          console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
+          const intent = intentResult.action;
+
+          // Route to FAQ answering for recognized question types
+          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          // Otherwise capture as general question
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
