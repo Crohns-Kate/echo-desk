@@ -38,34 +38,19 @@ function formatPhoneNumber(phone?: string | null): string {
 }
 
 function AlertRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
-  const [audioError, setAudioError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  if (audioError) {
-    return (
-      <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-lg">
-        Recording not available or requires authentication.
-      </div>
-    );
-  }
-
   return (
-    <div className="relative">
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-muted/50 rounded-lg">
-          <Loader2 className="h-4 w-4 animate-spin" />
-        </div>
-      )}
-      <audio
-        controls
-        className="w-full h-12"
-        src={recordingUrl}
-        onError={() => setAudioError(true)}
-        onLoadedData={() => setIsLoading(false)}
-        onCanPlay={() => setIsLoading(false)}
+    <div className="text-sm bg-muted/50 p-3 rounded-lg flex items-center justify-between">
+      <span className="text-muted-foreground">
+        Recording available (Twilio authenticated access required)
+      </span>
+      <a
+        href={recordingUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:underline text-sm font-medium"
       >
-        Your browser does not support the audio element.
-      </audio>
+        View in Twilio →
+      </a>
     </div>
   );
 }
