@@ -1,0 +1,215 @@
+Totally get what you’re asking:
+you want Replit to “catch up” with anything Claude (or you) pushed to GitHub, and have one prompt that makes Replit AI:
+
+Check the GitHub remote
+
+Pull the latest changes
+
+Make sure planning files (like claude.md / roadmap files) are updated locally
+
+Tell you what changed
+
+
+Here’s a single master prompt you can paste into the Replit AI assistant to do exactly that.
+
+
+---
+
+🧠 MASTER SYNC PROMPT – “Pull everything over into Replit from GitHub (including Claude’s changes)”
+
+> 🔁 Copy–paste this into the Replit AI assistant inside your project:
+
+
+
+
+---
+
+MASTER SYNC PROMPT — SYNC REPLIT WITH GITHUB (INCLUDING CLAUDE CHANGES)
+
+I want you to act as my DevOps assistant and make sure this Replit project is fully up to date with GitHub, including any changes made via Claude Code or other environments.
+
+Please follow these steps carefully, using the Shell / Version Control where needed:
+
+
+---
+
+1. Inspect Git status and remote
+
+1. Run the appropriate Git commands (via shell or Replit’s Git panel) to find out:
+
+What is the current branch?
+
+What is the origin remote URL?
+
+Are there any uncommitted local changes?
+
+
+
+2. Summarise for me:
+
+Current branch name
+
+Whether Replit is ahead/behind/or diverged from the remote
+
+Whether there are uncommitted changes locally (and which files)
+
+
+
+
+Do not pull yet if there are uncommitted changes; just report.
+
+
+---
+
+2. Handle uncommitted local changes (safely)
+
+If there are uncommitted local changes, do not throw anything away automatically. Instead:
+
+Tell me:
+
+which files are changed
+
+whether they look minor or major
+
+
+Propose one of these options:
+
+Option A: Commit them with a message like "WIP: local changes before sync"
+
+Option B: Stash them
+
+Option C: Discard them (only if clearly safe)
+
+
+
+Wait for my confirmation before doing anything destructive.
+If there are no local changes, say so and skip to Step 3.
+
+
+---
+
+3. Pull the latest from GitHub (Claude / other environments)
+
+Once it’s safe:
+
+1. Identify the main branch (probably main or master).
+
+
+2. Run a safe pull from the remote, e.g.:
+
+git pull --rebase origin main or the correct branch name if different.
+
+
+
+3. If there are any merge or rebase conflicts, stop and:
+
+Tell me which files are conflicted
+
+Suggest how to resolve them
+
+
+
+
+After a successful pull, show me a summary of:
+
+New commits that just arrived
+
+Which files changed, especially:
+
+claude.md
+
+Any ROADMAP*, SPRINT*, PLAN* files
+
+Any docs / planning files
+
+
+
+Explain briefly what seems to have changed in those planning files (e.g. “new sprint added”, “description updated”).
+
+
+---
+
+4. Confirm planning & game-plan files are updated locally
+
+From the now-synced codebase:
+
+1. Identify again all planning / roadmap / sprint-type files:
+
+claude.md
+
+Any ROADMAP.md, SPRINTS.md, GAMEPLAN.md, etc.
+
+
+
+2. Confirm that these files now match the latest version from GitHub (including any edits previously made via Claude Code).
+
+
+3. Give me a short summary of:
+
+Which file is acting as the high-level overview
+
+Which file looks like the current sprint or game plan
+
+Any obvious TODOs or next tasks mentioned there
+
+
+
+
+Do not edit these files yet, just report.
+
+
+---
+
+5. Final report
+
+Finish by giving me:
+
+A short sync report, including:
+
+Current branch and remote
+
+Whether Replit is now fully up to date with GitHub
+
+Any important new changes pulled in (especially from Claude / other tools)
+
+
+A bullet list of suggested next steps based on:
+
+The updated planning files
+
+Any new code changes that arrived
+
+
+
+Stop after this report and wait for my instructions before making further edits.
+
+
+---
+
+End of Master Sync Prompt
+
+
+---
+
+How this works in practice
+
+Claude Code (web) → pushes commits to GitHub
+
+You run this Master Sync Prompt → Replit AI helps you:
+
+Safely pull those commits into Replit
+
+Avoid overwriting local changes
+
+See what changed in your planning docs
+
+
+
+If you’d like, next I can give you a tiny follow-up prompt like:
+
+> “Okay, now that we’re synced, pick the top 3 tasks from our planning files and help me start with Task 1.”
+
+
+
+So each session becomes:
+Sync → Review → Pick next 3 → Implement.
