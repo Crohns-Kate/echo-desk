@@ -36,25 +36,36 @@ const knowledgeCache = new Map<string, string>();
  * Load knowledge base file for a clinic
  */
 function loadKnowledgeBase(clinicId: string): string | null {
+  console.log(`[KnowledgeResponder] Loading knowledge base for clinicId: ${clinicId}`);
+
   // Check cache first
   const cached = knowledgeCache.get(clinicId);
-  if (cached) return cached;
+  if (cached) {
+    console.log(`[KnowledgeResponder] Using cached knowledge base (${cached.length} chars)`);
+    return cached;
+  }
 
   // Try to load from file
   const filePath = join(process.cwd(), 'knowledgebase', `${clinicId}.md`);
+  console.log(`[KnowledgeResponder] Checking file: ${filePath}`);
 
   if (!existsSync(filePath)) {
+    console.log(`[KnowledgeResponder] File not found: ${filePath}`);
     // Try default
     const defaultPath = join(process.cwd(), 'knowledgebase', 'default.md');
+    console.log(`[KnowledgeResponder] Trying default: ${defaultPath}`);
     if (existsSync(defaultPath)) {
       const content = readFileSync(defaultPath, 'utf-8');
+      console.log(`[KnowledgeResponder] ✅ Loaded default knowledge base (${content.length} chars)`);
       knowledgeCache.set(clinicId, content);
       return content;
     }
+    console.log(`[KnowledgeResponder] ❌ No knowledge base file found`);
     return null;
   }
 
   const content = readFileSync(filePath, 'utf-8');
+  console.log(`[KnowledgeResponder] ✅ Loaded knowledge base file (${content.length} chars)`);
   knowledgeCache.set(clinicId, content);
   return content;
 }
@@ -175,10 +186,14 @@ export async function respondToQuery(
 
   // 2. Try knowledge base file with LLM
   const knowledgeBase = loadKnowledgeBase(clinicId);
+  console.log(`[KnowledgeResponder] Knowledge base loaded: ${knowledgeBase ? 'YES' : 'NO'}`);
+  console.log(`[KnowledgeResponder] LLM available: ${isLLMAvailable() ? 'YES' : 'NO'}`);
+
   if (knowledgeBase && isLLMAvailable()) {
     try {
       console.log(`[KnowledgeResponder] Using LLM with knowledge base for: ${query}`);
       let answer = await generateLLMResponse(query, knowledgeBase, clinicName);
+      console.log(`[KnowledgeResponder] LLM generated response (${answer.length} chars)`);
 
       // Validate response
       const validation = validateResponse(answer);
@@ -195,14 +210,21 @@ export async function respondToQuery(
         answer: formatForVoice(answer),
         source: 'llm'
       };
-    } catch (error) {
-      console.error('[KnowledgeResponder] LLM generation failed:', error);
+    } catch (error: any) {
+      console.error('[KnowledgeResponder] LLM generation failed:', error.message);
+      console.error('[KnowledgeResponder] Error details:', error);
     }
+  } else if (knowledgeBase && !isLLMAvailable()) {
+    console.warn('[KnowledgeResponder] Knowledge base exists but LLM not available - falling back to keywords');
+  } else if (!knowledgeBase && isLLMAvailable()) {
+    console.warn('[KnowledgeResponder] LLM available but no knowledge base file found');
   }
 
   // 3. Keyword-based fallback
+  console.log('[KnowledgeResponder] Trying keyword-based fallback');
   const fallbackAnswer = getKeywordFallback(query);
   if (fallbackAnswer) {
+    console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
     return {
       answer: fallbackAnswer,
       source: 'fallback'
@@ -210,6 +232,7 @@ export async function respondToQuery(
   }
 
   // 4. Ultimate fallback
+  console.log('[KnowledgeResponder] ❌ No answer found - using ultimate fallback');
   return {
     answer: "I don't have that specific information, but our reception team can help you with that. Would you like me to book an appointment, or is there something else I can help with?",
     source: 'fallback'

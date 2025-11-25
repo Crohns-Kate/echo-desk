@@ -1909,18 +1909,23 @@ export function registerVoice(app: Express) {
 
         // Try to get answer using AI knowledge responder (reads markdown files)
         try {
-          const { answerQuestion } = await import("../ai/knowledgeResponder");
-          const result = await answerQuestion(question, tenantId);
+          console.log(`[ANSWER-FAQ] Looking up answer for: "${question}" (tenantId: ${tenantId})`);
+          const { respondToQuery } = await import("../ai/knowledgeResponder");
+          const result = await respondToQuery(question, { tenantId });
 
-          if (result && result.answer && !result.answer.includes("I don't have") && !result.answer.includes("I'm not sure")) {
+          console.log(`[ANSWER-FAQ] Response source: ${result.source}, answer length: ${result.answer.length}`);
+
+          if (result && result.answer && !result.answer.includes("I don't have that specific information")) {
             answer = result.answer;
             answeredSuccessfully = true;
-            console.log(`[ANSWER-FAQ] ✅ AI answered from knowledge base: "${question}"`);
+            console.log(`[ANSWER-FAQ] ✅ AI answered from ${result.source}: "${question}"`);
+            console.log(`[ANSWER-FAQ] Answer: "${answer.substring(0, 100)}..."`);
           } else {
-            console.log(`[ANSWER-FAQ] ❌ AI couldn't answer: "${question}"`);
+            console.log(`[ANSWER-FAQ] ❌ AI couldn't answer: "${question}" (got fallback response)`);
           }
-        } catch (err) {
-          console.error("[ANSWER-FAQ] Error using AI responder:", err);
+        } catch (err: any) {
+          console.error("[ANSWER-FAQ] Error using AI responder:", err.message);
+          console.error("[ANSWER-FAQ] Stack:", err.stack);
         }
 
         // Fallback to database fields if AI didn't answer

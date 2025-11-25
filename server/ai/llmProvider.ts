@@ -28,8 +28,15 @@ export interface LLMResponse {
 
 // Detect which provider is available
 function getAvailableProvider(): 'openai' | 'anthropic' | null {
+  const hasOpenAI = !!env.OPENAI_API_KEY;
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+
+  console.log(`[LLM] Checking providers - OpenAI: ${hasOpenAI}, Anthropic: ${hasAnthropic}`);
+
   if (env.OPENAI_API_KEY) return 'openai';
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
+
+  console.warn('[LLM] ⚠️  No LLM API keys configured (OPENAI_API_KEY or ANTHROPIC_API_KEY)');
   return null;
 }
 
