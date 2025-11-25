@@ -46,7 +46,8 @@ const MEDICAL_ADVICE_KEYWORDS = [
   'what\'s wrong with me',
   'what do i have',
   'prescription',
-  'how much should i take',
+  'how much medication should i take',  // Changed from 'how much should i take' to avoid matching pricing questions
+  'how many pills should i take',
   'dosage',
   'side effects',
   'drug interaction',
