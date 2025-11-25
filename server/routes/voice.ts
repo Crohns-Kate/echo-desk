@@ -893,7 +893,19 @@ export function registerVoice(app: Express) {
       if (route === "capture-question") {
         const question = speechRaw || "";
 
-        // Create an alert for the reception team
+        // First, try to classify intent and answer from knowledge base
+        const intentResult = await classifyIntent(question);
+        console.log("[CAPTURE-QUESTION] Detected intent:", intentResult);
+        const intent = intentResult.action;
+
+        // If it's a FAQ question, route to answer-faq instead of creating alert
+        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+          console.log("[CAPTURE-QUESTION] Routing to answer-faq for:", intent);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(question)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Not a FAQ - create an alert for the reception team
         try {
           const call = await storage.getCallByCallSid(callSid);
           const tenant = await getTenantForCall(callSid);
