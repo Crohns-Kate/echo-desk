@@ -279,6 +279,16 @@ function getKeywordFallback(query: string): string | null {
     return "That depends on what the doctor finds, and you'll go through that on your first visit.";
   }
 
+  // Techniques / what do you do / methods
+  if (text.includes('what techniques') || text.includes('what methods') || text.includes('how do you treat') || text.includes('what do you do')) {
+    return "We use chiropractic adjustments, posture and nerve assessment, and create treatment plans tailored to your needs.";
+  }
+
+  // Who is the practitioner / doctor
+  if (text.includes('who is the') || text.includes('which doctor') || text.includes('who will i see') || text.includes('practitioner')) {
+    return "You'll be seeing Dr. Michael.";
+  }
+
   // Prices/cost
   if (text.includes('cost') || text.includes('price') || text.includes('how much') || text.includes('fee')) {
     console.log('[getKeywordFallback] ✅ Matched price/cost keywords');

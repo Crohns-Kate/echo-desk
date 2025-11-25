@@ -137,13 +137,26 @@ function classifyWithKeywords(text: string): IntentResult {
     action = 'faq_location';
   } else if (
     text.includes('what services') ||
-    text.includes('what do you do') ||
     text.includes('what treatments') ||
     text.includes('what do you offer') ||
-    text.includes('services offered') ||
-    text.includes('do you do')
+    text.includes('services offered')
   ) {
     action = 'faq_services';
+  } else if (
+    text.includes('what techniques') ||
+    text.includes('what methods') ||
+    text.includes('how do you treat') ||
+    text.includes('what do you do')
+  ) {
+    action = 'faq_techniques';
+  } else if (
+    text.includes('who is the') ||
+    text.includes('which doctor') ||
+    text.includes('who will i see') ||
+    text.includes('practitioner') ||
+    text.includes('who am i seeing')
+  ) {
+    action = 'faq_practitioner';
   } else if (
     text.includes('what happens') ||
     text.includes('what do i get') ||

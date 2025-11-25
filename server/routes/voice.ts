@@ -862,7 +862,7 @@ export function registerVoice(app: Express) {
           // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
-        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
           // Route to FAQ answering for recognized question types
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
           return res.type("text/xml").send(vr.toString());
@@ -899,7 +899,7 @@ export function registerVoice(app: Express) {
         const intent = intentResult.action;
 
         // If it's a FAQ question, route to answer-faq instead of creating alert
-        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
           console.log("[CAPTURE-QUESTION] Routing to answer-faq for:", intent);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(question)}`));
           return res.type("text/xml").send(vr.toString());
@@ -2031,7 +2031,7 @@ export function registerVoice(app: Express) {
           console.log("[PROCESS-INFO-RESPONSE] Detected intent:", intentResult);
           const intent = intentResult.action;
 
-          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
             // Another FAQ question - route to answer-faq
             console.log("[PROCESS-INFO-RESPONSE] Routing to answer-faq for:", intent);
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
