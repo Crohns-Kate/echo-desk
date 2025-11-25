@@ -738,33 +738,103 @@ export function registerApp(app: Express) {
 
       // Try to update Cliniko immediately if patient exists
       try {
-        const { findPatientByPhone } = await import('../services/cliniko');
-        const { updateClinikoPatient } = await import('../integrations/cliniko');
+        // Get tenant to access tenant-specific Cliniko credentials
+        const tenant = await storage.getTenantById(call.tenantId);
+        if (!tenant) {
+          console.log('[VERIFY-DETAILS] No tenant found, skipping Cliniko update');
+        } else if (!tenant.clinikoApiKeyEncrypted) {
+          console.log('[VERIFY-DETAILS] Tenant has no Cliniko API key configured, skipping update');
+        } else {
+          // Decrypt tenant's Cliniko credentials
+          const { decrypt } = await import('../services/tenantResolver');
+          const clinikoApiKey = decrypt(tenant.clinikoApiKeyEncrypted);
+          const clinikoShard = tenant.clinikoShard || 'au1';
+          const clinikoBaseUrl = `https://api.${clinikoShard}.cliniko.com/v1`;
 
-        if (call.fromNumber && updateClinikoPatient) {
-          console.log('[VERIFY-DETAILS] Looking up patient by phone:', call.fromNumber);
-          const patient = await findPatientByPhone(call.fromNumber);
+          console.log('[VERIFY-DETAILS] Using tenant-specific Cliniko credentials for:', tenant.slug);
 
-          if (patient && patient.id) {
-            console.log('[VERIFY-DETAILS] Found patient in Cliniko:', patient.id, '-', patient.first_name, patient.last_name);
+          // Create tenant-specific headers
+          const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${Buffer.from(clinikoApiKey + ':').toString('base64')}`,
+            'Accept': 'application/json'
+          };
 
-            const clinikoUpdate: any = {};
-            if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
-            if (lastName && lastName.trim()) clinikoUpdate.last_name = lastName.trim();
-            if (email && email.trim()) clinikoUpdate.email = email.toLowerCase();
-            if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
+          if (call.fromNumber) {
+            console.log('[VERIFY-DETAILS] Looking up patient by phone:', call.fromNumber);
 
-            console.log('[VERIFY-DETAILS] Attempting Cliniko update with:', clinikoUpdate);
+            // Sanitize phone number
+            const { sanitizePhoneE164AU } = await import('../integrations/cliniko');
+            const phone = sanitizePhoneE164AU(call.fromNumber);
 
-            if (Object.keys(clinikoUpdate).length > 0) {
-              const result = await updateClinikoPatient(patient.id, clinikoUpdate);
-              console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated successfully:', result);
+            if (!phone) {
+              console.log('[VERIFY-DETAILS] Invalid phone format:', call.fromNumber);
             } else {
-              console.log('[VERIFY-DETAILS] No fields to update in Cliniko');
+              // Search for patient by phone
+              let patient = null;
+              try {
+                // Try E.164 format first
+                const url = `${clinikoBaseUrl}/patients?phone_number=${encodeURIComponent(phone)}`;
+                const res = await fetch(url, { headers });
+                if (res.ok) {
+                  const data = await res.json();
+                  const list = Array.isArray(data?.patients) ? data.patients : [];
+                  patient = list[0] || null;
+
+                  // Try local format (0...) as fallback
+                  if (!patient && phone.startsWith('+61')) {
+                    const localFormat = '0' + phone.slice(3);
+                    const localUrl = `${clinikoBaseUrl}/patients?phone_number=${encodeURIComponent(localFormat)}`;
+                    const localRes = await fetch(localUrl, { headers });
+                    if (localRes.ok) {
+                      const localData = await localRes.json();
+                      const localList = Array.isArray(localData?.patients) ? localData.patients : [];
+                      patient = localList[0] || null;
+                    }
+                  }
+                }
+              } catch (searchErr: any) {
+                console.error('[VERIFY-DETAILS] Patient search failed:', searchErr.message);
+              }
+
+              if (patient && patient.id) {
+                console.log('[VERIFY-DETAILS] Found patient in Cliniko:', patient.id, '-', patient.first_name, patient.last_name);
+
+                const clinikoUpdate: any = {};
+                if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
+                if (lastName && lastName.trim()) clinikoUpdate.last_name = lastName.trim();
+                if (email && email.trim()) {
+                  const { sanitizeEmail } = await import('../integrations/cliniko');
+                  const sanitizedEmail = sanitizeEmail(email);
+                  if (sanitizedEmail) clinikoUpdate.email = sanitizedEmail;
+                }
+                if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
+
+                console.log('[VERIFY-DETAILS] Attempting Cliniko update with:', clinikoUpdate);
+
+                if (Object.keys(clinikoUpdate).length > 0) {
+                  const updateUrl = `${clinikoBaseUrl}/patients/${patient.id}`;
+                  const updateRes = await fetch(updateUrl, {
+                    method: 'PATCH',
+                    headers,
+                    body: JSON.stringify(clinikoUpdate)
+                  });
+
+                  if (updateRes.ok) {
+                    const result = await updateRes.json();
+                    console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated successfully:', result.id);
+                  } else {
+                    const errorText = await updateRes.text();
+                    console.error('[VERIFY-DETAILS] ❌ Cliniko update failed:', updateRes.status, errorText);
+                  }
+                } else {
+                  console.log('[VERIFY-DETAILS] No fields to update in Cliniko');
+                }
+              } else {
+                console.log('[VERIFY-DETAILS] ⚠️  Patient not found in Cliniko by phone:', call.fromNumber);
+                console.log('[VERIFY-DETAILS] Patient will be created/updated during next appointment booking');
+              }
             }
-          } else {
-            console.log('[VERIFY-DETAILS] ⚠️  Patient not found in Cliniko by phone:', call.fromNumber);
-            console.log('[VERIFY-DETAILS] Patient will be created/updated during next appointment booking');
           }
         }
       } catch (clinikoErr: any) {
