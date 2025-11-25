@@ -1989,7 +1989,7 @@ export function registerVoice(app: Express) {
           }
 
           // Generic fallback
-          answer = "I don't have that specific information right now, but our reception team can help you with that. Let me note your question and we'll get back to you.";
+          answer = "I don't have that information right now, but I'll flag it with the team and they'll get back to you.";
         }
 
         // Say the answer

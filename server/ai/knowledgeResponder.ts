@@ -236,7 +236,7 @@ export async function respondToQuery(
   // 4. Ultimate fallback
   console.log('[KnowledgeResponder] ❌ No answer found - using ultimate fallback');
   return {
-    answer: "I don't have that specific information, but our reception team can help you with that. Would you like me to book an appointment, or is there something else I can help with?",
+    answer: "I don't have that information right now, but I'll flag it with the team and they'll get back to you. Is there anything else I can help with?",
     source: 'fallback'
   };
 }
@@ -249,8 +249,8 @@ function getKeywordFallback(query: string): string | null {
   console.log('[getKeywordFallback] Checking keywords for:', text);
 
   // Hours
-  if (text.includes('hour') || text.includes('open') || text.includes('close')) {
-    return "We're generally open Monday to Friday, 8am to 6pm, and Saturday mornings. For exact hours, I can transfer you to reception.";
+  if (text.includes('hour') || text.includes('open') || text.includes('close') || text.includes('business hour')) {
+    return "We're open Monday to Friday, 8am to 6pm, and Saturday mornings. Closed Sundays and public holidays.";
   }
 
   // Location
@@ -280,7 +280,7 @@ function getKeywordFallback(query: string): string | null {
   }
 
   // Techniques / what do you do / methods
-  if (text.includes('what techniques') || text.includes('what methods') || text.includes('how do you treat') || text.includes('what do you do')) {
+  if (text.includes('what techniques') || text.includes('what methods') || text.includes('how do you treat') || text.includes('what do you do') || text.includes('what do they do') || text.includes('what does he do') || text.includes('techniques do they use')) {
     return "We use chiropractic adjustments, posture and nerve assessment, and create treatment plans tailored to your needs.";
   }
 
