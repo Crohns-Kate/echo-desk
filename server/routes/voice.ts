@@ -837,7 +837,6 @@ export function registerVoice(app: Express) {
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
       if (route === "anything-else") {
         const sayingNo = isNegative(speechRaw);
-        const wantsBooking = wantsToBook(speechRaw);
 
         if (sayingNo) {
           // They're done - warm, reassuring goodbye
@@ -851,23 +850,24 @@ export function registerVoice(app: Express) {
           saySafe(vr, randomGoodbye);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
-        } else if (wantsBooking) {
-          // They want to manage appointments - send to start
+        }
+
+        // Classify intent to route properly
+        const intentResult = await classifyIntent(speechRaw);
+        console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
+        const intent = intentResult.action;
+
+        // Route based on intent
+        if (intent === "book" || intent === "reschedule" || intent === "cancel") {
+          // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
-        } else {
-          // They have a question - use intent classification to route properly
-          const intentResult = await classifyIntent(speechRaw);
-          console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
-          const intent = intentResult.action;
-
+        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
           // Route to FAQ answering for recognized question types
-          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
-            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
-            return res.type("text/xml").send(vr.toString());
-          }
-
-          // Otherwise capture as general question
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unknown intent - ask them to clarify
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
