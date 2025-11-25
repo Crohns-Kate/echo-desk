@@ -1996,7 +1996,7 @@ export function registerVoice(app: Express) {
         saySafeSSML(vr, answer);
         vr.pause({ length: 1 });
 
-        // Ask if they want to book or have other questions
+        // Ask if they have any other questions (NOT asking about booking since they already booked)
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -2005,7 +2005,7 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafeSSML(g, "Is there anything else I can help you with, or would you like to book an appointment?");
+        saySafeSSML(g, "Is there anything else I can help you with?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -2047,7 +2047,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "Sorry, I didn't catch that. Would you like to book an appointment? Please say yes or no.");
+          saySafe(g, "Sorry, I didn't catch that. Did you have another question?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
