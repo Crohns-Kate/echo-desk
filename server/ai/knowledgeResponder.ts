@@ -280,7 +280,8 @@ function getKeywordFallback(query: string): string | null {
   }
 
   // Techniques / what do you do / methods
-  if (text.includes('what techniques') || text.includes('what methods') || text.includes('how do you treat') || text.includes('what do you do') || text.includes('what do they do') || text.includes('what does he do') || text.includes('techniques do they use')) {
+  if (text.includes('technique') || text.includes('method') || text.includes('how do you treat') || text.includes('what do you do') || text.includes('what do they do') || text.includes('what does he do')) {
+    console.log('[getKeywordFallback] ✅ Matched techniques keywords');
     return "We use chiropractic adjustments, posture and nerve assessment, and create treatment plans tailored to your needs.";
   }
 

@@ -54,7 +54,9 @@ const MEDICAL_ADVICE_KEYWORDS = [
   'symptoms of',
   'do i need surgery',
   'is it cancer',
-  'treatment for'
+  'treatment for cancer',
+  'treatment for heart',
+  'treatment for diabetes'
 ];
 
 // Price negotiation keywords

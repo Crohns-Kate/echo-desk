@@ -143,10 +143,9 @@ function classifyWithKeywords(text: string): IntentResult {
   ) {
     action = 'faq_services';
   } else if (
-    text.includes('what techniques') ||
-    text.includes('what methods') ||
-    text.includes('how do you treat') ||
-    text.includes('what do you do')
+    text.includes('technique') ||
+    text.includes('method') ||
+    text.includes('how do you treat')
   ) {
     action = 'faq_techniques';
   } else if (
