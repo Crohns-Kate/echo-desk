@@ -742,9 +742,11 @@ export function registerApp(app: Express) {
         const { updateClinikoPatient } = await import('../integrations/cliniko');
 
         if (call.fromNumber && updateClinikoPatient) {
+          console.log('[VERIFY-DETAILS] Looking up patient by phone:', call.fromNumber);
           const patient = await findPatientByPhone(call.fromNumber);
+
           if (patient && patient.id) {
-            console.log('[VERIFY-DETAILS] Updating Cliniko patient immediately:', patient.id);
+            console.log('[VERIFY-DETAILS] Found patient in Cliniko:', patient.id, '-', patient.first_name, patient.last_name);
 
             const clinikoUpdate: any = {};
             if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
@@ -752,14 +754,23 @@ export function registerApp(app: Express) {
             if (email && email.trim()) clinikoUpdate.email = email.toLowerCase();
             if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
 
+            console.log('[VERIFY-DETAILS] Attempting Cliniko update with:', clinikoUpdate);
+
             if (Object.keys(clinikoUpdate).length > 0) {
-              await updateClinikoPatient(patient.id, clinikoUpdate);
-              console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated with verified details');
+              const result = await updateClinikoPatient(patient.id, clinikoUpdate);
+              console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated successfully:', result);
+            } else {
+              console.log('[VERIFY-DETAILS] No fields to update in Cliniko');
             }
+          } else {
+            console.log('[VERIFY-DETAILS] ⚠️  Patient not found in Cliniko by phone:', call.fromNumber);
+            console.log('[VERIFY-DETAILS] Patient will be created/updated during next appointment booking');
           }
         }
-      } catch (clinikoErr) {
-        console.warn('[VERIFY-DETAILS] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
+      } catch (clinikoErr: any) {
+        console.error('[VERIFY-DETAILS] ❌ Cliniko update failed:', clinikoErr.message);
+        console.error('[VERIFY-DETAILS] Stack:', clinikoErr.stack);
+        console.warn('[VERIFY-DETAILS] Data saved locally - will sync to Cliniko on next booking');
       }
 
       res.json({ success: true, message: 'Details saved successfully!' });
