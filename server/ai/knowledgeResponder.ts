@@ -256,23 +256,33 @@ function getKeywordFallback(query: string): string | null {
   // Location
   if (text.includes('where') || text.includes('address') || text.includes('location')) {
     console.log('[getKeywordFallback] ✅ Matched location keywords');
-    return "Our address is listed on your confirmation email and our website. There's parking available nearby. Would you like me to book you an appointment?";
+    return "We're on Market Street in Southport, near the tram line. Parking is right out the front.";
   }
 
   // Parking
   if (text.includes('parking') || text.includes('park')) {
-    return "We have parking available. Street parking is also usually available. The exact details will be in your confirmation email.";
+    return "Yes, free parking out the front.";
   }
 
   // First visit
   if (text.includes('first visit') || text.includes('first time') || text.includes('what to expect')) {
-    return "For your first visit, please arrive about 10 minutes early to complete paperwork. The initial consultation takes about 45 minutes and includes a full assessment. Wear comfortable clothing.";
+    return "Just yourself. Arrive five minutes early if you can.";
+  }
+
+  // What to bring
+  if (text.includes('what should i bring') || text.includes('what to bring') || text.includes('do i need to bring')) {
+    return "Just yourself. Arrive five minutes early if you can.";
+  }
+
+  // How often / frequency
+  if (text.includes('how often') || text.includes('how many times') || text.includes('frequency')) {
+    return "That depends on what the doctor finds, and you'll go through that on your first visit.";
   }
 
   // Prices/cost
   if (text.includes('cost') || text.includes('price') || text.includes('how much') || text.includes('fee')) {
     console.log('[getKeywordFallback] ✅ Matched price/cost keywords');
-    return "Our initial consultation is typically around $80 to $120, and follow-up visits are less. We offer HICAPS for instant health fund claims. Would you like to book an appointment?";
+    return "A first visit is $110, and follow-up visits are $70.";
   }
 
   // Insurance
