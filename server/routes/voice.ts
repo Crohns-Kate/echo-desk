@@ -1893,6 +1893,13 @@ export function registerVoice(app: Express) {
         const faqType = (req.query.faqType as string) || "";
         const question = (req.query.question as string) || "";
 
+        console.log(`[ANSWER-FAQ] ========================================`);
+        console.log(`[ANSWER-FAQ] Received FAQ request`);
+        console.log(`[ANSWER-FAQ] faqType: "${faqType}"`);
+        console.log(`[ANSWER-FAQ] question: "${question}"`);
+        console.log(`[ANSWER-FAQ] question length: ${question.length}`);
+        console.log(`[ANSWER-FAQ] ========================================`);
+
         // Get tenant ID from call record
         let tenantId: number | undefined;
         try {
@@ -2019,6 +2026,18 @@ export function registerVoice(app: Express) {
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } else {
+          // Check if they're asking another FAQ question
+          const intentResult = await classifyIntent(speechRaw);
+          console.log("[PROCESS-INFO-RESPONSE] Detected intent:", intentResult);
+          const intent = intentResult.action;
+
+          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "fees") {
+            // Another FAQ question - route to answer-faq
+            console.log("[PROCESS-INFO-RESPONSE] Routing to answer-faq for:", intent);
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
           // Unclear - ask again
           const g = vr.gather({
             input: ["speech"],

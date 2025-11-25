@@ -221,8 +221,10 @@ export async function respondToQuery(
   }
 
   // 3. Keyword-based fallback
-  console.log('[KnowledgeResponder] Trying keyword-based fallback');
+  console.log('[KnowledgeResponder] Trying keyword-based fallback for query:', query);
+  console.log('[KnowledgeResponder] Query lowercased:', query.toLowerCase());
   const fallbackAnswer = getKeywordFallback(query);
+  console.log('[KnowledgeResponder] Keyword fallback result:', fallbackAnswer ? `Found (${fallbackAnswer.substring(0, 50)}...)` : 'null');
   if (fallbackAnswer) {
     console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
     return {
@@ -244,6 +246,7 @@ export async function respondToQuery(
  */
 function getKeywordFallback(query: string): string | null {
   const text = query.toLowerCase();
+  console.log('[getKeywordFallback] Checking keywords for:', text);
 
   // Hours
   if (text.includes('hour') || text.includes('open') || text.includes('close')) {
@@ -252,6 +255,7 @@ function getKeywordFallback(query: string): string | null {
 
   // Location
   if (text.includes('where') || text.includes('address') || text.includes('location')) {
+    console.log('[getKeywordFallback] ✅ Matched location keywords');
     return "Our address is listed on your confirmation email and our website. There's parking available nearby. Would you like me to book you an appointment?";
   }
 
@@ -267,6 +271,7 @@ function getKeywordFallback(query: string): string | null {
 
   // Prices/cost
   if (text.includes('cost') || text.includes('price') || text.includes('how much') || text.includes('fee')) {
+    console.log('[getKeywordFallback] ✅ Matched price/cost keywords');
     return "Our initial consultation is typically around $80 to $120, and follow-up visits are less. We offer HICAPS for instant health fund claims. Would you like to book an appointment?";
   }
 
