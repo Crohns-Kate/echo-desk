@@ -193,8 +193,13 @@ export class CallFlowHandler {
       method: 'POST'
     });
 
-    const clinicName = this.getClinicName();
-    saySafe(g, `Thanks for calling ${clinicName}. Is this your first visit with us?`);
+    // Use tenant-specific greeting if available, otherwise use default
+    if (this.tenantCtx?.greeting) {
+      saySafe(g, this.tenantCtx.greeting);
+    } else {
+      const clinicName = this.getClinicName();
+      saySafe(g, `Thanks for calling ${clinicName}. Is this your first visit with us?`);
+    }
     await this.saveContext();
   }
 
@@ -270,17 +275,15 @@ export class CallFlowHandler {
    */
   async handleReturningPatientLookup(): Promise<void> {
     try {
-      const patients = await findPatientByPhoneRobust(this.ctx.callerPhone);
+      const patient = await findPatientByPhoneRobust(this.ctx.callerPhone, this.tenantCtx);
 
-      if (patients.length === 1) {
+      if (patient) {
         // Found exactly one patient
-        const patient = patients[0];
         this.ctx.patientId = patient.id;
-        this.ctx.patientName = `${patient.firstName} ${patient.lastName}`;
-        this.ctx.patientFirstName = patient.firstName;
-        this.ctx.patientEmail = patient.email;
+        this.ctx.patientName = `${patient.first_name} ${patient.last_name}`;
+        this.ctx.patientFirstName = patient.first_name;
 
-        saySafe(this.vr, `Hi ${patient.firstName}! What brings you in today?`);
+        saySafe(this.vr, `Hi ${patient.first_name}! What brings you in today?`);
 
         this.transitionTo(CallState.CHIEF_COMPLAINT);
         const g = this.vr.gather({
@@ -293,36 +296,8 @@ export class CallFlowHandler {
         });
         g.pause({ length: 1 });
 
-      } else if (patients.length > 1) {
-        // Multiple patients - store options and ask to disambiguate
-        // Store patient options in context for disambiguation step
-        (this.ctx as any).disambiguationPatients = patients.slice(0, 3).map(p => ({
-          id: p.id,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          email: p.email
-        }));
-
-        const names = patients.slice(0, 2).map((p, idx) => `${p.firstName}${idx === 0 ? '' : ''}`).join(' or ');
-        const optionsText = patients.slice(0, 2).map((p, idx) => `Press ${idx + 1} for ${p.firstName}`).join('. ');
-
-        const g = this.vr.gather({
-          input: ['speech', 'dtmf'],
-          timeout: 8,
-          speechTimeout: 'auto',
-          actionOnEmptyResult: true,
-          numDigits: 1,
-          hints: patients.map(p => p.firstName).join(', ') + ', someone new, new patient, different person',
-          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=disambiguate_patient`,
-          method: 'POST'
-        });
-
-        saySafe(g, `I see a few accounts with this number. Is this ${names}, or someone new? ${optionsText}. Or press 3 if you're someone new.`);
-
-        await this.saveContext();
-
       } else {
-        // No patients found - treat as new
+        // No patient found - treat as new
         saySafe(this.vr, "I don't see an account with this number. Let's get you set up as a new patient.");
         this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
         await this.handleNewPatientPhoneConfirm();
@@ -654,18 +629,20 @@ export class CallFlowHandler {
       const { slots } = await getAvailability({
         fromISO: dateRange.from.toISOString(),
         toISO: dateRange.to.toISOString(),
-        timezone: AUST_TZ
+        timezone: this.getTimezone(),
+        tenantCtx: this.tenantCtx
       });
 
       if (slots.length === 0) {
         // No slots found for the requested day - try to find alternatives
         if (this.ctx.preferredDay) {
           // They requested a specific day but we have no slots
-          const fallbackRange = parseNaturalDate(undefined, AUST_TZ); // Get next 2 weeks
+          const fallbackRange = parseNaturalDate(undefined, this.getTimezone()); // Get next 2 weeks
           const { slots: fallbackSlots } = await getAvailability({
             fromISO: fallbackRange.from.toISOString(),
             toISO: fallbackRange.to.toISOString(),
-            timezone: AUST_TZ
+            timezone: this.getTimezone(),
+            tenantCtx: this.tenantCtx
           });
 
           if (fallbackSlots.length > 0) {
@@ -850,15 +827,17 @@ export class CallFlowHandler {
       }
 
       // Create appointment (this also creates patient if needed)
+      const practitionerId = this.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
       const appointment = await createAppointmentForPatient(phoneToUse, {
         startsAt: slot.startISO,
-        practitionerId: env.CLINIKO_PRACTITIONER_ID,
+        practitionerId: practitionerId,
         appointmentTypeId: appointmentTypeId,
         notes: isNewPatient
           ? `New patient appointment booked via voice call at ${new Date().toISOString()}`
           : `Follow-up appointment booked via voice call at ${new Date().toISOString()}`,
         fullName: fullName || undefined,
-        email: this.ctx.formData?.email || this.ctx.patientEmail || undefined
+        email: this.ctx.formData?.email || this.ctx.patientEmail || undefined,
+        tenantCtx: this.tenantCtx
       });
 
       console.log('[handleConfirmBooking] ✅ Appointment created successfully:');
