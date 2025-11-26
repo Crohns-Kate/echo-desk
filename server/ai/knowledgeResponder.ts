@@ -184,7 +184,20 @@ export async function respondToQuery(
     };
   }
 
-  // 2. Try knowledge base file with LLM
+  // 2. Try keyword-based fallback (fast, reliable answers)
+  console.log('[KnowledgeResponder] Trying keyword-based fallback for query:', query);
+  console.log('[KnowledgeResponder] Query lowercased:', query.toLowerCase());
+  const fallbackAnswer = getKeywordFallback(query);
+  console.log('[KnowledgeResponder] Keyword fallback result:', fallbackAnswer ? `Found (${fallbackAnswer.substring(0, 50)}...)` : 'null');
+  if (fallbackAnswer) {
+    console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
+    return {
+      answer: fallbackAnswer,
+      source: 'fallback'
+    };
+  }
+
+  // 3. Try knowledge base file with LLM
   const knowledgeBase = loadKnowledgeBase(clinicId);
   console.log(`[KnowledgeResponder] Knowledge base loaded: ${knowledgeBase ? 'YES' : 'NO'}`);
   console.log(`[KnowledgeResponder] LLM available: ${isLLMAvailable() ? 'YES' : 'NO'}`);
@@ -215,22 +228,9 @@ export async function respondToQuery(
       console.error('[KnowledgeResponder] Error details:', error);
     }
   } else if (knowledgeBase && !isLLMAvailable()) {
-    console.warn('[KnowledgeResponder] Knowledge base exists but LLM not available - falling back to keywords');
+    console.warn('[KnowledgeResponder] Knowledge base exists but LLM not available');
   } else if (!knowledgeBase && isLLMAvailable()) {
     console.warn('[KnowledgeResponder] LLM available but no knowledge base file found');
-  }
-
-  // 3. Keyword-based fallback
-  console.log('[KnowledgeResponder] Trying keyword-based fallback for query:', query);
-  console.log('[KnowledgeResponder] Query lowercased:', query.toLowerCase());
-  const fallbackAnswer = getKeywordFallback(query);
-  console.log('[KnowledgeResponder] Keyword fallback result:', fallbackAnswer ? `Found (${fallbackAnswer.substring(0, 50)}...)` : 'null');
-  if (fallbackAnswer) {
-    console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
-    return {
-      answer: fallbackAnswer,
-      source: 'fallback'
-    };
   }
 
   // 4. Ultimate fallback
@@ -286,7 +286,8 @@ function getKeywordFallback(query: string): string | null {
   }
 
   // Who is the practitioner / doctor
-  if (text.includes('who is the') || text.includes('which doctor') || text.includes('who will i see') || text.includes('practitioner')) {
+  if (text.includes('who is the') || text.includes('which doctor') || text.includes('who will') || text.includes('who am i') || text.includes('who be') || text.includes('practitioner') || text.includes('treating me') || text.includes('seeing')) {
+    console.log('[getKeywordFallback] ✅ Matched practitioner keywords');
     return "You'll be seeing Dr. Michael.";
   }
 

@@ -1,7 +1,7 @@
 import { env } from '../utils/env';
 
 export interface IntentResult {
-  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'unknown';
+  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'faq_techniques' | 'faq_practitioner' | 'unknown';
   day?: string;
   part?: 'morning' | 'afternoon';
   confidence?: number;
@@ -34,7 +34,7 @@ async function classifyWithLLM(text: string): Promise<IntentResult> {
 
   const prompt = `Classify the caller's intent from their utterance. Return ONLY a JSON object with this schema:
 {
-  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "unknown",
+  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "faq_techniques" | "faq_practitioner" | "unknown",
   "day": string (optional - e.g., "monday", "tomorrow", "today"),
   "part": "morning" | "afternoon" (optional),
   "confidence": number (0-1)
@@ -47,6 +47,8 @@ Actions:
 - "faq_hours": Asking about opening hours, when open, when closed, what time
 - "faq_location": Asking about address, location, where you are, directions
 - "faq_services": Asking about services offered, what treatments, what you do
+- "faq_techniques": Asking about techniques, methods, how you treat
+- "faq_practitioner": Asking who the doctor is, who will see them, who will treat them
 - "book": Wants to book an appointment
 - "reschedule": Wants to change an existing appointment
 - "cancel": Wants to cancel an appointment
@@ -151,9 +153,12 @@ function classifyWithKeywords(text: string): IntentResult {
   } else if (
     text.includes('who is the') ||
     text.includes('which doctor') ||
-    text.includes('who will i see') ||
+    text.includes('who will') ||
+    text.includes('who am i') ||
+    text.includes('who be') ||
     text.includes('practitioner') ||
-    text.includes('who am i seeing')
+    text.includes('treating me') ||
+    text.includes('seeing')
   ) {
     action = 'faq_practitioner';
   } else if (
