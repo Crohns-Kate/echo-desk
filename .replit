@@ -4,7 +4,6 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["run"]
 
 [deployment]
 deploymentTarget = "autoscale"
@@ -21,28 +20,7 @@ externalPort = 3000
 
 [env]
 PORT = "5000"
-NODE_ENV = "production"
-
-[workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start application"
-
-[[workflows.workflow]]
-name = "Start application"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "npm run dev"
-waitForPort = 5000
+NODE_ENV = "development"
 
 [agent]
 integrations = ["javascript_database:1.0.0"]

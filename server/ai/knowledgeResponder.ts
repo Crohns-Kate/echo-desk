@@ -32,29 +32,57 @@ interface KnowledgeEntry {
 // Cache for loaded knowledge bases
 const knowledgeCache = new Map<string, string>();
 
+// Cache for FAQ responses (key: tenantId:question, value: answer)
+// Expires after 1 hour to allow for updates
+const responseCache = new Map<string, { answer: string; timestamp: number; source: string }>();
+const CACHE_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Store answer in cache for faster future responses
+ */
+function cacheResponse(cacheKey: string, answer: string, source: string) {
+  responseCache.set(cacheKey, {
+    answer,
+    timestamp: Date.now(),
+    source
+  });
+  console.log(`[KnowledgeResponder] ✅ Cached response for future use`);
+}
+
 /**
  * Load knowledge base file for a clinic
  */
 function loadKnowledgeBase(clinicId: string): string | null {
+  console.log(`[KnowledgeResponder] Loading knowledge base for clinicId: ${clinicId}`);
+
   // Check cache first
   const cached = knowledgeCache.get(clinicId);
-  if (cached) return cached;
+  if (cached) {
+    console.log(`[KnowledgeResponder] Using cached knowledge base (${cached.length} chars)`);
+    return cached;
+  }
 
   // Try to load from file
   const filePath = join(process.cwd(), 'knowledgebase', `${clinicId}.md`);
+  console.log(`[KnowledgeResponder] Checking file: ${filePath}`);
 
   if (!existsSync(filePath)) {
+    console.log(`[KnowledgeResponder] File not found: ${filePath}`);
     // Try default
     const defaultPath = join(process.cwd(), 'knowledgebase', 'default.md');
+    console.log(`[KnowledgeResponder] Trying default: ${defaultPath}`);
     if (existsSync(defaultPath)) {
       const content = readFileSync(defaultPath, 'utf-8');
+      console.log(`[KnowledgeResponder] ✅ Loaded default knowledge base (${content.length} chars)`);
       knowledgeCache.set(clinicId, content);
       return content;
     }
+    console.log(`[KnowledgeResponder] ❌ No knowledge base file found`);
     return null;
   }
 
   const content = readFileSync(filePath, 'utf-8');
+  console.log(`[KnowledgeResponder] ✅ Loaded knowledge base file (${content.length} chars)`);
   knowledgeCache.set(clinicId, content);
   return content;
 }
@@ -96,8 +124,8 @@ ${knowledgeContext}`;
   ];
 
   const response = await complete(messages, {
-    temperature: 0.4,
-    maxTokens: 200
+    temperature: 0.3, // Lower for faster, more consistent responses
+    maxTokens: 150 // Reduced - aiming for 50-70 words
   });
 
   return response.content;
@@ -142,8 +170,33 @@ export async function respondToQuery(
     clinicName?: string;
     category?: KnowledgeCategory;
   } = {}
-): Promise<{ answer: string; source: 'database' | 'file' | 'llm' | 'fallback'; category?: string }> {
-  const { tenantId, clinicId = 'default', clinicName = 'the clinic' } = options;
+): Promise<{ answer: string; source: 'database' | 'file' | 'llm' | 'fallback' | 'cache'; category?: string }> {
+  let { tenantId, clinicId = 'default', clinicName = 'the clinic' } = options;
+
+  // Check response cache first (instant!)
+  const cacheKey = `${tenantId || 'default'}:${query.toLowerCase().trim()}`;
+  const cached = responseCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_EXPIRY_MS) {
+    console.log(`[KnowledgeResponder] ⚡ Cache hit for: "${query}"`);
+    return {
+      answer: cached.answer,
+      source: 'cache'
+    };
+  }
+
+  // If we have tenantId, try to get the clinicId (slug) from the tenant
+  if (tenantId && clinicId === 'default') {
+    try {
+      const tenant = await storage.getTenantById(tenantId);
+      if (tenant) {
+        clinicId = tenant.slug;
+        clinicName = tenant.clinicName || clinicName;
+        console.log(`[KnowledgeResponder] Using tenant: ${clinicId} (${clinicName})`);
+      }
+    } catch (err) {
+      console.error('[KnowledgeResponder] Error loading tenant:', err);
+    }
+  }
 
   // 1. Try database FAQs first (most specific)
   const dbFaq = await searchDatabaseFaqs(query, tenantId);
@@ -151,20 +204,43 @@ export async function respondToQuery(
     console.log(`[KnowledgeResponder] Found database FAQ: ${dbFaq.question}`);
     const answer = formatForVoice(dbFaq.answer);
     const lengthCheck = checkResponseLength(answer);
+    const finalAnswer = lengthCheck.ok ? answer : (lengthCheck.truncated || answer);
+
+    cacheResponse(cacheKey, finalAnswer, 'database');
 
     return {
-      answer: lengthCheck.ok ? answer : (lengthCheck.truncated || answer),
+      answer: finalAnswer,
       source: 'database',
       category: dbFaq.category
     };
   }
 
-  // 2. Try knowledge base file with LLM
+  // 2. Try keyword-based fallback (fast, reliable answers)
+  console.log('[KnowledgeResponder] Trying keyword-based fallback for query:', query);
+  console.log('[KnowledgeResponder] Query lowercased:', query.toLowerCase());
+  const fallbackAnswer = getKeywordFallback(query);
+  console.log('[KnowledgeResponder] Keyword fallback result:', fallbackAnswer ? `Found (${fallbackAnswer.substring(0, 50)}...)` : 'null');
+  if (fallbackAnswer) {
+    console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
+
+    cacheResponse(cacheKey, fallbackAnswer, 'fallback');
+
+    return {
+      answer: fallbackAnswer,
+      source: 'fallback'
+    };
+  }
+
+  // 3. Try knowledge base file with LLM
   const knowledgeBase = loadKnowledgeBase(clinicId);
+  console.log(`[KnowledgeResponder] Knowledge base loaded: ${knowledgeBase ? 'YES' : 'NO'}`);
+  console.log(`[KnowledgeResponder] LLM available: ${isLLMAvailable() ? 'YES' : 'NO'}`);
+
   if (knowledgeBase && isLLMAvailable()) {
     try {
       console.log(`[KnowledgeResponder] Using LLM with knowledge base for: ${query}`);
       let answer = await generateLLMResponse(query, knowledgeBase, clinicName);
+      console.log(`[KnowledgeResponder] LLM generated response (${answer.length} chars)`);
 
       // Validate response
       const validation = validateResponse(answer);
@@ -176,28 +252,28 @@ export async function respondToQuery(
       // Check length
       const lengthCheck = checkResponseLength(answer);
       answer = lengthCheck.ok ? answer : (lengthCheck.truncated || answer);
+      const finalAnswer = formatForVoice(answer);
+
+      cacheResponse(cacheKey, finalAnswer, 'llm');
 
       return {
-        answer: formatForVoice(answer),
+        answer: finalAnswer,
         source: 'llm'
       };
-    } catch (error) {
-      console.error('[KnowledgeResponder] LLM generation failed:', error);
+    } catch (error: any) {
+      console.error('[KnowledgeResponder] LLM generation failed:', error.message);
+      console.error('[KnowledgeResponder] Error details:', error);
     }
-  }
-
-  // 3. Keyword-based fallback
-  const fallbackAnswer = getKeywordFallback(query);
-  if (fallbackAnswer) {
-    return {
-      answer: fallbackAnswer,
-      source: 'fallback'
-    };
+  } else if (knowledgeBase && !isLLMAvailable()) {
+    console.warn('[KnowledgeResponder] Knowledge base exists but LLM not available');
+  } else if (!knowledgeBase && isLLMAvailable()) {
+    console.warn('[KnowledgeResponder] LLM available but no knowledge base file found');
   }
 
   // 4. Ultimate fallback
+  console.log('[KnowledgeResponder] ❌ No answer found - using ultimate fallback');
   return {
-    answer: "I don't have that specific information, but our reception team can help you with that. Would you like me to book an appointment, or is there something else I can help with?",
+    answer: "I don't have that information right now, but I'll flag it with the team and they'll get back to you. Is there anything else I can help with?",
     source: 'fallback'
   };
 }
@@ -207,30 +283,55 @@ export async function respondToQuery(
  */
 function getKeywordFallback(query: string): string | null {
   const text = query.toLowerCase();
+  console.log('[getKeywordFallback] Checking keywords for:', text);
 
   // Hours
-  if (text.includes('hour') || text.includes('open') || text.includes('close')) {
-    return "We're generally open Monday to Friday, 8am to 6pm, and Saturday mornings. For exact hours, I can transfer you to reception.";
+  if (text.includes('hour') || text.includes('open') || text.includes('close') || text.includes('business hour')) {
+    return "We're open Monday to Friday, 8am to 6pm, and Saturday mornings. Closed Sundays and public holidays.";
   }
 
   // Location
   if (text.includes('where') || text.includes('address') || text.includes('location')) {
-    return "Our address is listed on your confirmation email and our website. There's parking available nearby. Would you like me to book you an appointment?";
+    console.log('[getKeywordFallback] ✅ Matched location keywords');
+    return "We're on Market Street in Southport, near the tram line. Parking is right out the front.";
   }
 
   // Parking
   if (text.includes('parking') || text.includes('park')) {
-    return "We have parking available. Street parking is also usually available. The exact details will be in your confirmation email.";
+    return "Yes, free parking out the front.";
   }
 
   // First visit
   if (text.includes('first visit') || text.includes('first time') || text.includes('what to expect')) {
-    return "For your first visit, please arrive about 10 minutes early to complete paperwork. The initial consultation takes about 45 minutes and includes a full assessment. Wear comfortable clothing.";
+    return "Just yourself. Arrive five minutes early if you can.";
+  }
+
+  // What to bring
+  if (text.includes('what should i bring') || text.includes('what to bring') || text.includes('do i need to bring')) {
+    return "Just yourself. Arrive five minutes early if you can.";
+  }
+
+  // How often / frequency
+  if (text.includes('how often') || text.includes('how many times') || text.includes('frequency')) {
+    return "That depends on what the doctor finds, and you'll go through that on your first visit.";
+  }
+
+  // Techniques / what do you do / methods
+  if (text.includes('technique') || text.includes('method') || text.includes('how do you treat') || text.includes('what do you do') || text.includes('what do they do') || text.includes('what does he do')) {
+    console.log('[getKeywordFallback] ✅ Matched techniques keywords');
+    return "We use chiropractic adjustments, posture and nerve assessment, and create treatment plans tailored to your needs.";
+  }
+
+  // Who is the practitioner / doctor
+  if (text.includes('who is the') || text.includes('which doctor') || text.includes('who will') || text.includes('who am i') || text.includes('who be') || text.includes('practitioner') || text.includes('treating me') || text.includes('seeing')) {
+    console.log('[getKeywordFallback] ✅ Matched practitioner keywords');
+    return "You'll be seeing Dr. Michael.";
   }
 
   // Prices/cost
   if (text.includes('cost') || text.includes('price') || text.includes('how much') || text.includes('fee')) {
-    return "Our initial consultation is typically around $80 to $120, and follow-up visits are less. We offer HICAPS for instant health fund claims. Would you like to book an appointment?";
+    console.log('[getKeywordFallback] ✅ Matched price/cost keywords');
+    return "A first visit is $110, and follow-up visits are $70.";
   }
 
   // Insurance

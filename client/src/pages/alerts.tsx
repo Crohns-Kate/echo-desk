@@ -38,34 +38,19 @@ function formatPhoneNumber(phone?: string | null): string {
 }
 
 function AlertRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
-  const [audioError, setAudioError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  if (audioError) {
-    return (
-      <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-lg">
-        Recording not available or requires authentication.
-      </div>
-    );
-  }
-
   return (
-    <div className="relative">
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-muted/50 rounded-lg">
-          <Loader2 className="h-4 w-4 animate-spin" />
-        </div>
-      )}
-      <audio
-        controls
-        className="w-full h-12"
-        src={recordingUrl}
-        onError={() => setAudioError(true)}
-        onLoadedData={() => setIsLoading(false)}
-        onCanPlay={() => setIsLoading(false)}
+    <div className="text-sm bg-muted/50 p-3 rounded-lg flex items-center justify-between">
+      <span className="text-muted-foreground">
+        Recording available (Twilio authenticated access required)
+      </span>
+      <a
+        href={recordingUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:underline text-sm font-medium"
       >
-        Your browser does not support the audio element.
-      </audio>
+        View in Twilio →
+      </a>
     </div>
   );
 }
@@ -115,6 +100,8 @@ export default function Alerts() {
         return "destructive";
       case "caller_question":
         return "secondary";
+      case "unanswered_faq":
+        return "default";
       default:
         return "secondary";
     }
@@ -123,6 +110,8 @@ export default function Alerts() {
   const getAlertIcon = (reason: string) => {
     switch (reason) {
       case "caller_question":
+        return <MessageSquare className="h-4 w-4" />;
+      case "unanswered_faq":
         return <MessageSquare className="h-4 w-4" />;
       case "human_request":
         return <Phone className="h-4 w-4" />;
@@ -143,6 +132,10 @@ export default function Alerts() {
         return payload.question
           ? `Caller asked: "${payload.question}"`
           : "Caller had a question";
+      case "unanswered_faq":
+        return payload.question
+          ? `📚 Unanswered FAQ: "${payload.question}" - Add to knowledge base`
+          : "Question couldn't be answered from knowledge base";
       default:
         return alert.reason || "Alert notification";
     }

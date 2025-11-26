@@ -1,32 +1,42 @@
 import { env } from '../utils/env';
 
 export interface IntentResult {
-  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'unknown';
+  action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'faq_techniques' | 'faq_practitioner' | 'unknown';
   day?: string;
   part?: 'morning' | 'afternoon';
   confidence?: number;
 }
 
 /**
- * Classify caller intent using LLM (OpenAI/Anthropic) with fallback to keyword matching
+ * Classify caller intent using keywords first (fast), then LLM for unclear cases
  */
 export async function classifyIntent(utterance: string): Promise<IntentResult> {
   const text = utterance.toLowerCase().trim();
 
-  // Try LLM classification if API key available
+  // Try keyword matching first (instant, no API call)
+  const keywordResult = classifyWithKeywords(text);
+
+  // If we got a clear match (not 'unknown'), use it immediately
+  if (keywordResult.action !== 'unknown') {
+    console.log(`[Intent] ✅ Fast keyword match: ${keywordResult.action}`);
+    return keywordResult;
+  }
+
+  // Only use LLM for unclear utterances
   if (env.OPENAI_API_KEY) {
+    console.log('[Intent] Unclear utterance, trying LLM classification...');
     try {
       const result = await classifyWithLLM(text);
       if (result.confidence && result.confidence > 0.7) {
         return result;
       }
     } catch (e) {
-      console.warn('[Intent] LLM classification failed, using fallback:', e);
+      console.warn('[Intent] LLM classification failed:', e);
     }
   }
 
-  // Fallback to keyword matching
-  return classifyWithKeywords(text);
+  // Return 'unknown' if nothing worked
+  return keywordResult;
 }
 
 async function classifyWithLLM(text: string): Promise<IntentResult> {
@@ -34,7 +44,7 @@ async function classifyWithLLM(text: string): Promise<IntentResult> {
 
   const prompt = `Classify the caller's intent from their utterance. Return ONLY a JSON object with this schema:
 {
-  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "unknown",
+  "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "faq_techniques" | "faq_practitioner" | "unknown",
   "day": string (optional - e.g., "monday", "tomorrow", "today"),
   "part": "morning" | "afternoon" (optional),
   "confidence": number (0-1)
@@ -47,6 +57,8 @@ Actions:
 - "faq_hours": Asking about opening hours, when open, when closed, what time
 - "faq_location": Asking about address, location, where you are, directions
 - "faq_services": Asking about services offered, what treatments, what you do
+- "faq_techniques": Asking about techniques, methods, how you treat
+- "faq_practitioner": Asking who the doctor is, who will see them, who will treat them
 - "book": Wants to book an appointment
 - "reschedule": Wants to change an existing appointment
 - "cancel": Wants to cancel an appointment
@@ -58,40 +70,55 @@ Utterance: "${text}"
 JSON:`;
 
   const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 100
-    })
-  });
 
-  if (!response.ok) {
-    throw new Error(`OpenAI API error: ${response.status}`);
+  // Add 3-second timeout to prevent hanging
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2, // Lower = faster, more deterministic
+        max_tokens: 80 // Reduced for faster response
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '{}';
+
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in LLM response');
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    return {
+      action: result.action || 'unknown',
+      day: result.day,
+      part: result.part,
+      confidence: result.confidence || 0.8
+    };
+  } catch (error: any) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error('LLM request timeout after 3 seconds');
+    }
+    throw error;
   }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '{}';
-
-  // Extract JSON from response (handle markdown code blocks)
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error('No JSON found in LLM response');
-  }
-
-  const result = JSON.parse(jsonMatch[0]);
-  return {
-    action: result.action || 'unknown',
-    day: result.day,
-    part: result.part,
-    confidence: result.confidence || 0.8
-  };
 }
 
 function classifyWithKeywords(text: string): IntentResult {
@@ -137,13 +164,28 @@ function classifyWithKeywords(text: string): IntentResult {
     action = 'faq_location';
   } else if (
     text.includes('what services') ||
-    text.includes('what do you do') ||
     text.includes('what treatments') ||
     text.includes('what do you offer') ||
-    text.includes('services offered') ||
-    text.includes('do you do')
+    text.includes('services offered')
   ) {
     action = 'faq_services';
+  } else if (
+    text.includes('technique') ||
+    text.includes('method') ||
+    text.includes('how do you treat')
+  ) {
+    action = 'faq_techniques';
+  } else if (
+    text.includes('who is the') ||
+    text.includes('which doctor') ||
+    text.includes('who will') ||
+    text.includes('who am i') ||
+    text.includes('who be') ||
+    text.includes('practitioner') ||
+    text.includes('treating me') ||
+    text.includes('seeing')
+  ) {
+    action = 'faq_practitioner';
   } else if (
     text.includes('what happens') ||
     text.includes('what do i get') ||

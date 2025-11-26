@@ -50,6 +50,28 @@ function extractFirstName(fullName: string): string {
 }
 
 /**
+ * Helper function to get tenant from call record
+ * Uses call's tenantId if available, falls back to default
+ */
+async function getTenantForCall(callSid: string): Promise<{ id: number; slug: string; clinicName: string } | null> {
+  try {
+    const call = await storage.getCallByCallSid(callSid);
+    if (call?.tenantId) {
+      const tenant = await storage.getTenantById(call.tenantId);
+      if (tenant) {
+        return { id: tenant.id, slug: tenant.slug, clinicName: tenant.clinicName };
+      }
+    }
+    // Fallback to default
+    const defaultTenant = await storage.getTenant("default");
+    return defaultTenant ? { id: defaultTenant.id, slug: defaultTenant.slug, clinicName: defaultTenant.clinicName } : null;
+  } catch (err) {
+    console.error("[getTenantForCall] Error:", err);
+    return null;
+  }
+}
+
+/**
  * Helper function to parse day of week from speech
  */
 function parseDayOfWeek(speechRaw: string): string | undefined {
@@ -619,7 +641,7 @@ export function registerVoice(app: Express) {
 
             // Create alert for failed recording
             try {
-              const tenant = await storage.getTenant("default");
+              const tenant = await getTenantForCall(callSid);
               if (tenant) {
                 await storage.createAlert({
                   tenantId: tenant.id,
@@ -645,7 +667,7 @@ export function registerVoice(app: Express) {
 
           // Create alert for failed recording
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               await storage.createAlert({
                 tenantId: tenant.id,
@@ -814,10 +836,7 @@ export function registerVoice(app: Express) {
 
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
       if (route === "anything-else") {
-        const sayingNo = speechRaw.includes("no") || speechRaw.includes("nope") || speechRaw.includes("nah") ||
-                         speechRaw.includes("that's all") || speechRaw.includes("that's it") || speechRaw.includes("i'm good");
-
-        const wantsToBook = speechRaw.includes("book") || speechRaw.includes("reschedule") || speechRaw.includes("cancel");
+        const sayingNo = isNegative(speechRaw);
 
         if (sayingNo) {
           // They're done - warm, reassuring goodbye
@@ -831,12 +850,24 @@ export function registerVoice(app: Express) {
           saySafe(vr, randomGoodbye);
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
-        } else if (wantsToBook) {
-          // They want to manage appointments - send to start
+        }
+
+        // Classify intent to route properly
+        const intentResult = await classifyIntent(speechRaw);
+        console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
+        const intent = intentResult.action;
+
+        // Route based on intent
+        if (intent === "book" || intent === "reschedule" || intent === "cancel") {
+          // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
+        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
+          // Route to FAQ answering for recognized question types
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+          return res.type("text/xml").send(vr.toString());
         } else {
-          // They have a question or said "yes" - gather the question and create an alert
+          // Unknown intent - ask them to clarify
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -862,10 +893,22 @@ export function registerVoice(app: Express) {
       if (route === "capture-question") {
         const question = speechRaw || "";
 
-        // Create an alert for the reception team
+        // First, try to classify intent and answer from knowledge base
+        const intentResult = await classifyIntent(question);
+        console.log("[CAPTURE-QUESTION] Detected intent:", intentResult);
+        const intent = intentResult.action;
+
+        // If it's a FAQ question, route to answer-faq instead of creating alert
+        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
+          console.log("[CAPTURE-QUESTION] Routing to answer-faq for:", intent);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(question)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // Not a FAQ - create an alert for the reception team
         try {
           const call = await storage.getCallByCallSid(callSid);
-          const tenant = await storage.getTenant("default");
+          const tenant = await getTenantForCall(callSid);
 
           if (tenant && call) {
             await storage.createAlert({
@@ -1850,57 +1893,110 @@ export function registerVoice(app: Express) {
         const faqType = (req.query.faqType as string) || "";
         const question = (req.query.question as string) || "";
 
-        // Load knowledge from database
-        const { loadClinicKnowledge } = await import("../services/knowledge");
-        const knowledge = await loadClinicKnowledge();
+        console.log(`[ANSWER-FAQ] ========================================`);
+        console.log(`[ANSWER-FAQ] Received FAQ request`);
+        console.log(`[ANSWER-FAQ] faqType: "${faqType}"`);
+        console.log(`[ANSWER-FAQ] question: "${question}"`);
+        console.log(`[ANSWER-FAQ] question length: ${question.length}`);
+        console.log(`[ANSWER-FAQ] ========================================`);
+
+        // Get tenant ID from call record
+        let tenantId: number | undefined;
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.tenantId) {
+            tenantId = call.tenantId;
+          }
+        } catch (err) {
+          console.error("[ANSWER-FAQ] Error getting tenant from call:", err);
+        }
 
         let answer = "";
-        let fallbackUsed = false;
+        let answeredSuccessfully = false;
 
-        // Try to get answer from knowledge base
-        if (knowledge) {
-          if (faqType === "faq_parking" && knowledge.parkingText) {
-            answer = knowledge.parkingText;
-          } else if (faqType === "faq_hours") {
-            if (knowledge.businessHours && Object.keys(knowledge.businessHours).length > 0) {
-              // Try to format business hours nicely
-              const hours = knowledge.businessHours;
-              if (typeof hours === 'string') {
-                answer = hours;
-              } else {
-                answer = "We're open during regular business hours. For specific times, I can transfer you to reception.";
-              }
-            }
-          } else if (faqType === "faq_location" && knowledge.address) {
-            answer = `Our address is ${knowledge.address}.`;
-          } else if (faqType === "faq_services" && knowledge.servicesText) {
-            answer = knowledge.servicesText;
-          }
-        }
+        // Try to get answer using AI knowledge responder (reads markdown files)
+        try {
+          console.log(`[ANSWER-FAQ] Looking up answer for: "${question}" (tenantId: ${tenantId})`);
+          const { respondToQuery } = await import("../ai/knowledgeResponder");
+          const result = await respondToQuery(question, { tenantId });
 
-        // Fallback answers if not configured
-        if (!answer) {
-          fallbackUsed = true;
-          if (faqType === "faq_parking") {
-            answer = "We have parking available for patients. The details will be in your confirmation email when you book.";
-          } else if (faqType === "faq_hours") {
-            answer = "We're generally open Monday to Friday during business hours. For specific times, I can transfer you to reception.";
-          } else if (faqType === "faq_location") {
-            answer = "Our address will be in your confirmation email when you book. There's parking available nearby.";
-          } else if (faqType === "faq_services") {
-            answer = "We offer chiropractic adjustments, soft tissue therapy, and rehabilitation exercises. For more details, I can transfer you to reception.";
+          console.log(`[ANSWER-FAQ] Response source: ${result.source}, answer length: ${result.answer.length}`);
+
+          if (result && result.answer && !result.answer.includes("I don't have that specific information")) {
+            answer = result.answer;
+            answeredSuccessfully = true;
+            console.log(`[ANSWER-FAQ] ✅ AI answered from ${result.source}: "${question}"`);
+            console.log(`[ANSWER-FAQ] Answer: "${answer.substring(0, 100)}..."`);
           } else {
-            answer = "I don't have that specific information, but our reception team can help you with that.";
+            console.log(`[ANSWER-FAQ] ❌ AI couldn't answer: "${question}" (got fallback response)`);
+          }
+        } catch (err: any) {
+          console.error("[ANSWER-FAQ] Error using AI responder:", err.message);
+          console.error("[ANSWER-FAQ] Stack:", err.stack);
+        }
+
+        // Fallback to database fields if AI didn't answer
+        if (!answeredSuccessfully) {
+          const { loadClinicKnowledge } = await import("../services/knowledge");
+          const knowledge = await loadClinicKnowledge(tenantId);
+
+          if (knowledge) {
+            if (faqType === "faq_parking" && knowledge.parkingText) {
+              answer = knowledge.parkingText;
+              answeredSuccessfully = true;
+            } else if (faqType === "faq_hours") {
+              if (knowledge.businessHours && Object.keys(knowledge.businessHours).length > 0) {
+                const hours = knowledge.businessHours;
+                if (typeof hours === 'string') {
+                  answer = hours;
+                  answeredSuccessfully = true;
+                }
+              }
+            } else if (faqType === "faq_location" && knowledge.address) {
+              answer = `Our address is ${knowledge.address}.`;
+              answeredSuccessfully = true;
+            } else if (faqType === "faq_services" && knowledge.servicesText) {
+              answer = knowledge.servicesText;
+              answeredSuccessfully = true;
+            }
           }
         }
 
-        console.log(`[ANSWER-FAQ] Type: ${faqType}, Answer from: ${fallbackUsed ? 'fallback' : 'database'}`);
+        // Create alert for unanswered questions so team can add to knowledge base
+        if (!answeredSuccessfully) {
+          console.log(`[ANSWER-FAQ] ⚠️  Creating alert for unanswered question: "${question}"`);
+          try {
+            const tenant = await getTenantForCall(callSid);
+            const call = await storage.getCallByCallSid(callSid);
+            if (tenant && call) {
+              await storage.createAlert({
+                tenantId: tenant.id,
+                conversationId: call.conversationId || undefined,
+                reason: "unanswered_faq",
+                payload: {
+                  question: question,
+                  faqType: faqType,
+                  fromNumber: from,
+                  callSid: callSid,
+                  timestamp: new Date().toISOString()
+                },
+                status: "open"
+              });
+              console.log("[ANSWER-FAQ] Alert created for unanswered FAQ");
+            }
+          } catch (alertErr) {
+            console.error("[ANSWER-FAQ] Failed to create alert:", alertErr);
+          }
+
+          // Generic fallback
+          answer = "I don't have that information right now, but I'll flag it with the team and they'll get back to you.";
+        }
 
         // Say the answer
         saySafeSSML(vr, answer);
         vr.pause({ length: 1 });
 
-        // Ask if they want to book or have other questions
+        // Ask if they have any other questions (NOT asking about booking since they already booked)
         const g = vr.gather({
           input: ["speech"],
           timeout: 5,
@@ -1909,7 +2005,7 @@ export function registerVoice(app: Express) {
           action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
           method: "POST",
         });
-        saySafeSSML(g, "Is there anything else I can help you with, or would you like to book an appointment?");
+        saySafeSSML(g, "Is there anything else I can help you with?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
@@ -1930,6 +2026,18 @@ export function registerVoice(app: Express) {
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } else {
+          // Check if they're asking another FAQ question
+          const intentResult = await classifyIntent(speechRaw);
+          console.log("[PROCESS-INFO-RESPONSE] Detected intent:", intentResult);
+          const intent = intentResult.action;
+
+          if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
+            // Another FAQ question - route to answer-faq
+            console.log("[PROCESS-INFO-RESPONSE] Routing to answer-faq for:", intent);
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
           // Unclear - ask again
           const g = vr.gather({
             input: ["speech"],
@@ -1939,7 +2047,7 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=process-info-response&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
           });
-          saySafe(g, "Sorry, I didn't catch that. Would you like to book an appointment? Please say yes or no.");
+          saySafe(g, "Sorry, I didn't catch that. Did you have another question?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
@@ -2179,7 +2287,7 @@ export function registerVoice(app: Express) {
 
           // Send SMS link immediately using caller's phone number
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             const clinicName = tenant?.clinicName || "the clinic";
 
             await sendEmailCollectionLink({
@@ -2974,7 +3082,7 @@ export function registerVoice(app: Express) {
         const question = speechRaw || "";
 
         try {
-          const tenant = await storage.getTenant("default");
+          const tenant = await getTenantForCall(callSid);
           if (tenant) {
             const alert = await storage.createAlert({
               tenantId: tenant.id,
@@ -3489,7 +3597,7 @@ export function registerVoice(app: Express) {
             isNewPatient
           });
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -3511,7 +3619,7 @@ export function registerVoice(app: Express) {
           // Get clinic phone number for fallback
           let clinicPhone = "";
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant?.clinicName) {
               // If we have a clinic phone, we could get it here
               // For now, we'll ask them to call back
@@ -3529,7 +3637,7 @@ export function registerVoice(app: Express) {
         if (available.length === 0) {
           console.log("[GET-AVAILABILITY] No slots found - creating alert");
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -3931,7 +4039,7 @@ export function registerVoice(app: Express) {
           console.error("[BOOK-CHOOSE] Patient will be created in Cliniko with default name. Phone:", from);
           // Create an alert for the reception team
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             const call = await storage.getCallByCallSid(callSid);
             if (tenant && call) {
               await storage.createAlert({
@@ -3974,7 +4082,7 @@ export function registerVoice(app: Express) {
 
             const spokenTime = labelForSpeech(chosen, AUST_TZ);
             try {
-              const tenant = await storage.getTenant("default");
+              const tenant = await getTenantForCall(callSid);
               if (tenant) {
                 await sendAppointmentConfirmation({
                   to: from,
@@ -4135,7 +4243,7 @@ export function registerVoice(app: Express) {
 
           const spokenTime = labelForSpeech(chosen, AUST_TZ);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               await sendAppointmentConfirmation({
                 to: from,
@@ -4221,7 +4329,7 @@ export function registerVoice(app: Express) {
         } catch (e: any) {
           console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -4339,7 +4447,7 @@ export function registerVoice(app: Express) {
         } catch (e: any) {
           console.error("[GET-AVAILABILITY-SPECIFIC-DAY][getAvailability ERROR]", e);
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
@@ -4366,7 +4474,7 @@ export function registerVoice(app: Express) {
         const available = slots.slice(0, 2);
         if (available.length === 0) {
           try {
-            const tenant = await storage.getTenant("default");
+            const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,

@@ -14,6 +14,86 @@ export function registerApp(app: Express) {
     res.json(BUILD);
   });
 
+  // Comprehensive system health check for admin
+  app.get('/api/admin/system-health', async (req: Request, res: Response) => {
+    const healthChecks: Record<string, { status: 'ok' | 'warning' | 'error'; message?: string; latency?: number }> = {};
+    const startTime = Date.now();
+
+    // 1. Database connectivity
+    try {
+      const dbStart = Date.now();
+      const tenant = await storage.getTenant('default');
+      healthChecks.database = {
+        status: tenant ? 'ok' : 'warning',
+        message: tenant ? 'Connected' : 'Default tenant not found',
+        latency: Date.now() - dbStart
+      };
+    } catch (err: any) {
+      healthChecks.database = { status: 'error', message: err.message };
+    }
+
+    // 2. Environment configuration
+    const requiredEnvVars = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER', 'DATABASE_URL'];
+    const optionalEnvVars = ['CLINIKO_API_KEY', 'ASSEMBLYAI_API_KEY', 'STRIPE_SECRET_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
+
+    const missingRequired = requiredEnvVars.filter(v => !process.env[v]);
+    const missingOptional = optionalEnvVars.filter(v => !process.env[v]);
+
+    healthChecks.environment = {
+      status: missingRequired.length === 0 ? 'ok' : 'error',
+      message: missingRequired.length === 0
+        ? `All required vars set, ${missingOptional.length} optional missing`
+        : `Missing: ${missingRequired.join(', ')}`
+    };
+
+    // 3. External services availability check
+    const services = {
+      twilio: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN,
+      cliniko: !!process.env.CLINIKO_API_KEY,
+      transcription: !!process.env.ASSEMBLYAI_API_KEY,
+      stripe: !!process.env.STRIPE_SECRET_KEY,
+      llm: !!process.env.OPENAI_API_KEY || !!process.env.ANTHROPIC_API_KEY
+    };
+
+    healthChecks.services = {
+      status: services.twilio ? 'ok' : 'error',
+      message: `Twilio: ${services.twilio ? '✓' : '✗'}, Cliniko: ${services.cliniko ? '✓' : '✗'}, Transcription: ${services.transcription ? '✓' : '✗'}, LLM: ${services.llm ? '✓' : '✗'}, Stripe: ${services.stripe ? '✓' : '✗'}`
+    };
+
+    // 4. Memory usage
+    const memUsage = process.memoryUsage();
+    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    const memPercent = Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100);
+    healthChecks.memory = {
+      status: memPercent > 90 ? 'warning' : 'ok',
+      message: `${memMB}MB used (${memPercent}% of heap)`
+    };
+
+    // 5. Recent activity stats
+    try {
+      const stats = await storage.getStats();
+      healthChecks.activity = {
+        status: 'ok',
+        message: `${stats.todayCalls || 0} calls today, ${stats.pendingAlerts || 0} pending alerts`
+      };
+    } catch (err: any) {
+      healthChecks.activity = { status: 'warning', message: 'Could not fetch stats' };
+    }
+
+    // Overall status
+    const statuses = Object.values(healthChecks).map(c => c.status);
+    const overallStatus = statuses.includes('error') ? 'error' : statuses.includes('warning') ? 'warning' : 'ok';
+
+    res.json({
+      status: overallStatus,
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      checkDuration: Date.now() - startTime,
+      checks: healthChecks,
+      version: BUILD
+    });
+  });
+
   // Debug endpoint to check environment configuration
   app.get('/api/debug/config', (req: Request, res: Response) => {
     const dotEnvValue = 'https://echo-desk-mbjltd70.replit.app'; // What .env file says
@@ -658,28 +738,109 @@ export function registerApp(app: Express) {
 
       // Try to update Cliniko immediately if patient exists
       try {
-        const { findPatientByPhone } = await import('../services/cliniko');
-        const { updateClinikoPatient } = await import('../integrations/cliniko');
+        // Get tenant to access tenant-specific Cliniko credentials
+        const tenant = await storage.getTenantById(call.tenantId);
+        if (!tenant) {
+          console.log('[VERIFY-DETAILS] No tenant found, skipping Cliniko update');
+        } else if (!tenant.clinikoApiKeyEncrypted) {
+          console.log('[VERIFY-DETAILS] Tenant has no Cliniko API key configured, skipping update');
+        } else {
+          // Decrypt tenant's Cliniko credentials
+          const { decrypt } = await import('../services/tenantResolver');
+          const clinikoApiKey = decrypt(tenant.clinikoApiKeyEncrypted);
+          const clinikoShard = tenant.clinikoShard || 'au1';
+          const clinikoBaseUrl = `https://api.${clinikoShard}.cliniko.com/v1`;
 
-        if (call.fromNumber && updateClinikoPatient) {
-          const patient = await findPatientByPhone(call.fromNumber);
-          if (patient && patient.id) {
-            console.log('[VERIFY-DETAILS] Updating Cliniko patient immediately:', patient.id);
+          console.log('[VERIFY-DETAILS] Using tenant-specific Cliniko credentials for:', tenant.slug);
 
-            const clinikoUpdate: any = {};
-            if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
-            if (lastName && lastName.trim()) clinikoUpdate.last_name = lastName.trim();
-            if (email && email.trim()) clinikoUpdate.email = email.toLowerCase();
-            if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
+          // Create tenant-specific headers
+          const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${Buffer.from(clinikoApiKey + ':').toString('base64')}`,
+            'Accept': 'application/json'
+          };
 
-            if (Object.keys(clinikoUpdate).length > 0) {
-              await updateClinikoPatient(patient.id, clinikoUpdate);
-              console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated with verified details');
+          if (call.fromNumber) {
+            console.log('[VERIFY-DETAILS] Looking up patient by phone:', call.fromNumber);
+
+            // Sanitize phone number
+            const { sanitizePhoneE164AU } = await import('../integrations/cliniko');
+            const phone = sanitizePhoneE164AU(call.fromNumber);
+
+            if (!phone) {
+              console.log('[VERIFY-DETAILS] Invalid phone format:', call.fromNumber);
+            } else {
+              // Search for patient by phone
+              let patient = null;
+              try {
+                // Try E.164 format first
+                const url = `${clinikoBaseUrl}/patients?phone_number=${encodeURIComponent(phone)}`;
+                const res = await fetch(url, { headers });
+                if (res.ok) {
+                  const data = await res.json();
+                  const list = Array.isArray(data?.patients) ? data.patients : [];
+                  patient = list[0] || null;
+
+                  // Try local format (0...) as fallback
+                  if (!patient && phone.startsWith('+61')) {
+                    const localFormat = '0' + phone.slice(3);
+                    const localUrl = `${clinikoBaseUrl}/patients?phone_number=${encodeURIComponent(localFormat)}`;
+                    const localRes = await fetch(localUrl, { headers });
+                    if (localRes.ok) {
+                      const localData = await localRes.json();
+                      const localList = Array.isArray(localData?.patients) ? localData.patients : [];
+                      patient = localList[0] || null;
+                    }
+                  }
+                }
+              } catch (searchErr: any) {
+                console.error('[VERIFY-DETAILS] Patient search failed:', searchErr.message);
+              }
+
+              if (patient && patient.id) {
+                console.log('[VERIFY-DETAILS] Found patient in Cliniko:', patient.id, '-', patient.first_name, patient.last_name);
+
+                const clinikoUpdate: any = {};
+                if (firstName && firstName.trim()) clinikoUpdate.first_name = firstName.trim();
+                if (lastName && lastName.trim()) clinikoUpdate.last_name = lastName.trim();
+                if (email && email.trim()) {
+                  const { sanitizeEmail } = await import('../integrations/cliniko');
+                  const sanitizedEmail = sanitizeEmail(email);
+                  if (sanitizedEmail) clinikoUpdate.email = sanitizedEmail;
+                }
+                if (dateOfBirth && dateOfBirth.trim()) clinikoUpdate.date_of_birth = dateOfBirth.trim();
+
+                console.log('[VERIFY-DETAILS] Attempting Cliniko update with:', clinikoUpdate);
+
+                if (Object.keys(clinikoUpdate).length > 0) {
+                  const updateUrl = `${clinikoBaseUrl}/patients/${patient.id}`;
+                  const updateRes = await fetch(updateUrl, {
+                    method: 'PATCH',
+                    headers,
+                    body: JSON.stringify(clinikoUpdate)
+                  });
+
+                  if (updateRes.ok) {
+                    const result = await updateRes.json();
+                    console.log('[VERIFY-DETAILS] ✅ Cliniko patient updated successfully:', result.id);
+                  } else {
+                    const errorText = await updateRes.text();
+                    console.error('[VERIFY-DETAILS] ❌ Cliniko update failed:', updateRes.status, errorText);
+                  }
+                } else {
+                  console.log('[VERIFY-DETAILS] No fields to update in Cliniko');
+                }
+              } else {
+                console.log('[VERIFY-DETAILS] ⚠️  Patient not found in Cliniko by phone:', call.fromNumber);
+                console.log('[VERIFY-DETAILS] Patient will be created/updated during next appointment booking');
+              }
             }
           }
         }
-      } catch (clinikoErr) {
-        console.warn('[VERIFY-DETAILS] Could not update Cliniko immediately (will sync on booking):', clinikoErr);
+      } catch (clinikoErr: any) {
+        console.error('[VERIFY-DETAILS] ❌ Cliniko update failed:', clinikoErr.message);
+        console.error('[VERIFY-DETAILS] Stack:', clinikoErr.stack);
+        console.warn('[VERIFY-DETAILS] Data saved locally - will sync to Cliniko on next booking');
       }
 
       res.json({ success: true, message: 'Details saved successfully!' });
