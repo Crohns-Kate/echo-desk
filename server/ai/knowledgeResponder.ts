@@ -32,6 +32,23 @@ interface KnowledgeEntry {
 // Cache for loaded knowledge bases
 const knowledgeCache = new Map<string, string>();
 
+// Cache for FAQ responses (key: tenantId:question, value: answer)
+// Expires after 1 hour to allow for updates
+const responseCache = new Map<string, { answer: string; timestamp: number; source: string }>();
+const CACHE_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Store answer in cache for faster future responses
+ */
+function cacheResponse(cacheKey: string, answer: string, source: string) {
+  responseCache.set(cacheKey, {
+    answer,
+    timestamp: Date.now(),
+    source
+  });
+  console.log(`[KnowledgeResponder] ✅ Cached response for future use`);
+}
+
 /**
  * Load knowledge base file for a clinic
  */
@@ -107,8 +124,8 @@ ${knowledgeContext}`;
   ];
 
   const response = await complete(messages, {
-    temperature: 0.4,
-    maxTokens: 200
+    temperature: 0.3, // Lower for faster, more consistent responses
+    maxTokens: 150 // Reduced - aiming for 50-70 words
   });
 
   return response.content;
@@ -153,8 +170,19 @@ export async function respondToQuery(
     clinicName?: string;
     category?: KnowledgeCategory;
   } = {}
-): Promise<{ answer: string; source: 'database' | 'file' | 'llm' | 'fallback'; category?: string }> {
+): Promise<{ answer: string; source: 'database' | 'file' | 'llm' | 'fallback' | 'cache'; category?: string }> {
   let { tenantId, clinicId = 'default', clinicName = 'the clinic' } = options;
+
+  // Check response cache first (instant!)
+  const cacheKey = `${tenantId || 'default'}:${query.toLowerCase().trim()}`;
+  const cached = responseCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_EXPIRY_MS) {
+    console.log(`[KnowledgeResponder] ⚡ Cache hit for: "${query}"`);
+    return {
+      answer: cached.answer,
+      source: 'cache'
+    };
+  }
 
   // If we have tenantId, try to get the clinicId (slug) from the tenant
   if (tenantId && clinicId === 'default') {
@@ -176,9 +204,12 @@ export async function respondToQuery(
     console.log(`[KnowledgeResponder] Found database FAQ: ${dbFaq.question}`);
     const answer = formatForVoice(dbFaq.answer);
     const lengthCheck = checkResponseLength(answer);
+    const finalAnswer = lengthCheck.ok ? answer : (lengthCheck.truncated || answer);
+
+    cacheResponse(cacheKey, finalAnswer, 'database');
 
     return {
-      answer: lengthCheck.ok ? answer : (lengthCheck.truncated || answer),
+      answer: finalAnswer,
       source: 'database',
       category: dbFaq.category
     };
@@ -191,6 +222,9 @@ export async function respondToQuery(
   console.log('[KnowledgeResponder] Keyword fallback result:', fallbackAnswer ? `Found (${fallbackAnswer.substring(0, 50)}...)` : 'null');
   if (fallbackAnswer) {
     console.log('[KnowledgeResponder] ✅ Found keyword fallback answer');
+
+    cacheResponse(cacheKey, fallbackAnswer, 'fallback');
+
     return {
       answer: fallbackAnswer,
       source: 'fallback'
@@ -218,9 +252,12 @@ export async function respondToQuery(
       // Check length
       const lengthCheck = checkResponseLength(answer);
       answer = lengthCheck.ok ? answer : (lengthCheck.truncated || answer);
+      const finalAnswer = formatForVoice(answer);
+
+      cacheResponse(cacheKey, finalAnswer, 'llm');
 
       return {
-        answer: formatForVoice(answer),
+        answer: finalAnswer,
         source: 'llm'
       };
     } catch (error: any) {

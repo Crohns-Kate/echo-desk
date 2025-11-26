@@ -8,25 +8,35 @@ export interface IntentResult {
 }
 
 /**
- * Classify caller intent using LLM (OpenAI/Anthropic) with fallback to keyword matching
+ * Classify caller intent using keywords first (fast), then LLM for unclear cases
  */
 export async function classifyIntent(utterance: string): Promise<IntentResult> {
   const text = utterance.toLowerCase().trim();
 
-  // Try LLM classification if API key available
+  // Try keyword matching first (instant, no API call)
+  const keywordResult = classifyWithKeywords(text);
+
+  // If we got a clear match (not 'unknown'), use it immediately
+  if (keywordResult.action !== 'unknown') {
+    console.log(`[Intent] ✅ Fast keyword match: ${keywordResult.action}`);
+    return keywordResult;
+  }
+
+  // Only use LLM for unclear utterances
   if (env.OPENAI_API_KEY) {
+    console.log('[Intent] Unclear utterance, trying LLM classification...');
     try {
       const result = await classifyWithLLM(text);
       if (result.confidence && result.confidence > 0.7) {
         return result;
       }
     } catch (e) {
-      console.warn('[Intent] LLM classification failed, using fallback:', e);
+      console.warn('[Intent] LLM classification failed:', e);
     }
   }
 
-  // Fallback to keyword matching
-  return classifyWithKeywords(text);
+  // Return 'unknown' if nothing worked
+  return keywordResult;
 }
 
 async function classifyWithLLM(text: string): Promise<IntentResult> {
@@ -60,40 +70,55 @@ Utterance: "${text}"
 JSON:`;
 
   const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 100
-    })
-  });
 
-  if (!response.ok) {
-    throw new Error(`OpenAI API error: ${response.status}`);
+  // Add 3-second timeout to prevent hanging
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2, // Lower = faster, more deterministic
+        max_tokens: 80 // Reduced for faster response
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '{}';
+
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in LLM response');
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    return {
+      action: result.action || 'unknown',
+      day: result.day,
+      part: result.part,
+      confidence: result.confidence || 0.8
+    };
+  } catch (error: any) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error('LLM request timeout after 3 seconds');
+    }
+    throw error;
   }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '{}';
-
-  // Extract JSON from response (handle markdown code blocks)
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error('No JSON found in LLM response');
-  }
-
-  const result = JSON.parse(jsonMatch[0]);
-  return {
-    action: result.action || 'unknown',
-    day: result.day,
-    part: result.part,
-    confidence: result.confidence || 0.8
-  };
 }
 
 function classifyWithKeywords(text: string): IntentResult {
