@@ -5,41 +5,20 @@
  * These handle variations in how people say yes/no/confirmation.
  */
 
-/**
- * Normalize speech text for matching
- * - Removes trailing/leading punctuation
- * - Handles common transcription artifacts like "Okay." or "OK!"
- * - Preserves internal punctuation for phrases like "o.k."
- */
-function normalizeSpeech(speech: string): string {
-  if (!speech) return '';
-
-  // Lowercase and trim
-  let text = speech.toLowerCase().trim();
-
-  // Remove leading/trailing punctuation but preserve internal (for o.k.)
-  text = text.replace(/^[.,!?;:'"]+/, '').replace(/[.,!?;:'"]+$/, '');
-
-  // Handle common transcription variations
-  // "o. k." -> "ok", "o.k" -> "ok"
-  text = text.replace(/o\.\s*k\.?/g, 'ok');
-
-  return text.trim();
-}
-
 // Affirmative words and phrases
 const AFFIRMATIVE_WORDS = [
   'yes', 'yeah', 'yep', 'yup', 'yea',
-  'ok', 'okay', 'o.k.', 'okey',
+  'ok', 'okay', 'o.k.',
   'sure', 'alright', 'all right',
   'correct', 'right', 'that\'s right', 'thats right',
   'absolutely', 'definitely', 'certainly',
-  'perfect', 'sounds good', 'that works', 'that\'s fine', 'thats fine',
+  'perfect', 'sounds good', 'that works',
   'uh huh', 'uh-huh', 'mm hmm', 'mhm',
   'affirmative', 'confirmed',
   'that\'s me', 'thats me', 'it is', 'i am',
-  'please', 'go ahead', 'let\'s do it', 'lets do it',
-  'fine', 'great', 'good', 'cool', 'awesome'
+  'please', 'go ahead', 'proceed', 'proceed ahead',
+  'true', 'for sure', 'totally', 'okay then', 'ok then',
+  'done', 'let\'s do it', 'lets do it'
 ];
 
 // Negative words and phrases
@@ -54,17 +33,12 @@ const NEGATIVE_WORDS = [
 
 /**
  * Check if speech contains an affirmative response
- * @param speech - The speech text to analyze (will be lowercased and normalized)
+ * @param speech - The speech text to analyze (will be lowercased)
  * @returns true if the speech is affirmative
  */
 export function isAffirmative(speech: string): boolean {
   if (!speech) return false;
-  const text = normalizeSpeech(speech);
-
-  // Quick exact match for common short responses (handles "Okay.", "Yes!", etc.)
-  if (AFFIRMATIVE_WORDS.includes(text)) {
-    return true;
-  }
+  const text = speech.toLowerCase().trim();
 
   return AFFIRMATIVE_WORDS.some(word => {
     // Check for exact word match or phrase match
@@ -80,17 +54,12 @@ export function isAffirmative(speech: string): boolean {
 
 /**
  * Check if speech contains a negative response
- * @param speech - The speech text to analyze (will be lowercased and normalized)
+ * @param speech - The speech text to analyze (will be lowercased)
  * @returns true if the speech is negative
  */
 export function isNegative(speech: string): boolean {
   if (!speech) return false;
-  const text = normalizeSpeech(speech);
-
-  // Quick exact match for common short responses (handles "No.", "Nope!", etc.)
-  if (NEGATIVE_WORDS.includes(text)) {
-    return true;
-  }
+  const text = speech.toLowerCase().trim();
 
   return NEGATIVE_WORDS.some(word => {
     if (word.includes(' ')) {
@@ -120,7 +89,7 @@ export function classifyYesNo(speech: string): 'yes' | 'no' | 'unclear' {
  * More specific than general affirmative - includes name-related confirmations
  */
 export function isIdentityConfirmation(speech: string, expectedName?: string): boolean {
-  const text = normalizeSpeech(speech);
+  const text = speech.toLowerCase().trim();
 
   // Check general affirmatives
   if (isAffirmative(speech) && !isNegative(speech)) {
@@ -143,7 +112,7 @@ export function isIdentityConfirmation(speech: string, expectedName?: string): b
  * Check if the caller wants to book an appointment
  */
 export function wantsToBook(speech: string): boolean {
-  const text = normalizeSpeech(speech);
+  const text = speech.toLowerCase().trim();
 
   // Explicit booking words
   const bookingWords = ['book', 'appointment', 'schedule', 'reserve'];
@@ -159,5 +128,5 @@ export function wantsToBook(speech: string): boolean {
   return false;
 }
 
-// Export the word lists and helpers for testing
-export { AFFIRMATIVE_WORDS, NEGATIVE_WORDS, normalizeSpeech };
+// Export the word lists for testing
+export { AFFIRMATIVE_WORDS, NEGATIVE_WORDS };

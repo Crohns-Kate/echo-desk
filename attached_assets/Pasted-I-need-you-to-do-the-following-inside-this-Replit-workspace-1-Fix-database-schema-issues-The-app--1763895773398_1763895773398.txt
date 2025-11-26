@@ -1,0 +1,109 @@
+I need you to do the following inside this Replit workspace:
+
+1. Fix database schema issues
+The app crashes on render/deploy because the tenants table is missing several columns:
+
+parking_text
+
+services_text
+
+first_visit_text
+
+about_text
+
+health_text
+
+faq_json
+
+Please:
+
+Detect which of these columns are missing
+
+Add them via SQL using the $DATABASE_URL
+
+Do NOT try to use drizzle-kit (it is breaking)
+
+Use a single ALTER TABLE with IF NOT EXISTS
+
+Example format:
+
+ALTER TABLE tenants
+ADD COLUMN IF NOT EXISTS parking_text TEXT,
+ADD COLUMN IF NOT EXISTS services_text TEXT,
+ADD COLUMN IF NOT EXISTS first_visit_text TEXT,
+ADD COLUMN IF NOT EXISTS about_text TEXT,
+ADD COLUMN IF NOT EXISTS health_text TEXT,
+ADD COLUMN IF NOT EXISTS faq_json JSONB;
+
+Run this command safely using psql "$DATABASE_URL".
+
+2. Verify tenant routing
+The tenant “spinalogic” exists, but Twilio calls still say “Your Clinic.”
+Please:
+
+Print all rows from tenants
+
+Confirm slug = 'spinalogic'
+
+Confirm phone_number = '+61468035585'
+
+Ensure matching logic in server/services/tenantRouter.ts works
+
+Fix any mismatches
+
+3. Confirm FAQ + knowledgebase
+The AI is NOT answering:
+
+“What are your hours?”
+
+“Where are you located?”
+
+“What services do you offer?”
+
+“Do you have parking?”
+
+Please:
+
+Ensure knowledgebase for spinalogic loads from server/knowledgebase/*.md
+
+Ensure getKnowledgeContextForAI() passes correct tenantId
+
+Test a simulated query in the console
+
+Fix any missing connections in dialogueManager or knowledgeResponder
+
+4. Improve yes/no detection
+The system only reacts to “yes” — please update logic so:
+
+“ok”
+
+“okay”
+
+“yep”
+
+“sure”
+
+“please”
+all count as affirmative.
+
+5. Run full health check
+Check:
+
+All routes compile
+
+All tenant routing paths respond correctly
+
+No TypeScript errors
+
+No missing environment variables
+
+No missing files in knowledgebase
+
+Then provide:
+
+Summary of what you fixed
+
+Remaining issues I need to test manually
+
+Work autonomously — do not ask for confirmation for each step.
+Just complete the whole pipeline and report when done.
