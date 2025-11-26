@@ -46,3 +46,4 @@ waitForPort = 5000
 
 [agent]
 integrations = ["javascript_database:1.0.0"]
+# Force rebuild - Nov 26 update
