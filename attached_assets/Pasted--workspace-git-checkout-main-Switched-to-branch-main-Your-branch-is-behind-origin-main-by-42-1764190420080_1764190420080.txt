@@ -1,0 +1,44 @@
+~/workspace$ git checkout main
+Switched to branch 'main'
+Your branch is behind 'origin/main' by 42 commits, and can be fast-forwarded.
+  (use "git pull" to update your local branch)
+~/workspace$ git pull origin main
+From https://github.com/Crohns-Kate/echo-desk
+ * branch            main       -> FETCH_HEAD
+Updating e271511..fe9326f
+Fast-forward
+ .replit                                        |  24 +---
+ attached_assets/image_1764127001061.png        | Bin 0 -> 617997 bytes
+ client/src/pages/alerts.tsx                    |  45 ++++----
+ knowledgebase/spinalogic.md                    |  51 +++++++++
+ migrations/001_add_tenant_knowledge_fields.sql |  75 +++++++++++++
+ server/ai/knowledgeResponder.ts                | 153 ++++++++++++++++++++-----
+ server/ai/llmProvider.ts                       |   7 ++
+ server/ai/safetyGuardrails.ts                  |   7 +-
+ server/routes/app.ts                           | 199 +++++++++++++++++++++++++++++----
+ server/routes/voice.ts                         | 230 ++++++++++++++++++++++++++++----------
+ server/services/intent.ts                      | 124 +++++++++++++-------
+ verify-tenant-setup.mjs                        |  50 +++++++++
+ 12 files changed, 767 insertions(+), 198 deletions(-)
+ create mode 100644 attached_assets/image_1764127001061.png
+ create mode 100644 knowledgebase/spinalogic.md
+ create mode 100644 migrations/001_add_tenant_knowledge_fields.sql
+ create mode 100644 verify-tenant-setup.mjs
+~/workspace$ npm run build
+
+> rest-express@1.0.0 build
+> vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist
+
+vite v6.4.1 building for production...
+transforming (1) src/main.tsx
+A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+✓ 1741 modules transformed.
+../dist/public/index.html                   0.97 kB │ gzip:   0.52 kB
+../dist/public/assets/index-Bbquy8bZ.css   73.68 kB │ gzip:  12.27 kB
+../dist/public/assets/index-D08HDuZ0.js   455.90 kB │ gzip: 134.10 kB
+✓ built in 5.19s
+
+  dist/index.js  488.9kb
+
+⚡ Done in 30ms
+~/workspace$ 
