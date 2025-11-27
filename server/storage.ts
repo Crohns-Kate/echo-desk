@@ -441,36 +441,72 @@ export class DatabaseStorage implements IStorage {
   async searchFaqs(query: string, tenantId?: number): Promise<Faq[]> {
     const searchLower = query.toLowerCase();
 
+    // Remove common stop words for better matching
+    const stopWords = new Set(['what', 'is', 'are', 'the', 'your', 'my', 'do', 'does', 'can', 'i', 'you', 'a', 'an']);
+    const queryWords = searchLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+
     // Get all FAQs (filtered by tenant if specified)
     const allFaqs = await this.listFaqs(tenantId, true);
 
-    // Score each FAQ based on keyword matches
+    // Score each FAQ based on multiple factors
     const scored = allFaqs.map(faq => {
       let score = 0;
 
-      // Check question match
+      // Exact phrase match in question (highest priority)
       if (faq.question.toLowerCase().includes(searchLower)) {
+        score += 20;
+      }
+
+      // Exact phrase match in answer
+      if (faq.answer.toLowerCase().includes(searchLower)) {
         score += 10;
       }
 
-      // Check answer match
-      if (faq.answer.toLowerCase().includes(searchLower)) {
-        score += 5;
-      }
-
-      // Check keyword matches
-      if (faq.keywords && faq.keywords.length > 0) {
-        for (const keyword of faq.keywords) {
-          if (searchLower.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(searchLower)) {
-            score += 7;
+      // Word-level matching in question
+      const questionWords = faq.question.toLowerCase().split(/\s+/);
+      for (const queryWord of queryWords) {
+        for (const qWord of questionWords) {
+          if (qWord.includes(queryWord) || queryWord.includes(qWord)) {
+            score += 5;
           }
         }
       }
 
-      // Category match
-      if (faq.category.toLowerCase() === searchLower) {
-        score += 8;
+      // Word-level matching in answer
+      const answerWords = faq.answer.toLowerCase().split(/\s+/).slice(0, 30); // First 30 words
+      for (const queryWord of queryWords) {
+        for (const aWord of answerWords) {
+          if (aWord.includes(queryWord) || queryWord.includes(aWord)) {
+            score += 2;
+          }
+        }
       }
+
+      // Keyword matches (high priority)
+      if (faq.keywords && faq.keywords.length > 0) {
+        for (const keyword of faq.keywords) {
+          const keywordLower = keyword.toLowerCase();
+          // Exact keyword match
+          if (searchLower.includes(keywordLower) || keywordLower.includes(searchLower)) {
+            score += 15;
+          }
+          // Word-level keyword match
+          for (const queryWord of queryWords) {
+            if (keywordLower.includes(queryWord) || queryWord.includes(keywordLower)) {
+              score += 7;
+            }
+          }
+        }
+      }
+
+      // Category relevance
+      if (faq.category.toLowerCase() === searchLower) {
+        score += 12;
+      }
+
+      // Apply priority multiplier (priority 0-100 => multiplier 1.0-2.0)
+      const priorityMultiplier = 1 + (faq.priority / 100);
+      score = Math.round(score * priorityMultiplier);
 
       return { faq, score };
     });
