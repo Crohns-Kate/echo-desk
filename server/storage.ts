@@ -74,6 +74,7 @@ export interface IStorage {
   getFaqById(id: number): Promise<Faq | undefined>;
   listFaqs(tenantId?: number, activeOnly?: boolean): Promise<Faq[]>;
   searchFaqs(query: string, tenantId?: number): Promise<Faq[]>;
+  trackFaqUsage(id: number): Promise<void>;
 
   // Stats
   getStats(tenantId?: number): Promise<{
@@ -444,33 +445,60 @@ export class DatabaseStorage implements IStorage {
     // Get all FAQs (filtered by tenant if specified)
     const allFaqs = await this.listFaqs(tenantId, true);
 
-    // Score each FAQ based on keyword matches
+    // Remove common stop words for better matching
+    const stopWords = new Set(['what', 'is', 'are', 'the', 'your', 'my', 'do', 'does', 'can', 'i', 'you', 'a', 'an']);
+    const queryWords = searchLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+
+    // Score each FAQ with enhanced semantic matching
     const scored = allFaqs.map(faq => {
       let score = 0;
+      const faqQuestion = faq.question.toLowerCase();
+      const faqAnswer = faq.answer.toLowerCase();
+      const faqCategory = faq.category.toLowerCase();
 
-      // Check question match
-      if (faq.question.toLowerCase().includes(searchLower)) {
-        score += 10;
+      // Exact phrase match in question (highest priority)
+      if (faqQuestion.includes(searchLower)) {
+        score += 20;
       }
 
-      // Check answer match
-      if (faq.answer.toLowerCase().includes(searchLower)) {
-        score += 5;
-      }
-
-      // Check keyword matches
-      if (faq.keywords && faq.keywords.length > 0) {
-        for (const keyword of faq.keywords) {
-          if (searchLower.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(searchLower)) {
-            score += 7;
+      // Word-level matching
+      for (const word of queryWords) {
+        // Keywords get highest word-level weight
+        if (faq.keywords && faq.keywords.length > 0) {
+          for (const keyword of faq.keywords) {
+            const kwLower = keyword.toLowerCase();
+            if (kwLower === word) {
+              score += 15; // Exact keyword match
+            } else if (kwLower.includes(word) || word.includes(kwLower)) {
+              score += 7; // Partial keyword match
+            }
           }
+        }
+
+        // Category matching
+        if (faqCategory === word || faqCategory.includes(word)) {
+          score += 12;
+        }
+
+        // Answer matching (lower weight - less relevant)
+        if (faqAnswer.includes(word)) {
+          score += 2;
+        }
+
+        // Question word matching
+        if (faqQuestion.includes(word)) {
+          score += 5;
         }
       }
 
-      // Category match
-      if (faq.category.toLowerCase() === searchLower) {
-        score += 8;
+      // Exact phrase in answer (medium priority)
+      if (faqAnswer.includes(searchLower)) {
+        score += 10;
       }
+
+      // Apply priority multiplier (priority 0-100 => multiplier 1.0-2.0)
+      const priorityMultiplier = 1 + (faq.priority / 100);
+      score = Math.round(score * priorityMultiplier);
 
       return { faq, score };
     });
@@ -480,6 +508,16 @@ export class DatabaseStorage implements IStorage {
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .map(item => item.faq);
+  }
+
+  async trackFaqUsage(id: number): Promise<void> {
+    await db
+      .update(faqs)
+      .set({
+        usageCount: sql`${faqs.usageCount} + 1`,
+        lastUsedAt: new Date(),
+      })
+      .where(eq(faqs.id, id));
   }
 
   async seed(): Promise<void> {

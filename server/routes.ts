@@ -888,6 +888,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Generate FAQs from tenant knowledge using AI
+  app.post('/api/faqs/generate', async (req, res) => {
+    try {
+      const { tenantId } = req.body;
+
+      if (!tenantId) {
+        return res.status(400).json({ error: 'tenantId is required' });
+      }
+
+      const tenant = await storage.getTenantById(tenantId);
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      const { generateFaqsFromKnowledge } = await import('./services/faq');
+      const generatedFaqs = await generateFaqsFromKnowledge(tenant);
+
+      res.json({
+        success: true,
+        faqs: generatedFaqs,
+        count: generatedFaqs.length
+      });
+    } catch (err: any) {
+      console.error('[POST /api/faqs/generate] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ============================================
   // Stripe Billing API
   // ============================================
