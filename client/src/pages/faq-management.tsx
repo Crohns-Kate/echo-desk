@@ -79,6 +79,100 @@ const defaultFormData: FaqFormData = {
   isActive: true,
 };
 
+// Separate FaqForm component to prevent re-creation on parent re-renders
+interface FaqFormComponentProps {
+  formData: FaqFormData;
+  setFormData: React.Dispatch<React.SetStateAction<FaqFormData>>;
+  editingFaq: Faq | null;
+  onSubmit: (e: React.FormEvent) => void;
+  onCancel: () => void;
+  isSubmitting: boolean;
+}
+
+function FaqFormComponent({ formData, setFormData, editingFaq, onSubmit, onCancel, isSubmitting }: FaqFormComponentProps) {
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="category">Category</Label>
+        <Select value={formData.category} onValueChange={(v) => setFormData(prev => ({ ...prev, category: v }))}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select category" />
+          </SelectTrigger>
+          <SelectContent>
+            {categories.map(cat => (
+              <SelectItem key={cat.value} value={cat.value}>{cat.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="question">Question</Label>
+        <Input
+          id="question"
+          value={formData.question}
+          onChange={(e) => setFormData(prev => ({ ...prev, question: e.target.value }))}
+          placeholder="What are your opening hours?"
+          required
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="answer">Answer</Label>
+        <Textarea
+          id="answer"
+          value={formData.answer}
+          onChange={(e) => setFormData(prev => ({ ...prev, answer: e.target.value }))}
+          placeholder="We're open Monday to Friday from 9am to 5pm..."
+          rows={4}
+          required
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="keywords">Keywords (comma-separated)</Label>
+        <Input
+          id="keywords"
+          value={formData.keywords}
+          onChange={(e) => setFormData(prev => ({ ...prev, keywords: e.target.value }))}
+          placeholder="hours, open, closed, time"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="priority">Priority (higher = more important)</Label>
+          <Input
+            id="priority"
+            type="number"
+            value={formData.priority}
+            onChange={(e) => setFormData(prev => ({ ...prev, priority: parseInt(e.target.value, 10) || 0 }))}
+            min={0}
+            max={100}
+          />
+        </div>
+        <div className="flex items-center justify-between pt-6">
+          <Label htmlFor="isActive">Active</Label>
+          <Switch
+            id="isActive"
+            checked={formData.isActive}
+            onCheckedChange={(checked) => setFormData(prev => ({ ...prev, isActive: checked }))}
+          />
+        </div>
+      </div>
+
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? "Saving..." : editingFaq ? "Save Changes" : "Create FAQ"}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
 export default function FaqManagement() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -192,6 +286,12 @@ export default function FaqManagement() {
     }
   };
 
+  const handleCancel = () => {
+    setIsCreateOpen(false);
+    setEditingFaq(null);
+    setFormData(defaultFormData);
+  };
+
   const filteredFaqs = faqs?.filter(faq => {
     const matchesSearch = searchTerm === "" ||
       faq.question.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -199,92 +299,6 @@ export default function FaqManagement() {
     const matchesCategory = categoryFilter === "all" || faq.category === categoryFilter;
     return matchesSearch && matchesCategory;
   });
-
-  const FaqForm = () => (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="category">Category</Label>
-        <Select value={formData.category} onValueChange={(v) => setFormData({ ...formData, category: v })}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select category" />
-          </SelectTrigger>
-          <SelectContent>
-            {categories.map(cat => (
-              <SelectItem key={cat.value} value={cat.value}>{cat.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="question">Question</Label>
-        <Input
-          id="question"
-          value={formData.question}
-          onChange={(e) => setFormData({ ...formData, question: e.target.value })}
-          placeholder="What are your opening hours?"
-          required
-        />
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="answer">Answer</Label>
-        <Textarea
-          id="answer"
-          value={formData.answer}
-          onChange={(e) => setFormData({ ...formData, answer: e.target.value })}
-          placeholder="We're open Monday to Friday from 9am to 5pm..."
-          rows={4}
-          required
-        />
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="keywords">Keywords (comma-separated)</Label>
-        <Input
-          id="keywords"
-          value={formData.keywords}
-          onChange={(e) => setFormData({ ...formData, keywords: e.target.value })}
-          placeholder="hours, open, closed, time"
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="priority">Priority (higher = more important)</Label>
-          <Input
-            id="priority"
-            type="number"
-            value={formData.priority}
-            onChange={(e) => setFormData({ ...formData, priority: parseInt(e.target.value, 10) || 0 })}
-            min={0}
-            max={100}
-          />
-        </div>
-        <div className="flex items-center justify-between pt-6">
-          <Label htmlFor="isActive">Active</Label>
-          <Switch
-            id="isActive"
-            checked={formData.isActive}
-            onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
-          />
-        </div>
-      </div>
-
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={() => {
-          setIsCreateOpen(false);
-          setEditingFaq(null);
-          setFormData(defaultFormData);
-        }}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-          {createMutation.isPending || updateMutation.isPending ? "Saving..." : editingFaq ? "Save Changes" : "Create FAQ"}
-        </Button>
-      </DialogFooter>
-    </form>
-  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -319,10 +333,37 @@ export default function FaqManagement() {
                   Add a new frequently asked question and answer
                 </DialogDescription>
               </DialogHeader>
-              <FaqForm />
+              <FaqFormComponent
+                formData={formData}
+                setFormData={setFormData}
+                editingFaq={editingFaq}
+                onSubmit={handleSubmit}
+                onCancel={handleCancel}
+                isSubmitting={createMutation.isPending || updateMutation.isPending}
+              />
             </DialogContent>
           </Dialog>
         </div>
+
+        {/* Edit Dialog - Outside of the map to prevent re-mounting */}
+        <Dialog open={!!editingFaq} onOpenChange={(open) => !open && setEditingFaq(null)}>
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Edit FAQ</DialogTitle>
+              <DialogDescription>
+                Update this FAQ entry
+              </DialogDescription>
+            </DialogHeader>
+            <FaqFormComponent
+              formData={formData}
+              setFormData={setFormData}
+              editingFaq={editingFaq}
+              onSubmit={handleSubmit}
+              onCancel={handleCancel}
+              isSubmitting={createMutation.isPending || updateMutation.isPending}
+            />
+          </DialogContent>
+        </Dialog>
 
         {/* Filters */}
         <div className="flex gap-4">
@@ -393,22 +434,9 @@ export default function FaqManagement() {
                       <CardTitle className="text-base">{faq.question}</CardTitle>
                     </div>
                     <div className="flex items-center gap-1">
-                      <Dialog open={editingFaq?.id === faq.id} onOpenChange={(open) => !open && setEditingFaq(null)}>
-                        <DialogTrigger asChild>
-                          <Button variant="ghost" size="sm" onClick={() => openEditDialog(faq)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-xl">
-                          <DialogHeader>
-                            <DialogTitle>Edit FAQ</DialogTitle>
-                            <DialogDescription>
-                              Update this FAQ entry
-                            </DialogDescription>
-                          </DialogHeader>
-                          <FaqForm />
-                        </DialogContent>
-                      </Dialog>
+                      <Button variant="ghost" size="sm" onClick={() => openEditDialog(faq)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"
