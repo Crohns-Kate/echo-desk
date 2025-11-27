@@ -3586,7 +3586,8 @@ export function registerVoice(app: Express) {
             fromISO: fromDate,
             toISO: toDate,
             appointmentTypeId,
-            part: timePart
+            part: timePart,
+            tenantCtx
           });
           slots = result.slots || [];
           console.log(`[GET-AVAILABILITY] SUCCESS: Received ${slots.length} slots from getAvailability`);
@@ -4448,7 +4449,8 @@ export function registerVoice(app: Express) {
             fromISO: fromDate,
             toISO: toDate,
             appointmentTypeId,
-            part: timePart
+            part: timePart,
+            tenantCtx
           });
           slots = result.slots || [];
           console.log(`[GET-AVAILABILITY-SPECIFIC-DAY] Received ${slots.length} slots from getAvailability`);
