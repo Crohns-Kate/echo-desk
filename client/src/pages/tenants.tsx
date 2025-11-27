@@ -194,7 +194,7 @@ export default function Tenants() {
           <Input
             id="slug"
             value={formData.slug}
-            onChange={(e) => setFormData({ ...formData, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })}
+            onChange={(e) => setFormData(prev => ({ ...prev, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') }))}
             placeholder="my-clinic"
             disabled={!!editingTenant}
             required
@@ -205,7 +205,7 @@ export default function Tenants() {
           <Input
             id="clinicName"
             value={formData.clinicName}
-            onChange={(e) => setFormData({ ...formData, clinicName: e.target.value })}
+            onChange={(e) => setFormData(prev => ({ ...prev, clinicName: e.target.value }))}
             placeholder="My Clinic"
             required
           />
@@ -218,7 +218,7 @@ export default function Tenants() {
           <Input
             id="phoneNumber"
             value={formData.phoneNumber}
-            onChange={(e) => setFormData({ ...formData, phoneNumber: e.target.value })}
+            onChange={(e) => setFormData(prev => ({ ...prev, phoneNumber: e.target.value }))}
             placeholder="+61400000000"
           />
         </div>
@@ -228,7 +228,7 @@ export default function Tenants() {
             id="email"
             type="email"
             value={formData.email}
-            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+            onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
             placeholder="clinic@example.com"
           />
         </div>
@@ -240,7 +240,7 @@ export default function Tenants() {
           <Input
             id="timezone"
             value={formData.timezone}
-            onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
+            onChange={(e) => setFormData(prev => ({ ...prev, timezone: e.target.value }))}
             placeholder="Australia/Brisbane"
           />
         </div>
@@ -249,7 +249,7 @@ export default function Tenants() {
           <Input
             id="voiceName"
             value={formData.voiceName}
-            onChange={(e) => setFormData({ ...formData, voiceName: e.target.value })}
+            onChange={(e) => setFormData(prev => ({ ...prev, voiceName: e.target.value }))}
             placeholder="Polly.Olivia-Neural"
           />
         </div>
@@ -260,7 +260,7 @@ export default function Tenants() {
         <Input
           id="greeting"
           value={formData.greeting}
-          onChange={(e) => setFormData({ ...formData, greeting: e.target.value })}
+          onChange={(e) => setFormData(prev => ({ ...prev, greeting: e.target.value }))}
           placeholder="Thanks for calling"
         />
       </div>
@@ -274,7 +274,7 @@ export default function Tenants() {
               id="clinikoApiKey"
               type="password"
               value={formData.clinikoApiKey}
-              onChange={(e) => setFormData({ ...formData, clinikoApiKey: e.target.value })}
+              onChange={(e) => setFormData(prev => ({ ...prev, clinikoApiKey: e.target.value }))}
               placeholder={editingTenant?.hasClinikoKey ? "Leave blank to keep current" : "Enter API key"}
             />
           </div>
@@ -283,7 +283,7 @@ export default function Tenants() {
             <Input
               id="clinikoShard"
               value={formData.clinikoShard}
-              onChange={(e) => setFormData({ ...formData, clinikoShard: e.target.value })}
+              onChange={(e) => setFormData(prev => ({ ...prev, clinikoShard: e.target.value }))}
               placeholder="au1"
             />
           </div>
@@ -294,7 +294,7 @@ export default function Tenants() {
             <Input
               id="clinikoPractitionerId"
               value={formData.clinikoPractitionerId}
-              onChange={(e) => setFormData({ ...formData, clinikoPractitionerId: e.target.value })}
+              onChange={(e) => setFormData(prev => ({ ...prev, clinikoPractitionerId: e.target.value }))}
               placeholder="123456"
             />
           </div>
@@ -303,7 +303,7 @@ export default function Tenants() {
             <Input
               id="clinikoStandardApptTypeId"
               value={formData.clinikoStandardApptTypeId}
-              onChange={(e) => setFormData({ ...formData, clinikoStandardApptTypeId: e.target.value })}
+              onChange={(e) => setFormData(prev => ({ ...prev, clinikoStandardApptTypeId: e.target.value }))}
               placeholder="123456"
             />
           </div>
@@ -312,7 +312,7 @@ export default function Tenants() {
             <Input
               id="clinikoNewPatientApptTypeId"
               value={formData.clinikoNewPatientApptTypeId}
-              onChange={(e) => setFormData({ ...formData, clinikoNewPatientApptTypeId: e.target.value })}
+              onChange={(e) => setFormData(prev => ({ ...prev, clinikoNewPatientApptTypeId: e.target.value }))}
               placeholder="123456"
             />
           </div>
@@ -327,7 +327,7 @@ export default function Tenants() {
             <Switch
               id="recordingEnabled"
               checked={formData.recordingEnabled}
-              onCheckedChange={(checked) => setFormData({ ...formData, recordingEnabled: checked })}
+              onCheckedChange={(checked) => setFormData(prev => ({ ...prev, recordingEnabled: checked }))}
             />
           </div>
           <div className="flex items-center justify-between">
@@ -335,7 +335,7 @@ export default function Tenants() {
             <Switch
               id="transcriptionEnabled"
               checked={formData.transcriptionEnabled}
-              onCheckedChange={(checked) => setFormData({ ...formData, transcriptionEnabled: checked })}
+              onCheckedChange={(checked) => setFormData(prev => ({ ...prev, transcriptionEnabled: checked }))}
             />
           </div>
           <div className="flex items-center justify-between">
@@ -343,7 +343,7 @@ export default function Tenants() {
             <Switch
               id="faqEnabled"
               checked={formData.faqEnabled}
-              onCheckedChange={(checked) => setFormData({ ...formData, faqEnabled: checked })}
+              onCheckedChange={(checked) => setFormData(prev => ({ ...prev, faqEnabled: checked }))}
             />
           </div>
           <div className="flex items-center justify-between">
@@ -351,7 +351,7 @@ export default function Tenants() {
             <Switch
               id="smsEnabled"
               checked={formData.smsEnabled}
-              onCheckedChange={(checked) => setFormData({ ...formData, smsEnabled: checked })}
+              onCheckedChange={(checked) => setFormData(prev => ({ ...prev, smsEnabled: checked }))}
             />
           </div>
         </div>
