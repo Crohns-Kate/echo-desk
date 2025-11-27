@@ -334,23 +334,39 @@ export default function FaqManagement() {
 
   const saveGeneratedFaqs = useMutation({
     mutationFn: async (faqsToSave: any[]) => {
-      return Promise.all(faqsToSave.map(faq =>
-        fetch("/api/faqs", {
+      const results = [];
+      for (const faq of faqsToSave) {
+        const res = await fetch("/api/faqs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(faq),
-        }).then(res => {
-          if (!res.ok) throw new Error("Failed to save FAQ");
-          return res.json();
-        })
-      ));
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(`Failed to save FAQ "${faq.question}": ${errorData.error || res.statusText}`);
+        }
+
+        results.push(await res.json());
+      }
+      return results;
     },
     onSuccess: (results) => {
       queryClient.invalidateQueries({ queryKey: [`/api/faqs`, tenantId] });
       setIsGenerateOpen(false);
       setGeneratedFaqs([]);
       setSelectedGenerated(new Set());
-      toast({ title: "FAQs saved", description: `Successfully saved ${results.length} FAQs.` });
+      toast({
+        title: "✅ FAQs saved successfully!",
+        description: `Successfully saved ${results.length} FAQ${results.length !== 1 ? 's' : ''}.`
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "❌ Failed to save FAQs",
+        description: err.message,
+        variant: "destructive"
+      });
     },
   });
 
