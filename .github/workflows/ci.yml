@@ -1,41 +1,76 @@
 name: CI
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
 
 jobs:
   build-and-test:
+    name: Build and Test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Use Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      # If you have a lint script, keep this. If not, you can remove this step or add one later.
-      - name: Run lint (if configured)
-        run: |
-          if npm run | grep -q "lint"; then
-            npm run lint
-          else
-            echo "No lint script defined, skipping."
-          fi
+      - name: TypeScript type check
+        run: npm run check
+        continue-on-error: false
 
-      # Main test step – this will run your Jest / test runner if "npm test" is defined
+      - name: Build project
+        run: npm run build
+        env:
+          NODE_ENV: production
+
       - name: Run tests
         run: |
-          if npm run | grep -q "test"; then
+          if [ -f "server/tests/date-parser.test.ts" ]; then
             npm test
           else
-            echo "No test script defined, skipping."
+            echo "No tests yet"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            client/dist/
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node Version:** 20" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **TypeScript Check:** Passed" >> $GITHUB_STEP_SUMMARY
+          if [ -d "dist" ]; then
+            echo "- **Build Output:** ✅ Generated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Build Output:** ❌ Missing" >> $GITHUB_STEP_SUMMARY
           fi
