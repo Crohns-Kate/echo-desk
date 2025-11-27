@@ -161,6 +161,11 @@ export const faqs = pgTable("faqs", {
   keywords: text("keywords").array(), // For keyword matching
   priority: integer("priority").default(0), // Higher = more important
   isActive: boolean("is_active").default(true),
+
+  // Analytics
+  usageCount: integer("usage_count").default(0), // Track how many times used
+  lastUsedAt: timestamp("last_used_at"), // When last accessed
+
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
