@@ -526,7 +526,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/admin/tenants', async (_req, res) => {
     try {
       const tenants = await storage.listTenants();
-      // Remove sensitive fields
+      // Remove sensitive fields but include configuration fields
       const safeTenants = tenants.map(t => ({
         id: t.id,
         slug: t.slug,
@@ -535,9 +535,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email: t.email,
         timezone: t.timezone,
         voiceName: t.voiceName,
+        greeting: t.greeting,
         isActive: t.isActive,
         subscriptionTier: t.subscriptionTier,
         subscriptionStatus: t.subscriptionStatus,
+        recordingEnabled: t.recordingEnabled,
+        transcriptionEnabled: t.transcriptionEnabled,
+        faqEnabled: t.faqEnabled,
+        smsEnabled: t.smsEnabled,
+        hasClinikoKey: !!t.clinikoApiKeyEncrypted,
+        clinikoShard: t.clinikoShard,
+        clinikoPractitionerId: t.clinikoPractitionerId,
+        clinikoStandardApptTypeId: t.clinikoStandardApptTypeId,
+        clinikoNewPatientApptTypeId: t.clinikoNewPatientApptTypeId,
         createdAt: t.createdAt
       }));
       res.json(safeTenants);
