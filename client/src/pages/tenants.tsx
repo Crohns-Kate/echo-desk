@@ -96,98 +96,19 @@ const defaultFormData: TenantFormData = {
   smsEnabled: true,
 };
 
-export default function Tenants() {
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
-  const [formData, setFormData] = useState<TenantFormData>(defaultFormData);
+// Separate TenantForm component to prevent re-creation on parent re-renders
+interface TenantFormProps {
+  formData: TenantFormData;
+  setFormData: React.Dispatch<React.SetStateAction<TenantFormData>>;
+  editingTenant: Tenant | null;
+  onSubmit: (e: React.FormEvent) => void;
+  onCancel: () => void;
+  isSubmitting: boolean;
+}
 
-  const { data: tenants, isLoading } = useQuery<Tenant[]>({
-    queryKey: ["/api/admin/tenants"],
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async (data: TenantFormData) => {
-      const res = await fetch("/api/admin/tenants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to create tenant");
-      }
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/tenants"] });
-      setIsCreateOpen(false);
-      setFormData(defaultFormData);
-      toast({ title: "Tenant created", description: "New clinic has been added successfully." });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: number; data: Partial<TenantFormData> }) => {
-      const res = await fetch(`/api/admin/tenants/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to update tenant");
-      }
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/tenants"] });
-      setEditingTenant(null);
-      setFormData(defaultFormData);
-      toast({ title: "Tenant updated", description: "Clinic settings have been saved." });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const openEditDialog = (tenant: Tenant) => {
-    setEditingTenant(tenant);
-    setFormData({
-      slug: tenant.slug,
-      clinicName: tenant.clinicName,
-      phoneNumber: tenant.phoneNumber || "",
-      email: tenant.email || "",
-      timezone: tenant.timezone,
-      voiceName: tenant.voiceName || "Polly.Olivia-Neural",
-      greeting: tenant.greeting,
-      clinikoApiKey: "",
-      clinikoShard: tenant.clinikoShard || "au1",
-      clinikoPractitionerId: tenant.clinikoPractitionerId || "",
-      clinikoStandardApptTypeId: tenant.clinikoStandardApptTypeId || "",
-      clinikoNewPatientApptTypeId: tenant.clinikoNewPatientApptTypeId || "",
-      recordingEnabled: tenant.recordingEnabled ?? true,
-      transcriptionEnabled: tenant.transcriptionEnabled ?? true,
-      faqEnabled: tenant.faqEnabled ?? true,
-      smsEnabled: tenant.smsEnabled ?? true,
-    });
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editingTenant) {
-      updateMutation.mutate({ id: editingTenant.id, data: formData });
-    } else {
-      createMutation.mutate(formData);
-    }
-  };
-
-  const TenantForm = () => (
-    <form onSubmit={handleSubmit} className="space-y-4">
+function TenantFormComponent({ formData, setFormData, editingTenant, onSubmit, onCancel, isSubmitting }: TenantFormProps) {
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label htmlFor="slug">Slug (URL identifier)</Label>
@@ -358,19 +279,112 @@ export default function Tenants() {
       </div>
 
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={() => {
-          setIsCreateOpen(false);
-          setEditingTenant(null);
-          setFormData(defaultFormData);
-        }}>
+        <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-          {createMutation.isPending || updateMutation.isPending ? "Saving..." : editingTenant ? "Save Changes" : "Create Tenant"}
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? "Saving..." : editingTenant ? "Save Changes" : "Create Tenant"}
         </Button>
       </DialogFooter>
     </form>
   );
+}
+
+export default function Tenants() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [formData, setFormData] = useState<TenantFormData>(defaultFormData);
+
+  const { data: tenants, isLoading } = useQuery<Tenant[]>({
+    queryKey: ["/api/admin/tenants"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: TenantFormData) => {
+      const res = await fetch("/api/admin/tenants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to create tenant");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/tenants"] });
+      setIsCreateOpen(false);
+      setFormData(defaultFormData);
+      toast({ title: "Tenant created", description: "New clinic has been added successfully." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: Partial<TenantFormData> }) => {
+      const res = await fetch(`/api/admin/tenants/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update tenant");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/tenants"] });
+      setEditingTenant(null);
+      setFormData(defaultFormData);
+      toast({ title: "Tenant updated", description: "Clinic settings have been saved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const openEditDialog = (tenant: Tenant) => {
+    setEditingTenant(tenant);
+    setFormData({
+      slug: tenant.slug,
+      clinicName: tenant.clinicName,
+      phoneNumber: tenant.phoneNumber || "",
+      email: tenant.email || "",
+      timezone: tenant.timezone,
+      voiceName: tenant.voiceName || "Polly.Olivia-Neural",
+      greeting: tenant.greeting,
+      clinikoApiKey: "",
+      clinikoShard: tenant.clinikoShard || "au1",
+      clinikoPractitionerId: tenant.clinikoPractitionerId || "",
+      clinikoStandardApptTypeId: tenant.clinikoStandardApptTypeId || "",
+      clinikoNewPatientApptTypeId: tenant.clinikoNewPatientApptTypeId || "",
+      recordingEnabled: tenant.recordingEnabled ?? true,
+      transcriptionEnabled: tenant.transcriptionEnabled ?? true,
+      faqEnabled: tenant.faqEnabled ?? true,
+      smsEnabled: tenant.smsEnabled ?? true,
+    });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editingTenant) {
+      updateMutation.mutate({ id: editingTenant.id, data: formData });
+    } else {
+      createMutation.mutate(formData);
+    }
+  };
+
+  const handleCancel = () => {
+    setIsCreateOpen(false);
+    setEditingTenant(null);
+    setFormData(defaultFormData);
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -404,7 +418,14 @@ export default function Tenants() {
                     Add a new clinic to the system. Each tenant gets isolated data and settings.
                   </DialogDescription>
                 </DialogHeader>
-                <TenantForm />
+                <TenantFormComponent
+                  formData={formData}
+                  setFormData={setFormData}
+                  editingTenant={editingTenant}
+                  onSubmit={handleSubmit}
+                  onCancel={handleCancel}
+                  isSubmitting={createMutation.isPending || updateMutation.isPending}
+                />
               </DialogContent>
             </Dialog>
           </div>
@@ -419,7 +440,14 @@ export default function Tenants() {
                 Update clinic settings and integrations
               </DialogDescription>
             </DialogHeader>
-            <TenantForm />
+            <TenantFormComponent
+              formData={formData}
+              setFormData={setFormData}
+              editingTenant={editingTenant}
+              onSubmit={handleSubmit}
+              onCancel={handleCancel}
+              isSubmitting={createMutation.isPending || updateMutation.isPending}
+            />
           </DialogContent>
         </Dialog>
 
