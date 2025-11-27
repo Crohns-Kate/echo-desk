@@ -6,7 +6,6 @@ import {
   sanitizeEmail,
   sanitizePhoneE164AU
 } from '../integrations/cliniko';
-import type { TenantContext } from './tenantResolver';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
@@ -14,32 +13,12 @@ import timezone from 'dayjs/plugin/timezone.js';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-// Helper to build Cliniko headers and base URL from tenant context or env fallback
-function getClinikoConfig(tenantCtx?: TenantContext): { base: string; headers: Record<string, string> } {
-  let apiKey: string;
-  let shard: string;
-
-  if (tenantCtx?.cliniko?.apiKey && tenantCtx?.cliniko?.shard) {
-    // Use tenant-specific credentials
-    apiKey = tenantCtx.cliniko.apiKey;
-    shard = tenantCtx.cliniko.shard;
-    console.log('[Cliniko] Using tenant-specific credentials for:', tenantCtx.slug, `(shard: ${shard})`);
-  } else {
-    // Fallback to environment variables
-    apiKey = env.CLINIKO_API_KEY;
-    shard = env.CLINIKO_SHARD || 'au1';
-    console.log('[Cliniko] Using environment credentials (shard: ${shard})');
-  }
-
-  const base = `https://api.${shard}.cliniko.com/v1`;
-  const headers = {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`
-  };
-
-  return { base, headers };
-}
+const base = env.CLINIKO_BASE_URL;
+const headers = {
+  'Accept': 'application/json',
+  'Content-Type': 'application/json',
+  'Authorization': `Basic ${Buffer.from(env.CLINIKO_API_KEY + ':').toString('base64')}`
+};
 
 interface ClinikoPatient {
   id: string;
@@ -84,7 +63,7 @@ interface ClinikoAppointment {
   cancelled_at: string | null;
 }
 
-async function clinikoGet<T>(endpoint: string, base: string, headers: Record<string, string>): Promise<T> {
+async function clinikoGet<T>(endpoint: string): Promise<T> {
   const url = `${base}${endpoint}`;
   console.log('[Cliniko] GET', url.replace(base, ''));
   const res = await fetch(url, { headers });
@@ -95,7 +74,7 @@ async function clinikoGet<T>(endpoint: string, base: string, headers: Record<str
   return res.json();
 }
 
-async function clinikoPost<T>(endpoint: string, body: any, base: string, headers: Record<string, string>): Promise<T> {
+async function clinikoPost<T>(endpoint: string, body: any): Promise<T> {
   const url = `${base}${endpoint}`;
   console.log('[Cliniko] POST', url.replace(base, ''));
   const res = await fetch(url, {
@@ -110,7 +89,7 @@ async function clinikoPost<T>(endpoint: string, body: any, base: string, headers
   return res.json();
 }
 
-async function clinikoPatch<T>(endpoint: string, body: any, base: string, headers: Record<string, string>): Promise<T> {
+async function clinikoPatch<T>(endpoint: string, body: any): Promise<T> {
   const url = `${base}${endpoint}`;
   console.log('[Cliniko] PATCH', url);
   const res = await fetch(url, {
@@ -125,23 +104,20 @@ async function clinikoPatch<T>(endpoint: string, body: any, base: string, header
   return res.json();
 }
 
-export async function getBusinesses(tenantCtx?: TenantContext): Promise<ClinikoBusiness[]> {
-  const { base, headers } = getClinikoConfig(tenantCtx);
-  const data = await clinikoGet<{ businesses: ClinikoBusiness[] }>('/businesses', base, headers);
+export async function getBusinesses(): Promise<ClinikoBusiness[]> {
+  const data = await clinikoGet<{ businesses: ClinikoBusiness[] }>('/businesses');
   return data.businesses || [];
 }
 
-export async function getPractitioners(tenantCtx?: TenantContext): Promise<ClinikoPractitioner[]> {
-  const { base, headers } = getClinikoConfig(tenantCtx);
-  const data = await clinikoGet<{ practitioners: ClinikoPractitioner[] }>('/practitioners?per_page=50', base, headers);
+export async function getPractitioners(): Promise<ClinikoPractitioner[]> {
+  const data = await clinikoGet<{ practitioners: ClinikoPractitioner[] }>('/practitioners?per_page=50');
   const all = data.practitioners || [];
   return all.filter(p => p.show_in_online_bookings && p.active);
 }
 
-export async function getAppointmentTypes(practitionerId: string, tenantCtx?: TenantContext): Promise<ClinikoAppointmentType[]> {
-  const { base, headers } = getClinikoConfig(tenantCtx);
+export async function getAppointmentTypes(practitionerId: string): Promise<ClinikoAppointmentType[]> {
   const data = await clinikoGet<{ appointment_types: ClinikoAppointmentType[] }>(
-    `/practitioners/${practitionerId}/appointment_types?per_page=50`, base, headers
+    `/practitioners/${practitionerId}/appointment_types?per_page=50`
   );
   const all = data.appointment_types || [];
   return all.filter(at => at.show_in_online_bookings);
@@ -176,12 +152,9 @@ export async function getAvailability(opts?: {
   practitionerId?: string;
   appointmentTypeId?: string;
   businessId?: string;
-  tenantCtx?: TenantContext;
 }): Promise<{ slots: Array<{ startISO: string; endISO?: string; label?: string }> }> {
-  const { base, headers } = getClinikoConfig(opts?.tenantCtx);
-
-  // If no API key is available (neither tenant nor env), return demo slots
-  if (!opts?.tenantCtx?.cliniko?.apiKey && !env.CLINIKO_API_KEY) {
+  // If CLINIKO_API_KEY is not set, return demo slots
+  if (!env.CLINIKO_API_KEY) {
     console.warn('[Cliniko] CLINIKO_API_KEY not set - returning demo slots');
     const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
     const now = dayjs().tz(tz);
@@ -205,14 +178,14 @@ export async function getAvailability(opts?: {
   }
 
   try {
-    // Use provided IDs or fallback to tenant context or environment defaults
-    const businessId = opts?.businessId || opts?.tenantCtx?.cliniko?.businessId || env.CLINIKO_BUSINESS_ID;
-    const practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
-    const appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
-    const tz = opts?.timezone || opts?.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+    // Use provided IDs or fallback to environment defaults
+    const businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
+    const practitionerId = opts?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
+    const appointmentTypeId = opts?.appointmentTypeId || env.CLINIKO_APPT_TYPE_ID;
+    const tz = opts?.timezone || env.TZ || 'Australia/Brisbane';
 
     // Fetch appointment type details for duration
-    const appointmentTypes = await getAppointmentTypes(practitionerId, opts?.tenantCtx);
+    const appointmentTypes = await getAppointmentTypes(practitionerId);
     console.log(`[Cliniko] Found ${appointmentTypes.length} appointment types for practitioner ${practitionerId}`);
     console.log(`[Cliniko] Looking for appointment type ID: ${appointmentTypeId}`);
 
@@ -234,8 +207,7 @@ export async function getAvailability(opts?: {
         console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'} with fallback type`);
 
         const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-          `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${from}&to=${to}&per_page=50`,
-          base, headers
+          `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${from}&to=${to}&per_page=50`
         );
 
         const times = data.available_times || [];
@@ -281,8 +253,7 @@ export async function getAvailability(opts?: {
     console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'}`);
 
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=50`,
-      base, headers
+      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=50`
     );
 
     const times = data.available_times || [];
@@ -332,10 +303,7 @@ export async function createAppointmentForPatient(phone: string, payload: {
   notes?: string;
   fullName?: string;
   email?: string;
-  tenantCtx?: TenantContext;
 }): Promise<ClinikoAppointment> {
-  const { base, headers } = getClinikoConfig(payload.tenantCtx);
-
   const patient = await getOrCreatePatient({
     phone,
     fullName: payload.fullName,
@@ -345,7 +313,7 @@ export async function createAppointmentForPatient(phone: string, payload: {
   // Get business ID if not provided
   let businessId = payload.businessId;
   if (!businessId) {
-    const businesses = await getBusinesses(payload.tenantCtx);
+    const businesses = await getBusinesses();
     businessId = businesses[0]?.id;
     if (!businessId) {
       throw new Error('No business found in Cliniko account');
@@ -355,7 +323,7 @@ export async function createAppointmentForPatient(phone: string, payload: {
   // Get appointment type duration if not provided
   let duration = payload.duration;
   if (!duration) {
-    const appointmentTypes = await getAppointmentTypes(payload.practitionerId, payload.tenantCtx);
+    const appointmentTypes = await getAppointmentTypes(payload.practitionerId);
     const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
     duration = appointmentType?.duration_in_minutes || 30; // default 30 min
   }
@@ -372,26 +340,24 @@ export async function createAppointmentForPatient(phone: string, payload: {
     starts_at: payload.startsAt,
     ends_at: endsAt.toISOString(),
     notes: payload.notes || null
-  }, base, headers);
+  });
 
   return appointment;
 }
 
-export async function findPatientByPhoneRobust(e164Phone: string, tenantCtx?: TenantContext): Promise<{ id: string; first_name: string; last_name: string } | null> {
+export async function findPatientByPhoneRobust(e164Phone: string): Promise<{ id: string; first_name: string; last_name: string } | null> {
   try {
-    const { base, headers } = getClinikoConfig(tenantCtx);
-
     // First try the standard phone lookup (uses phone_number= query param)
     const patient = await findPatientByPhone(e164Phone);
     if (patient) {
       return { id: patient.id, first_name: patient.first_name, last_name: patient.last_name };
     }
-
+    
     // If not found, try q= search with digits only
     const digitsOnly = e164Phone.replace(/\D/g, '');
     console.log(`[Cliniko] Trying q= search with digits: ${digitsOnly}`);
-
-    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(`/patients?q=${digitsOnly}&per_page=50`, base, headers);
+    
+    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(`/patients?q=${digitsOnly}&per_page=50`);
     const patients = data.patients || [];
     
     // Find the patient whose phone numbers match the end of the E.164
@@ -413,17 +379,15 @@ export async function findPatientByPhoneRobust(e164Phone: string, tenantCtx?: Te
   }
 }
 
-export async function getNextUpcomingAppointment(patientId: string, tenantCtx?: TenantContext): Promise<{ id: string; practitioner_id: string; appointment_type_id: string; starts_at: string } | null> {
+export async function getNextUpcomingAppointment(patientId: string): Promise<{ id: string; practitioner_id: string; appointment_type_id: string; starts_at: string } | null> {
   try {
-    const { base, headers } = getClinikoConfig(tenantCtx);
-    const BUSINESS_TZ = tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+    const BUSINESS_TZ = env.TZ || 'Australia/Brisbane';
     const fromLocal = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
-
+    
     console.log(`[Cliniko] Fetching upcoming appointments for patient ${patientId} from ${fromLocal}`);
-
+    
     const data = await clinikoGet<{ individual_appointments: ClinikoAppointment[] }>(
-      `/individual_appointments?patient_id=${patientId}&from=${fromLocal}&per_page=50`,
-      base, headers
+      `/individual_appointments?patient_id=${patientId}&from=${fromLocal}&per_page=50`
     );
     
     const appointments = data.individual_appointments || [];

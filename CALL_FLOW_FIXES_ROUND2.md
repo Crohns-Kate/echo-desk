@@ -1,8 +1,8 @@
-# Call Flow Fixes - Round 2  Complete
+# Call Flow Fixes - Round 2 Complete
 
 ## Summary
 
-All issues from the second transcript  have been fixed:
+All issues from the second transcript have been fixed:
 1. ✅ **Tomorrow recognition** - Now properly detected
 2. ✅ **Cliniko patient creation** - Already implemented (was working)
 3. ✅ **Caller name at sentence start** - Updated all prompts
@@ -304,5 +304,3 @@ Example: "Michael, beautiful! You're all set."
 - Check VOICE_NAME supports SSML (Polly.Amy-Neural, Polly.Matthew)
 - Verify `saySafeSSML()` is used (not `saySafe()`)
 - Check TwiML output includes `<amazon:emotion>` tags
-Test CI trigger
-Test CI trigger
