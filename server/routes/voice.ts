@@ -771,13 +771,21 @@ export function registerVoice(app: Express) {
       });
 
       // Ask if they are the existing patient or a new patient
-      const greetings = [
-        `Hi there! Thanks so much for calling ${clinicName}. Is this ${firstName}, or are you a new patient with us today?`,
-        `G'day! You've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
-        `Hello! Thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
-      ];
-      const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
-      saySafeSSML(g, randomGreeting);
+      // Use tenant-specific greeting if available, otherwise use default variations
+      let greetingMessage: string;
+      if (tenantCtx?.greeting && tenantCtx.greeting !== "Thanks for calling") {
+        // Use tenant's custom greeting (add patient name if it ends with a question)
+        greetingMessage = tenantCtx.greeting;
+      } else {
+        // Use default greeting variations with patient name
+        const greetings = [
+          `Hi there! Thanks so much for calling ${clinicName}. Is this ${firstName}, or are you a new patient with us today?`,
+          `G'day! You've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
+          `Hello! Thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
+        ];
+        greetingMessage = greetings[Math.floor(Math.random() * greetings.length)];
+      }
+      saySafeSSML(g, greetingMessage);
       g.pause({ length: 1 });
       vr.redirect({ method: "POST" }, timeoutUrl);
     } else {
