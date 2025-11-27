@@ -410,6 +410,19 @@ export default function Tenants() {
           </div>
         </div>
 
+        {/* Edit Dialog - Outside of the map to prevent re-mounting */}
+        <Dialog open={!!editingTenant} onOpenChange={(open) => !open && setEditingTenant(null)}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Tenant: {editingTenant?.clinicName}</DialogTitle>
+              <DialogDescription>
+                Update clinic settings and integrations
+              </DialogDescription>
+            </DialogHeader>
+            <TenantForm />
+          </DialogContent>
+        </Dialog>
+
         {/* Tenants List */}
         <div className="space-y-4">
           {isLoading ? (
@@ -463,22 +476,9 @@ export default function Tenants() {
                           <CreditCard className="h-4 w-4" />
                         </Button>
                       </Link>
-                      <Dialog open={editingTenant?.id === tenant.id} onOpenChange={(open) => !open && setEditingTenant(null)}>
-                        <DialogTrigger asChild>
-                          <Button variant="ghost" size="sm" onClick={() => openEditDialog(tenant)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                          <DialogHeader>
-                            <DialogTitle>Edit Tenant: {tenant.clinicName}</DialogTitle>
-                            <DialogDescription>
-                              Update clinic settings and integrations
-                            </DialogDescription>
-                          </DialogHeader>
-                          <TenantForm />
-                        </DialogContent>
-                      </Dialog>
+                      <Button variant="ghost" size="sm" onClick={() => openEditDialog(tenant)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                     </div>
                   </div>
                 </CardHeader>
