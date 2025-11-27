@@ -47,6 +47,10 @@ interface Tenant {
   subscriptionTier?: string;
   subscriptionStatus?: string;
   hasClinikoKey?: boolean;
+  clinikoShard?: string;
+  clinikoPractitionerId?: string;
+  clinikoStandardApptTypeId?: string;
+  clinikoNewPatientApptTypeId?: string;
   recordingEnabled?: boolean;
   transcriptionEnabled?: boolean;
   faqEnabled?: boolean;
@@ -162,10 +166,10 @@ export default function Tenants() {
       voiceName: tenant.voiceName || "Polly.Olivia-Neural",
       greeting: tenant.greeting,
       clinikoApiKey: "",
-      clinikoShard: "au1",
-      clinikoPractitionerId: "",
-      clinikoStandardApptTypeId: "",
-      clinikoNewPatientApptTypeId: "",
+      clinikoShard: tenant.clinikoShard || "au1",
+      clinikoPractitionerId: tenant.clinikoPractitionerId || "",
+      clinikoStandardApptTypeId: tenant.clinikoStandardApptTypeId || "",
+      clinikoNewPatientApptTypeId: tenant.clinikoNewPatientApptTypeId || "",
       recordingEnabled: tenant.recordingEnabled ?? true,
       transcriptionEnabled: tenant.transcriptionEnabled ?? true,
       faqEnabled: tenant.faqEnabled ?? true,
