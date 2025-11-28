@@ -4,6 +4,7 @@ import {
   Phone,
   FileText,
   AlertCircle,
+  Activity,
   Settings,
   BarChart3,
   Building2
@@ -41,6 +42,11 @@ const navItems: NavItem[] = [
     href: "/alerts",
     label: "Alerts",
     icon: <AlertCircle className="h-4 w-4" />,
+  },
+  {
+    href: "/health",
+    label: "System Health",
+    icon: <Activity className="h-4 w-4" />,
   },
   {
     href: "/tenants",
