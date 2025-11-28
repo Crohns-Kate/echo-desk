@@ -28,7 +28,7 @@ function getClinikoConfig(tenantCtx?: TenantContext): { base: string; headers: R
     // Fallback to environment variables
     apiKey = env.CLINIKO_API_KEY;
     shard = env.CLINIKO_SHARD || 'au1';
-    console.log('[Cliniko] Using environment credentials (shard: ${shard})');
+    console.log(`[Cliniko] Using environment credentials (shard: ${shard})`);
   }
 
   const base = `https://api.${shard}.cliniko.com/v1`;
@@ -210,8 +210,8 @@ export async function getAvailability(opts?: {
   try {
     // Use provided IDs or fallback to tenant context or environment defaults
     let businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
-    const practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
-    const appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
+    let practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
+    let appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || opts?.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
 
     // Auto-fetch business ID if not provided
@@ -229,19 +229,43 @@ export async function getAvailability(opts?: {
       }
     }
 
-    // Validate required configuration
+    // Auto-fetch practitioner ID if not provided
     if (!practitionerId) {
-      throw new Error('Missing Cliniko configuration: practitionerId is required. Please set CLINIKO_PRACTITIONER_ID in environment variables or configure it in tenant settings.');
+      console.log('[Cliniko] practitionerId not configured, fetching from API...');
+      try {
+        const practitioners = await getPractitioners(opts?.tenantCtx);
+        if (practitioners.length === 0) {
+          throw new Error('No active practitioners found in Cliniko account. Please ensure you have at least one active practitioner who is shown in online bookings.');
+        }
+        practitionerId = practitioners[0].id;
+        console.log(`[Cliniko] Auto-selected practitioner: ${practitioners[0].first_name} ${practitioners[0].last_name} (ID: ${practitionerId})`);
+      } catch (fetchError: any) {
+        throw new Error(`Failed to fetch practitioner ID from Cliniko: ${fetchError.message}. You can also manually set CLINIKO_PRACTITIONER_ID in environment variables.`);
+      }
     }
+
+    // Fetch appointment types for the practitioner
+    let appointmentTypes: ClinikoAppointmentType[] = [];
+    try {
+      appointmentTypes = await getAppointmentTypes(practitionerId, opts?.tenantCtx);
+      console.log(`[Cliniko] Found ${appointmentTypes.length} appointment types for practitioner ${practitionerId}`);
+    } catch (fetchError: any) {
+      throw new Error(`Failed to fetch appointment types from Cliniko: ${fetchError.message}`);
+    }
+
+    if (appointmentTypes.length === 0) {
+      throw new Error(`No appointment types found for practitioner ${practitionerId}. Please configure at least one appointment type in Cliniko that is shown in online bookings.`);
+    }
+
+    // Auto-select appointment type if not provided
     if (!appointmentTypeId) {
-      throw new Error('Missing Cliniko configuration: appointmentTypeId is required. Please set CLINIKO_APPT_TYPE_ID in environment variables or configure it in tenant settings.');
+      console.log('[Cliniko] appointmentTypeId not configured, using first available...');
+      appointmentTypeId = appointmentTypes[0].id;
+      console.log(`[Cliniko] Auto-selected appointment type: ${appointmentTypes[0].name} (ID: ${appointmentTypeId})`);
     }
 
-    // Fetch appointment type details for duration
-    const appointmentTypes = await getAppointmentTypes(practitionerId, opts?.tenantCtx);
-    console.log(`[Cliniko] Found ${appointmentTypes.length} appointment types for practitioner ${practitionerId}`);
+    // Find the selected appointment type for duration info
     console.log(`[Cliniko] Looking for appointment type ID: ${appointmentTypeId}`);
-
     const appointmentType = appointmentTypes.find(at => at.id === appointmentTypeId);
 
     if (!appointmentType) {
