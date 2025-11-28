@@ -209,7 +209,7 @@ export async function getAvailability(opts?: {
 
   try {
     // Use provided IDs or fallback to tenant context or environment defaults
-    const businessId = opts?.businessId || opts?.tenantCtx?.cliniko?.businessId || env.CLINIKO_BUSINESS_ID;
+    const businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
     const practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || opts?.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';

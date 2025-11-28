@@ -3582,6 +3582,11 @@ export function registerVoice(app: Express) {
           console.log("[GET-AVAILABILITY]   preferredDayOfWeek:", preferredDayOfWeek);
           console.log("[GET-AVAILABILITY] ========================================");
 
+          // Get tenant context for Cliniko configuration
+          const { getTenantContext } = await import("../services/tenantResolver");
+          const tenant = await getTenantForCall(callSid);
+          const tenantCtx = tenant ? getTenantContext(await storage.getTenantById(tenant.id) as any) : undefined;
+
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
@@ -4456,6 +4461,11 @@ export function registerVoice(app: Express) {
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
+          // Get tenant context for Cliniko configuration
+          const { getTenantContext } = await import("../services/tenantResolver");
+          const tenant = await getTenantForCall(callSid);
+          const tenantCtx = tenant ? getTenantContext(await storage.getTenantById(tenant.id) as any) : undefined;
+
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
