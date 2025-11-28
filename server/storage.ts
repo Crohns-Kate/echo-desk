@@ -497,7 +497,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       // Apply priority multiplier (priority 0-100 => multiplier 1.0-2.0)
-      const priorityMultiplier = 1 + (faq.priority / 100);
+      const priorityMultiplier = 1 + ((faq.priority || 0) / 100);
       score = Math.round(score * priorityMultiplier);
 
       return { faq, score };
