@@ -190,7 +190,7 @@ export default function Transcripts() {
                       </p>
                       {call.transcript && call.transcript.length > 300 && (
                         <Link href={`/calls/${call.id}`}>
-                          <Button variant="link" size="sm" className="mt-2 px-0 h-auto">
+                          <Button variant="ghost" size="sm" className="mt-2 px-0 h-auto">
                             Read full transcript →
                           </Button>
                         </Link>
