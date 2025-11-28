@@ -279,8 +279,8 @@ function analyzeWithRules(call: CallLog): QualityMetrics {
   const positiveLanguage = positiveWords.some(word => lowerTranscript.includes(word));
 
   // Success indicators
-  const appointmentBooked = call.intent?.includes('book') && call.summary?.includes('booked');
-  const successfulResolution = appointmentBooked || (call.summary && call.summary.length > 10);
+  const appointmentBooked = !!(call.intent?.includes('book') && call.summary?.includes('booked'));
+  const successfulResolution = !!(appointmentBooked || (call.summary && call.summary.length > 10));
 
   return {
     callSid: call.callSid || '',

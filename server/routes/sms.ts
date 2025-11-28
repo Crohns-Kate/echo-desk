@@ -76,7 +76,13 @@ export function registerSMS(app: Express) {
             const { getTenantContext } = await import('../services/tenantResolver');
 
             // Get tenant context from the call
-            const tenantCtx = recentCall.tenantId ? await getTenantContext(recentCall.tenantId) : undefined;
+            let tenantCtx: ReturnType<typeof getTenantContext> | undefined;
+            if (recentCall.tenantId) {
+              const tenant = await storage.getTenantById(recentCall.tenantId);
+              if (tenant) {
+                tenantCtx = getTenantContext(tenant);
+              }
+            }
 
             const patient = await findPatientByPhoneRobust(from, tenantCtx);
 

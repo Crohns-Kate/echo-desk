@@ -480,15 +480,18 @@ export async function getPatientAppointments(phone: string): Promise<ClinikoAppo
     if (!patient) {
       return [];
     }
-    
+
     // Use /appointments endpoint with from parameter (new Cliniko API)
     const BUSINESS_TZ = env.TZ || 'Australia/Brisbane';
     const todayLocalISO = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
-    
+
     console.log(`[Cliniko] Fetching appointments for patient ${patient.id} from ${todayLocalISO}`);
-    
+
+    const { base, headers } = getClinikoConfig();
     const data = await clinikoGet<{ appointments: ClinikoAppointment[] }>(
-      `/appointments?patient_id=${patient.id}&from=${todayLocalISO}&per_page=50`
+      `/appointments?patient_id=${patient.id}&from=${todayLocalISO}&per_page=50`,
+      base,
+      headers
     );
     
     const appointments = data.appointments || [];
@@ -501,7 +504,8 @@ export async function getPatientAppointments(phone: string): Promise<ClinikoAppo
 
 export async function cancelAppointment(appointmentId: string): Promise<void> {
   try {
-    await clinikoPatch(`/individual_appointments/${appointmentId}/cancel`, {});
+    const { base, headers } = getClinikoConfig();
+    await clinikoPatch(`/individual_appointments/${appointmentId}/cancel`, {}, base, headers);
   } catch (e) {
     console.error('[Cliniko] cancelAppointment error', e);
     throw e;
@@ -512,9 +516,12 @@ export async function rescheduleAppointment(appointmentId: string, newStartsAt: 
   try {
     // Try PATCH first (standard reschedule endpoint)
     console.log(`[Cliniko] Attempting PATCH reschedule for ${appointmentId} to ${newStartsAt}`);
+    const { base, headers } = getClinikoConfig();
     const appointment = await clinikoPatch<ClinikoAppointment>(
       `/individual_appointments/${appointmentId}`,
-      { starts_at: newStartsAt }
+      { starts_at: newStartsAt },
+      base,
+      headers
     );
     console.log(`[Cliniko] PATCH reschedule successful`);
     return appointment;
@@ -527,24 +534,26 @@ export async function rescheduleAppointment(appointmentId: string, newStartsAt: 
       console.log(`[Cliniko] PATCH unsupported (${status}), trying DELETE + POST fallback`);
       
       try {
+        const { base, headers } = getClinikoConfig();
+
         // First get the original appointment details if we don't have them
         if (!patientId || !practitionerId || !appointmentTypeId) {
-          const originalAppt = await clinikoGet<ClinikoAppointment>(`/individual_appointments/${appointmentId}`);
+          const originalAppt = await clinikoGet<ClinikoAppointment>(`/individual_appointments/${appointmentId}`, base, headers);
           patientId = patientId || originalAppt.patient_id;
           practitionerId = practitionerId || originalAppt.practitioner_id;
           appointmentTypeId = appointmentTypeId || originalAppt.appointment_type_id;
         }
-        
+
         // Cancel the old appointment
         console.log(`[Cliniko] Cancelling original appointment ${appointmentId}`);
-        await clinikoPatch(`/individual_appointments/${appointmentId}/cancel`, {});
-        
+        await clinikoPatch(`/individual_appointments/${appointmentId}/cancel`, {}, base, headers);
+
         // Create new appointment at the new time
         console.log(`[Cliniko] Creating new appointment at ${newStartsAt}`);
         const businessId = env.CLINIKO_BUSINESS_ID;
         const duration = 30; // Default duration, could be parameterized
         const endsAt = dayjs(newStartsAt).add(duration, 'minute');
-        
+
         const newAppt = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
           business_id: businessId,
           patient_id: patientId,
@@ -552,7 +561,7 @@ export async function rescheduleAppointment(appointmentId: string, newStartsAt: 
           appointment_type_id: appointmentTypeId,
           starts_at: newStartsAt,
           ends_at: endsAt.toISOString()
-        });
+        }, base, headers);
         
         console.log(`[Cliniko] DELETE + POST fallback successful: ${newAppt.id}`);
         return newAppt;

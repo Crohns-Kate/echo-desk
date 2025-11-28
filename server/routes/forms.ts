@@ -43,7 +43,7 @@ export function registerForms(app: Express) {
       const call = await storage.getCallByCallSid(callSid);
 
       if (call?.conversationId) {
-        const conversation = await storage.getConversationById(call.conversationId);
+        const conversation = await storage.getConversation(call.conversationId);
         const context = conversation?.context as any;
 
         if (context?.formData) {

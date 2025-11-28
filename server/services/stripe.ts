@@ -14,7 +14,7 @@ let stripe: Stripe | null = null;
 
 if (stripeSecretKey) {
   stripe = new Stripe(stripeSecretKey, {
-    apiVersion: "2024-12-18.acacia",
+    apiVersion: "2025-11-17.clover",
   });
 }
 
@@ -238,8 +238,8 @@ export async function getSubscription(tenantId: number): Promise<{
     return {
       tier: (tenant.subscriptionTier as SubscriptionTier) || "free",
       status: subscription.status,
-      currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-      cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      currentPeriodEnd: (subscription as any).current_period_end ? new Date((subscription as any).current_period_end * 1000) : undefined,
+      cancelAtPeriodEnd: (subscription as any).cancel_at_period_end,
     };
   } catch (error) {
     console.error("[Stripe] Failed to get subscription:", error);
@@ -459,7 +459,7 @@ export function hasFeatureAccess(tier: SubscriptionTier, feature: keyof typeof S
 
   // For numeric limits, -1 means unlimited
   if (typeof value === "number") {
-    return value !== 0;
+    return value > 0 || value === -1;
   }
 
   return value;
@@ -490,7 +490,7 @@ export async function checkCallLimit(tenantId: number): Promise<{
 
   // Count calls this month
   const stats = await storage.getStats(tenantId);
-  const used = stats.callsToday * 30; // Approximate monthly (TODO: implement proper monthly count)
+  const used = stats.todayCalls * 30; // Approximate monthly (TODO: implement proper monthly count)
 
   const remaining = Math.max(0, limit - used);
   const allowed = remaining > 0;
