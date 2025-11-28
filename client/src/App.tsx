@@ -11,6 +11,7 @@ import CallDetail from "@/pages/call-detail";
 import QAReports from "@/pages/qa-reports";
 import Transcripts from "@/pages/transcripts";
 import Alerts from "@/pages/alerts";
+import Health from "@/pages/health";
 import Tenants from "@/pages/tenants";
 import TenantOnboarding from "@/pages/tenant-onboarding";
 import FaqManagement from "@/pages/faq-management";
@@ -30,6 +31,7 @@ function Router() {
         <Route path="/qa-reports" component={QAReports} />
         <Route path="/transcripts" component={Transcripts} />
         <Route path="/alerts" component={Alerts} />
+        <Route path="/health" component={Health} />
         <Route path="/tenants" component={Tenants} />
         <Route path="/tenants/new" component={TenantOnboarding} />
         <Route path="/tenants/:tenantId/faqs" component={FaqManagement} />
