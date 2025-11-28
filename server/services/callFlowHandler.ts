@@ -7,6 +7,7 @@ import { AUST_TZ } from '../time';
 import { parseNaturalDate, formatDateRange } from '../utils/date-parser';
 import { classifyIntent } from './intent';
 import type { TenantContext } from './tenantResolver';
+import { CallState } from '../types/call-state';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
@@ -18,22 +19,7 @@ dayjs.extend(timezone);
 // FSM (Finite State Machine) Types
 // ═══════════════════════════════════════════════
 
-export enum CallState {
-  GREETING = 'GREETING',
-  PATIENT_TYPE_DETECT = 'PATIENT_TYPE_DETECT',
-  FAQ_ANSWERING = 'FAQ_ANSWERING',
-  RETURNING_PATIENT_LOOKUP = 'RETURNING_PATIENT_LOOKUP',
-  NEW_PATIENT_PHONE_CONFIRM = 'NEW_PATIENT_PHONE_CONFIRM',
-  SEND_FORM_LINK = 'SEND_FORM_LINK',
-  WAITING_FOR_FORM = 'WAITING_FOR_FORM',
-  FORM_RECEIVED = 'FORM_RECEIVED',
-  CHIEF_COMPLAINT = 'CHIEF_COMPLAINT',
-  APPOINTMENT_SEARCH = 'APPOINTMENT_SEARCH',
-  PRESENT_OPTIONS = 'PRESENT_OPTIONS',
-  CONFIRM_BOOKING = 'CONFIRM_BOOKING',
-  CLOSING = 'CLOSING',
-  ERROR_RECOVERY = 'ERROR_RECOVERY'
-}
+export { CallState };
 
 export interface CallContext {
   state: CallState;

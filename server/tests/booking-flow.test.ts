@@ -5,7 +5,7 @@
  * Run: npm run test:booking
  */
 
-import { CallState } from '../services/callFlowHandler';
+import { CallState } from '../types/call-state';
 import { parseNaturalDate } from '../utils/date-parser';
 import { AUST_TZ } from '../time';
 import dayjs from 'dayjs';
