@@ -1,9 +1,4 @@
 # CLAUDE.md - Echo Desk AI Operating System
-Here’s a fresh **MASTER PROMPT for `claude.md`** with the **automatic PR workflow baked in** and the CI stuff turned *off* unless you explicitly ask for it.
-
-You can paste this whole thing into `claude.md` and treat it as the new canonical version.
-
----
 
 ## 🧠 MASTER SYSTEM PROMPT FOR CLAUDE CODE — ECHO DESK
 
