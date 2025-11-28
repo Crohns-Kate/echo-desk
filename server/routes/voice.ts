@@ -705,7 +705,7 @@ export function registerVoice(app: Express) {
 
     // 1. Try Cliniko lookup first
     try {
-      const clinikoPatient = await findPatientByPhoneRobust(from);
+      const clinikoPatient = await findPatientByPhoneRobust(from, tenantCtx);
       if (clinikoPatient) {
         knownPatientName = `${clinikoPatient.first_name} ${clinikoPatient.last_name}`.trim();
         knownPatientId = clinikoPatient.id;

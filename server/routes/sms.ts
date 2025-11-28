@@ -73,8 +73,12 @@ export function registerSMS(app: Express) {
           try {
             const { updateClinikoPatientEmail } = await import('../integrations/cliniko');
             const { findPatientByPhoneRobust } = await import('../services/cliniko');
+            const { getTenantContext } = await import('../services/tenantResolver');
 
-            const patient = await findPatientByPhoneRobust(from);
+            // Get tenant context from the call
+            const tenantCtx = recentCall.tenantId ? await getTenantContext(recentCall.tenantId) : undefined;
+
+            const patient = await findPatientByPhoneRobust(from, tenantCtx);
 
             if (patient && patient.id) {
               console.log('[SMS_INBOUND] 🔍 Found patient in Cliniko:', patient.id);
