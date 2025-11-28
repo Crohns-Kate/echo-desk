@@ -426,15 +426,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async listFaqs(tenantId?: number, activeOnly: boolean = true): Promise<Faq[]> {
-    let query = db.select().from(faqs);
+    const conditions = [];
 
     if (tenantId) {
-      query = query.where(eq(faqs.tenantId, tenantId));
+      conditions.push(eq(faqs.tenantId, tenantId));
     }
 
     if (activeOnly) {
-      query = query.where(eq(faqs.isActive, true));
+      conditions.push(eq(faqs.isActive, true));
     }
+
+    const query = conditions.length > 0
+      ? db.select().from(faqs).where(and(...conditions))
+      : db.select().from(faqs);
 
     return query.orderBy(desc(faqs.priority), faqs.category);
   }
@@ -497,7 +501,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       // Apply priority multiplier (priority 0-100 => multiplier 1.0-2.0)
-      const priorityMultiplier = 1 + (faq.priority / 100);
+      const priorityMultiplier = 1 + ((faq.priority || 0) / 100);
       score = Math.round(score * priorityMultiplier);
 
       return { faq, score };

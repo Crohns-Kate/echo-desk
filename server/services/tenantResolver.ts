@@ -215,7 +215,8 @@ export function getTenantContext(tenant: Tenant): TenantContext {
  * Get the default tenant (for backwards compatibility)
  */
 export async function getDefaultTenant(): Promise<Tenant | null> {
-  return storage.getTenant('default');
+  const tenant = await storage.getTenant('default');
+  return tenant || null;
 }
 
 /**

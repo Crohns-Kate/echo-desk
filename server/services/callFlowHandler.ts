@@ -114,7 +114,7 @@ export class CallFlowHandler {
     try {
       const call = await storage.getCallByCallSid(this.ctx.callSid);
       if (call?.conversationId) {
-        const conversation = await storage.getConversationById(call.conversationId);
+        const conversation = await storage.getConversation(call.conversationId);
         if (conversation?.context) {
           // Restore state from storage
           const stored = conversation.context as Partial<CallContext>;
@@ -127,7 +127,7 @@ export class CallFlowHandler {
           };
           console.log('[CallFlowHandler] Restored context:', this.ctx.state);
         }
-        this.ctx.conversationId = call.conversationId;
+        this.ctx.conversationId = String(call.conversationId);
       }
     } catch (err) {
       console.error('[CallFlowHandler] Failed to load context:', err);
@@ -140,7 +140,7 @@ export class CallFlowHandler {
   async saveContext(): Promise<void> {
     try {
       if (this.ctx.conversationId) {
-        await storage.updateConversation(this.ctx.conversationId, {
+        await storage.updateConversation(Number(this.ctx.conversationId), {
           context: this.ctx
         });
         console.log('[CallFlowHandler] Saved context:', this.ctx.state);
@@ -471,7 +471,7 @@ export class CallFlowHandler {
 
       // Store token in storage for later retrieval
       if (this.ctx.conversationId) {
-        await storage.updateConversation(this.ctx.conversationId, {
+        await storage.updateConversation(Number(this.ctx.conversationId), {
           context: { ...this.ctx, formToken: token }
         });
       }
@@ -511,7 +511,7 @@ export class CallFlowHandler {
       // Check storage for form completion
       const call = await storage.getCallByCallSid(this.ctx.callSid);
       if (call?.conversationId) {
-        const conversation = await storage.getConversationById(call.conversationId);
+        const conversation = await storage.getConversation(call.conversationId);
         const context = conversation?.context as Partial<CallContext>;
 
         if (context?.formData) {

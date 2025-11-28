@@ -437,7 +437,7 @@ export function registerApp(app: Express) {
       }
 
       // Fetch related alerts
-      const allAlerts = await storage.listAlerts(call.tenantId, 50);
+      const allAlerts = await storage.listAlerts(call.tenantId ?? undefined, 50);
       const relatedAlerts = allAlerts.filter(alert =>
         alert.conversationId === call.conversationId ||
         (alert.payload as any)?.callSid === call.callSid
@@ -499,7 +499,7 @@ export function registerApp(app: Express) {
           hasContext: !!conversationContext,
           hasAlerts: relatedAlerts.length > 0,
           patientModeSet: !!(conversationContext as any)?.patientMode,
-          possibleIssues: []
+          possibleIssues: [] as string[]
         }
       };
 
@@ -739,6 +739,10 @@ export function registerApp(app: Express) {
       // Try to update Cliniko immediately if patient exists
       try {
         // Get tenant to access tenant-specific Cliniko credentials
+        if (!call.tenantId) {
+          console.log('[VERIFY-DETAILS] No tenant ID, skipping Cliniko update');
+          return res.json({ success: true });
+        }
         const tenant = await storage.getTenantById(call.tenantId);
         if (!tenant) {
           console.log('[VERIFY-DETAILS] No tenant found, skipping Cliniko update');
