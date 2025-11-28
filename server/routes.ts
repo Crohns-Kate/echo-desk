@@ -21,42 +21,165 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const businessId = process.env.CLINIKO_BUSINESS_ID;
     const practitionerId = process.env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = process.env.CLINIKO_APPT_TYPE_ID;
-    
+
     const response: any = {
-      region,
-      businessId,
-      practitionerId,
-      appointmentTypeId,
-      ok: false,
-      reason: null
+      timestamp: new Date().toISOString(),
+      configuration: {
+        region,
+        businessId: businessId || null,
+        practitionerId: practitionerId || null,
+        appointmentTypeId: appointmentTypeId || null,
+        apiKeyConfigured: !!apiKey
+      },
+      autoDetection: {
+        attempted: false,
+        business: null,
+        practitioner: null,
+        appointmentType: null
+      },
+      connectivity: {
+        ok: false,
+        reason: null
+      },
+      availabilityTest: {
+        attempted: false,
+        ok: false,
+        reason: null,
+        slotsFound: 0
+      },
+      recommendations: []
     };
 
     try {
+      // Check API key
       if (!apiKey) {
-        response.reason = 'CLINIKO_API_KEY not set';
+        response.connectivity.reason = 'CLINIKO_API_KEY not set';
+        response.recommendations.push('Set CLINIKO_API_KEY in environment variables. Get your API key from Cliniko Settings → API Keys.');
+        response.recommendations.push('Run: node setup-cliniko-config.mjs to get all required configuration.');
         return res.json(response);
       }
 
+      // Test API connectivity
       const base = `https://api.${region}.cliniko.com/v1`;
-      const url = `${base}/appointment_types?per_page=1`;
-      
-      const apiRes = await fetch(url, {
-        headers: {
-          'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
-          'Accept': 'application/json'
-        }
-      });
+      const headers = {
+        'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
+        'Accept': 'application/json'
+      };
+
+      const testUrl = `${base}/businesses?per_page=1`;
+      const apiRes = await fetch(testUrl, { headers });
 
       if (!apiRes.ok) {
         const text = await apiRes.text();
-        response.reason = `Cliniko API ${apiRes.status}: ${text.slice(0, 100)}`;
+        response.connectivity.reason = `Cliniko API ${apiRes.status}: ${text.slice(0, 200)}`;
+
+        if (apiRes.status === 401) {
+          response.recommendations.push('API key is invalid or expired. Check CLINIKO_API_KEY in your environment variables.');
+        } else if (apiRes.status === 404) {
+          response.recommendations.push(`Region might be incorrect. Current: ${region}. Check your Cliniko URL to verify the region (e.g., app.au1.cliniko.com means region = au1).`);
+        }
+
         return res.json(response);
       }
 
-      response.ok = true;
+      response.connectivity.ok = true;
+
+      // Attempt auto-detection
+      response.autoDetection.attempted = true;
+
+      try {
+        // Auto-detect business
+        if (!businessId) {
+          const { getBusinesses } = await import('./services/cliniko');
+          const businesses = await getBusinesses();
+          if (businesses.length > 0) {
+            response.autoDetection.business = {
+              id: businesses[0].id,
+              name: businesses[0].name,
+              note: businesses.length > 1 ? `${businesses.length} businesses found, showing first one` : 'Single business found'
+            };
+            response.recommendations.push(`Auto-detected business: ${businesses[0].name} (${businesses[0].id}). Add CLINIKO_BUSINESS_ID=${businesses[0].id} to environment if you want to lock this in.`);
+          } else {
+            response.recommendations.push('No businesses found in Cliniko account. Please create at least one business in Cliniko.');
+          }
+        }
+
+        // Auto-detect practitioner
+        if (!practitionerId) {
+          const { getPractitioners } = await import('./services/cliniko');
+          const practitioners = await getPractitioners();
+          if (practitioners.length > 0) {
+            response.autoDetection.practitioner = {
+              id: practitioners[0].id,
+              name: `${practitioners[0].first_name} ${practitioners[0].last_name}`,
+              note: practitioners.length > 1 ? `${practitioners.length} practitioners found, showing first one` : 'Single practitioner found'
+            };
+            response.recommendations.push(`Auto-detected practitioner: ${practitioners[0].first_name} ${practitioners[0].last_name} (${practitioners[0].id}). Add CLINIKO_PRACTITIONER_ID=${practitioners[0].id} to environment to specify.`);
+          } else {
+            response.recommendations.push('No practitioners found in Cliniko. Ensure at least one practitioner is marked as "Show in online bookings" and "Active".');
+          }
+        }
+
+        // Auto-detect appointment type
+        const detectedPractitionerId = practitionerId || response.autoDetection.practitioner?.id;
+        if (!appointmentTypeId && detectedPractitionerId) {
+          const { getAppointmentTypes } = await import('./services/cliniko');
+          const appointmentTypes = await getAppointmentTypes(detectedPractitionerId);
+          if (appointmentTypes.length > 0) {
+            response.autoDetection.appointmentType = {
+              id: appointmentTypes[0].id,
+              name: appointmentTypes[0].name,
+              duration: appointmentTypes[0].duration_in_minutes,
+              note: appointmentTypes.length > 1 ? `${appointmentTypes.length} types found, showing first one` : 'Single appointment type found',
+              allTypes: appointmentTypes.map(at => ({ id: at.id, name: at.name, duration: at.duration_in_minutes }))
+            };
+            response.recommendations.push(`Auto-detected appointment type: ${appointmentTypes[0].name} (${appointmentTypes[0].id}, ${appointmentTypes[0].duration_in_minutes}min). Add CLINIKO_APPT_TYPE_ID=${appointmentTypes[0].id} to environment to specify.`);
+          } else {
+            response.recommendations.push(`No appointment types found for practitioner ${detectedPractitionerId}. Ensure this practitioner has at least one appointment type marked as "Show in online bookings".`);
+          }
+        }
+
+        // Test availability fetch
+        response.availabilityTest.attempted = true;
+        const { getAvailability } = await import('./services/cliniko');
+
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const fromISO = tomorrow.toISOString().split('T')[0];
+
+        const { slots } = await getAvailability({
+          fromISO,
+          toISO: fromISO,
+          practitionerId: practitionerId || response.autoDetection.practitioner?.id,
+          appointmentTypeId: appointmentTypeId || response.autoDetection.appointmentType?.id
+        });
+
+        response.availabilityTest.ok = true;
+        response.availabilityTest.slotsFound = slots.length;
+
+        if (slots.length === 0) {
+          response.recommendations.push(`✅ Cliniko connection successful but no availability found for ${fromISO}. This may be normal if the practitioner has no openings tomorrow.`);
+        } else {
+          response.recommendations.push(`✅ Successfully retrieved ${slots.length} available slots for ${fromISO}. Cliniko integration is working!`);
+        }
+
+      } catch (autoDetectErr: any) {
+        response.availabilityTest.reason = autoDetectErr.message;
+        response.recommendations.push(`❌ Error during configuration: ${autoDetectErr.message}`);
+      }
+
+      // Add final setup recommendation if needed
+      if (response.recommendations.length === 0) {
+        response.recommendations.push('✅ All Cliniko configuration is complete and working!');
+      } else if (!practitionerId || !appointmentTypeId) {
+        response.recommendations.push('');
+        response.recommendations.push('💡 Quick setup: Run `node setup-cliniko-config.mjs` to automatically fetch all required IDs.');
+      }
+
       res.json(response);
     } catch (err: any) {
-      response.reason = err.message || String(err);
+      response.connectivity.reason = err.message || String(err);
+      response.recommendations.push(`Unexpected error: ${err.message}`);
       res.json(response);
     }
   });
