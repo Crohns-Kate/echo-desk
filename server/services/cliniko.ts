@@ -209,15 +209,27 @@ export async function getAvailability(opts?: {
 
   try {
     // Use provided IDs or fallback to tenant context or environment defaults
-    const businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
+    let businessId = opts?.businessId || env.CLINIKO_BUSINESS_ID;
     const practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || opts?.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
 
-    // Validate required configuration
+    // Auto-fetch business ID if not provided
     if (!businessId) {
-      throw new Error('Missing Cliniko configuration: businessId is required. Please set CLINIKO_BUSINESS_ID in environment variables or configure it in tenant settings.');
+      console.log('[Cliniko] businessId not configured, fetching from API...');
+      try {
+        const businesses = await getBusinesses(opts?.tenantCtx);
+        if (businesses.length === 0) {
+          throw new Error('No businesses found in Cliniko account. Please ensure your Cliniko account has at least one business configured.');
+        }
+        businessId = businesses[0].id;
+        console.log(`[Cliniko] Auto-selected business: ${businesses[0].name} (ID: ${businessId})`);
+      } catch (fetchError: any) {
+        throw new Error(`Failed to fetch business ID from Cliniko: ${fetchError.message}. You can also manually set CLINIKO_BUSINESS_ID in environment variables.`);
+      }
     }
+
+    // Validate required configuration
     if (!practitionerId) {
       throw new Error('Missing Cliniko configuration: practitionerId is required. Please set CLINIKO_PRACTITIONER_ID in environment variables or configure it in tenant settings.');
     }
