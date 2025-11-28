@@ -3605,22 +3605,33 @@ export function registerVoice(app: Express) {
             timePart,
             isNewPatient
           });
+
+          // Determine if this is a configuration error
+          const isConfigError = e.message?.includes('Missing Cliniko configuration');
+
           try {
             const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
-                reason: "cliniko_error",
+                reason: isConfigError ? "cliniko_config_error" : "cliniko_error",
                 payload: {
                   error: e.message,
                   stack: e.stack,
                   endpoint: "getAvailability",
                   callSid,
                   from,
-                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient }
+                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient },
+                  isConfigurationError: isConfigError
                 },
               });
               emitAlertCreated(alert);
+
+              // Log configuration error clearly for clinic staff
+              if (isConfigError) {
+                console.error("[GET-AVAILABILITY] ⚠️ CONFIGURATION ERROR:", e.message);
+                console.error("[GET-AVAILABILITY] Please check your Cliniko configuration in the tenant settings or environment variables.");
+              }
             }
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);
@@ -4456,22 +4467,33 @@ export function registerVoice(app: Express) {
           console.log(`[GET-AVAILABILITY-SPECIFIC-DAY] Received ${slots.length} slots from getAvailability`);
         } catch (e: any) {
           console.error("[GET-AVAILABILITY-SPECIFIC-DAY][getAvailability ERROR]", e);
+
+          // Determine if this is a configuration error
+          const isConfigError = e.message?.includes('Missing Cliniko configuration');
+
           try {
             const tenant = await getTenantForCall(callSid);
             if (tenant) {
               const alert = await storage.createAlert({
                 tenantId: tenant.id,
-                reason: "cliniko_error",
+                reason: isConfigError ? "cliniko_config_error" : "cliniko_error",
                 payload: {
                   error: e.message,
                   stack: e.stack,
                   endpoint: "getAvailability",
                   callSid,
                   from,
-                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient }
+                  parameters: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient },
+                  isConfigurationError: isConfigError
                 },
               });
               emitAlertCreated(alert);
+
+              // Log configuration error clearly for clinic staff
+              if (isConfigError) {
+                console.error("[GET-AVAILABILITY-SPECIFIC-DAY] ⚠️ CONFIGURATION ERROR:", e.message);
+                console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Please check your Cliniko configuration in the tenant settings or environment variables.");
+              }
             }
           } catch (alertErr) {
             console.error("[ALERT ERROR]", alertErr);

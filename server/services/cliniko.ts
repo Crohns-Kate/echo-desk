@@ -139,6 +139,9 @@ export async function getPractitioners(tenantCtx?: TenantContext): Promise<Clini
 }
 
 export async function getAppointmentTypes(practitionerId: string, tenantCtx?: TenantContext): Promise<ClinikoAppointmentType[]> {
+  if (!practitionerId) {
+    throw new Error('practitionerId is required to fetch appointment types');
+  }
   const { base, headers } = getClinikoConfig(tenantCtx);
   const data = await clinikoGet<{ appointment_types: ClinikoAppointmentType[] }>(
     `/practitioners/${practitionerId}/appointment_types?per_page=50`, base, headers
@@ -210,6 +213,17 @@ export async function getAvailability(opts?: {
     const practitionerId = opts?.practitionerId || opts?.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
     const appointmentTypeId = opts?.appointmentTypeId || opts?.tenantCtx?.cliniko?.standardApptTypeId || env.CLINIKO_APPT_TYPE_ID;
     const tz = opts?.timezone || opts?.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+
+    // Validate required configuration
+    if (!businessId) {
+      throw new Error('Missing Cliniko configuration: businessId is required. Please set CLINIKO_BUSINESS_ID in environment variables or configure it in tenant settings.');
+    }
+    if (!practitionerId) {
+      throw new Error('Missing Cliniko configuration: practitionerId is required. Please set CLINIKO_PRACTITIONER_ID in environment variables or configure it in tenant settings.');
+    }
+    if (!appointmentTypeId) {
+      throw new Error('Missing Cliniko configuration: appointmentTypeId is required. Please set CLINIKO_APPT_TYPE_ID in environment variables or configure it in tenant settings.');
+    }
 
     // Fetch appointment type details for duration
     const appointmentTypes = await getAppointmentTypes(practitionerId, opts?.tenantCtx);
