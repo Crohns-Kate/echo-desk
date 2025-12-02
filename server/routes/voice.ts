@@ -2893,17 +2893,29 @@ export function registerVoice(app: Express) {
       if (route === "explain-new-patient-visit-proactive") {
         const { getNewPatientInfoBlurb, splitBlurbIntoSaySegments } = await import("../utils/clinicInfo");
 
-        // Get firstName from context
+        // Get firstName and check if day/time preference was already collected
         let firstName = "";
+        let hasPreference = false;
+        let requestedDay = "";
+        let timePart: "morning" | "afternoon" | undefined;
+
         try {
           const call = await storage.getCallByCallSid(callSid);
           if (call?.conversationId) {
             const conversation = await storage.getConversation(call.conversationId);
             const context = conversation?.context as any;
             firstName = context?.firstName || "";
+            requestedDay = context?.requestedDay || context?.preferredDay || "";
+            timePart = context?.timePart || context?.preferredTime;
+
+            // Check if we have both day and time preference from early collection
+            if (requestedDay && (requestedDay.length > 0)) {
+              hasPreference = true;
+              console.log("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Day/time preference already collected:", { requestedDay, timePart });
+            }
           }
         } catch (err) {
-          console.error("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Error getting firstName:", err);
+          console.error("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Error getting context:", err);
         }
 
         const infoBlurb = getNewPatientInfoBlurb();
@@ -2928,9 +2940,23 @@ export function registerVoice(app: Express) {
           vr.pause({ length: 1 });
         }
 
-        // Transition to booking with empathy
+        // Transition to booking
         saySafeSSML(vr, "Alright, let me get you sorted - hang on a sec while I check what we've got.");
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
+
+        // If day/time preference was already collected, skip ask-week and go directly to availability search
+        if (hasPreference && requestedDay) {
+          console.log("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Using stored preference, skipping ask-week");
+          console.log("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] Redirecting to get-availability-specific-day with:", { requestedDay, timePart });
+
+          // Need to redirect to availability search with the collected day/time
+          // But first we need to make sure we're using the ask-time-of-day flow which will properly handle this
+          // Actually, let's go to get-availability-specific-day directly
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=get-availability-specific-day&callSid=${encodeURIComponent(callSid)}&returning=0&day=${encodeURIComponent(requestedDay)}`));
+        } else {
+          // No preference collected yet, go through normal ask-week flow
+          console.log("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] No stored preference, using ask-week flow");
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
+        }
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -4514,12 +4540,36 @@ export function registerVoice(app: Express) {
         const isReturningPatient = (req.query.returning as string) === '1';
         const requestedDay = ((req.query.day as string) || "").toLowerCase();
 
-        // Get time preference from speech
+        // Get time preference from context first (if collected early), then fall back to speech
         let timePart: 'morning' | 'afternoon' | undefined;
-        if (speechRaw.includes("morning") || speechRaw.includes("early")) {
-          timePart = 'morning';
-        } else if (speechRaw.includes("afternoon") || speechRaw.includes("midday") || speechRaw.includes("late")) {
-          timePart = 'afternoon';
+
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const context = conversation?.context as any;
+
+            // Check if time part was already stored from early preference collection
+            if (context?.timePart) {
+              timePart = context.timePart;
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored timePart from context:", timePart);
+            } else if (context?.preferredTime) {
+              timePart = context.preferredTime;
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored preferredTime from context:", timePart);
+            }
+          }
+        } catch (err) {
+          console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Error getting timePart from context:", err);
+        }
+
+        // If not in context, try to extract from speech
+        if (!timePart && speechRaw) {
+          if (speechRaw.includes("morning") || speechRaw.includes("early")) {
+            timePart = 'morning';
+          } else if (speechRaw.includes("afternoon") || speechRaw.includes("midday") || speechRaw.includes("late")) {
+            timePart = 'afternoon';
+          }
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Extracted timePart from speech:", timePart);
         }
 
         // Determine patient mode from conversation context
@@ -4604,6 +4654,24 @@ export function registerVoice(app: Express) {
           const tenant = await getTenantForCall(callSid);
           const tenantCtx = tenant ? getTenantContext(await storage.getTenantById(tenant.id) as any) : undefined;
 
+          // Enhanced logging before making the Cliniko API call
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] ====== CLINIKO AVAILABILITY REQUEST ======");
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Tenant:", tenantCtx ? {
+            id: tenantCtx.id,
+            slug: tenantCtx.slug,
+            clinicName: tenantCtx.clinicName,
+            timezone: tenantCtx.timezone,
+            hasClinikoConfig: !!tenantCtx.cliniko?.apiKey
+          } : "NO TENANT CONTEXT");
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Request parameters:", {
+            fromISO: fromDate,
+            toISO: toDate,
+            appointmentTypeId,
+            part: timePart,
+            isNewPatient
+          });
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] =============================================");
+
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
@@ -4612,9 +4680,23 @@ export function registerVoice(app: Express) {
             tenantCtx
           });
           slots = result.slots || [];
-          console.log(`[GET-AVAILABILITY-SPECIFIC-DAY] Received ${slots.length} slots from getAvailability`);
+          console.log(`[GET-AVAILABILITY-SPECIFIC-DAY] ✅ SUCCESS: Received ${slots.length} slots from getAvailability`);
+          if (slots.length > 0) {
+            console.log("[GET-AVAILABILITY-SPECIFIC-DAY] First slot:", {
+              startISO: slots[0].startISO,
+              endISO: slots[0].endISO,
+              label: slots[0].label
+            });
+          }
         } catch (e: any) {
-          console.error("[GET-AVAILABILITY-SPECIFIC-DAY][getAvailability ERROR]", e);
+          console.error("[GET-AVAILABILITY-SPECIFIC-DAY] ❌ CLINIKO AVAILABILITY ERROR");
+          console.error("[CLINIKO-BOOKING-ERROR] Error calling getAvailability:", {
+            message: e.message,
+            stack: e.stack,
+            requestParams: { fromDate, toDate, appointmentTypeId, timePart, isNewPatient },
+            callSid,
+            from
+          });
 
           // Determine if this is a configuration error
           const isConfigError = e.message?.includes('Missing Cliniko configuration');
