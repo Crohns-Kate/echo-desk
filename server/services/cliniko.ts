@@ -27,8 +27,8 @@ function getClinikoConfig(tenantCtx?: TenantContext): { base: string; headers: R
   } else {
     // Fallback to environment variables
     apiKey = env.CLINIKO_API_KEY;
-    shard = env.CLINIKO_SHARD || 'au1';
-    console.log('[Cliniko] Using environment credentials (shard: ${shard})');
+    shard = env.CLINIKO_REGION; // Use CLINIKO_REGION instead of CLINIKO_SHARD
+    console.log(`[Cliniko] Using environment credentials (shard: ${shard})`);
   }
 
   const base = `https://api.${shard}.cliniko.com/v1`;
