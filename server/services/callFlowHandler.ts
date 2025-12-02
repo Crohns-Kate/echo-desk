@@ -164,7 +164,7 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle greeting
+   * Handle greeting (for unknown callers)
    */
   async handleGreeting(): Promise<void> {
     this.transitionTo(CallState.PATIENT_TYPE_DETECT);
@@ -174,62 +174,72 @@ export class CallFlowHandler {
       timeout: 5,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'yes, no, new, returning, first visit',
+      hints: 'book, appointment, new patient, change, reschedule, question, hours, location, parking',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
       method: 'POST'
     });
 
-    // Use tenant-specific greeting if available, otherwise use default
-    if (this.tenantCtx?.greeting) {
-      saySafe(g, this.tenantCtx.greeting);
+    // New flow: Skip "first visit?" and go straight to intent detection
+    const clinicName = this.getClinicName();
+    let greetingMessage: string;
+
+    if (this.tenantCtx?.greeting && this.tenantCtx.greeting !== "Thanks for calling") {
+      // Use tenant's custom greeting + intent question
+      greetingMessage = `${this.tenantCtx.greeting} I'll help the team book you in or answer your questions. Are you calling to book a new patient visit, change an appointment, or just ask a question?`;
     } else {
-      const clinicName = this.getClinicName();
-      saySafe(g, `Thanks for calling ${clinicName}. Is this your first visit with us?`);
+      // Default greeting + intent question
+      greetingMessage = `Thanks for calling ${clinicName}. I'll help the team book you in or answer your questions. Are you calling to book a new patient visit, change an appointment, or just ask a question?`;
     }
+
+    saySafe(g, greetingMessage);
     await this.saveContext();
   }
 
   /**
-   * Handle patient type detection
+   * Handle patient type/intent detection
    */
   async handlePatientTypeDetect(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
-    // Check for FAQ intent first (if they're asking a question instead of answering)
-    const { detectFaqIntent } = await import('./faq');
-    const faqCategory = detectFaqIntent(speechRaw);
+    // Detect three main intents: book, change appointment, or ask question
+    const wantsToBook = speech.includes('book') || speech.includes('appointment') ||
+                       speech.includes('new patient') || speech.includes('first') ||
+                       (speech.includes('schedule') && !speech.includes('reschedule'));
 
-    if (faqCategory && speechRaw.length > 10) {
-      // They're asking a question, not answering our question
-      console.log('[handlePatientTypeDetect] Detected FAQ intent:', faqCategory);
-      this.transitionTo(CallState.FAQ_ANSWERING);
-      await this.handleFAQ(speechRaw);
-      return;
-    }
+    const wantsToChange = speech.includes('reschedule') || speech.includes('change') ||
+                          speech.includes('move') || speech.includes('cancel') ||
+                          speech.includes('different time');
 
-    // Check if they said new/first/yes
-    const isNew = speech.includes('new') || speech.includes('first') ||
-                  speech.includes('yes') || digits === '1';
+    const hasQuestion = speech.includes('question') || speech.includes('ask') ||
+                       speech.includes('hours') || speech.includes('location') ||
+                       speech.includes('parking') || speech.includes('price') ||
+                       speech.includes('cost') || speech.includes('where');
 
-    // Check if they said returning/no
-    const isReturning = speech.includes('returning') || speech.includes('no') ||
-                        speech.includes('been before') || digits === '2';
+    console.log('[handlePatientTypeDetect] Speech:', speechRaw);
+    console.log('[handlePatientTypeDetect] wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange, 'hasQuestion:', hasQuestion);
 
-    if (isNew) {
-      // New patient flow
+    if (wantsToBook) {
+      // Route to new patient booking flow
+      console.log('[handlePatientTypeDetect] Routing to new patient booking');
       this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
       await this.handleNewPatientPhoneConfirm();
-    } else if (isReturning) {
-      // Check Cliniko for existing patient
-      this.transitionTo(CallState.RETURNING_PATIENT_LOOKUP);
-      await this.handleReturningPatientLookup();
+    } else if (wantsToChange) {
+      // Transfer to reception for appointment changes
+      console.log('[handlePatientTypeDetect] Transferring for appointment change');
+      saySafe(this.vr, "Let me transfer you to our reception team who can help with that.");
+      this.vr.hangup();
+    } else if (hasQuestion) {
+      // Route to FAQ flow
+      console.log('[handlePatientTypeDetect] Routing to FAQ flow');
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQ(speechRaw);
     } else {
-      // Unclear response - retry with more helpful prompt
+      // Unclear response - retry without "Sorry" or "Apologies"
       this.ctx.retryCount++;
       if (this.ctx.retryCount >= 2) {
-        // Assume new patient after 2 failed attempts
+        // Assume booking after 2 failed attempts
         this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
-        saySafe(this.vr, "No worries, I'll treat this as a new patient visit.");
+        saySafe(this.vr, "No worries, I'll help you book an appointment.");
         await this.handleNewPatientPhoneConfirm();
       } else {
         const g = this.vr.gather({
@@ -237,16 +247,16 @@ export class CallFlowHandler {
           timeout: 5,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'yes, no, new, returning, first visit, been before',
+          hints: 'book, appointment, change, question, hours, location',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
           method: 'POST'
         });
 
-        // More conversational and helpful retry prompt
+        // Retry prompt without premature apologies
         const retryPrompts = [
-          "Sorry, I didn't catch that. Have you been here before? Say yes if you're a returning patient, or no if this is your first visit.",
-          "I didn't quite get that. Are you a new patient with us, or have you visited us before?",
-          "Apologies, could you clarify? Is this your first appointment, or are you an existing patient?"
+          "I didn't catch that. You can say: book an appointment, change an appointment, or ask a question.",
+          "I didn't quite get that. Would you like to book an appointment, change one, or ask a question?",
+          "Can you repeat that? Are you calling to book, change an appointment, or ask about our services?"
         ];
         const randomPrompt = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
         saySafe(g, randomPrompt);
