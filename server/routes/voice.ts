@@ -770,20 +770,15 @@ export function registerVoice(app: Express) {
         hints: `${firstName}, yes, yeah, yep, new patient, new, first time, first visit, I'm ${firstName}`
       });
 
-      // Ask if they are the existing patient or a new patient
-      // Use tenant-specific greeting if available, otherwise use default variations
+      // Ask if they are the existing patient using caller-ID recognition
+      // New cleaner approach: Just confirm their name, don't ask "or new patient" yet
       let greetingMessage: string;
       if (tenantCtx?.greeting && tenantCtx.greeting !== "Thanks for calling") {
-        // Use tenant's custom greeting (add patient name if it ends with a question)
-        greetingMessage = tenantCtx.greeting;
+        // Use tenant's custom greeting followed by name confirmation
+        greetingMessage = `${tenantCtx.greeting} I think I recognise this number. Are you ${firstName}?`;
       } else {
-        // Use default greeting variations with patient name
-        const greetings = [
-          `Hi there! Thanks so much for calling ${clinicName}. Is this ${firstName}, or are you a new patient with us today?`,
-          `G'day! You've called ${clinicName}. Are you ${firstName}, or is this your first time with us?`,
-          `Hello! Thanks for calling ${clinicName}. Is this ${firstName}, or are you a new patient?`
-        ];
-        greetingMessage = greetings[Math.floor(Math.random() * greetings.length)];
+        // Use clean greeting with name confirmation only
+        greetingMessage = `Thanks for calling ${clinicName}. I think I recognise this number. Are you ${firstName}?`;
       }
       saySafeSSML(g, greetingMessage);
       g.pause({ length: 1 });
@@ -1158,7 +1153,7 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
           }
 
-          // Ask what they want to do (book, reschedule, cancel)
+          // Ask what they want to do (book, change appointment, or ask question)
           const firstName = extractFirstName(knownName);
           const g = vr.gather({
             input: ["speech"],
@@ -1167,20 +1162,16 @@ export function registerVoice(app: Express) {
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=existing-patient-intent&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
-            hints: "book, reschedule, cancel, appointment"
+            hints: "book, appointment, change, reschedule, cancel, question, hours, location, parking"
           });
-          const intentPrompts = [
-            `That's wonderful! What can I help you with today? Would you like to book, reschedule, or cancel an appointment?`,
-            `How can I help you? Are you looking to book, reschedule, or cancel?`,
-            `Lovely! What would you like to do - book a new appointment, reschedule an existing one, or cancel?`
-          ];
-          const randomPrompt = intentPrompts[Math.floor(Math.random() * intentPrompts.length)];
-          saySafe(g, randomPrompt);
+          // New cleaner intent prompt matching user requirements
+          saySafe(g, `Great, ${firstName}. Are you calling to book an appointment, change an appointment, or ask a question?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else if (isNew) {
-          // They indicated they are a new patient
+          // They said "no" or "new patient" - they're not the known patient
+          // First ask for their intent before collecting details
           try {
             const call = await storage.getCallByCallSid(callSid);
             if (call?.conversationId) {
@@ -1223,27 +1214,23 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
           }
 
-          // Proceed to new patient flow - collect name
+          // NEW FLOW: Ask for intent first (book, change, or question)
           const g = vr.gather({
             input: ["speech"],
-            timeout: 10,
+            timeout: 5,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
+            action: abs(`/api/voice/handle?route=new-patient-intent&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
+            hints: "book, appointment, change, reschedule, cancel, question, hours, location, parking"
           });
-          const namePrompts = [
-            `Wonderful! Since it's your first visit with us, I just need to get your details into the system. What's your full name? Or if you prefer, just say 'text me' and I'll send you a link!`,
-            `Brilliant! Because you're new, I'll need your full name for our records. You can spell it out nice and slowly, or say 'text me' for a link.`,
-            `Lovely! Let me get your details sorted. What's your full name? Feel free to say 'text me' if you'd like to type it instead - whatever's easier for you!`
-          ];
-          const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
-          saySafeSSML(g, randomPrompt);
+          // Clean intent question for non-recognized callers
+          saySafe(g, `No problem. Are you calling to book a new patient visit, change an appointment, or just ask a question?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // Unclear response - ask again with clearer options
+          // Unclear response - ask again with clearer yes/no prompt (NO "Just say Mary" language)
           const firstName = extractFirstName(knownName);
           const g = vr.gather({
             input: ["speech"],
@@ -1254,16 +1241,17 @@ export function registerVoice(app: Express) {
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
-            hints: `${firstName}, yes, yeah, new patient, new, first time`
+            hints: `${firstName}, yes, yeah, yep, no, new patient, new, first time`
           });
-          saySafe(g, `Sorry, I didn't quite catch that. Just say "${firstName}" if this is you, or say "new patient" if you're calling for the first time.`);
+          // Natural retry without forcing them to say their name
+          saySafe(g, `I didn't catch that. Are you ${firstName}? You can say yes or no.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         }
       }
 
-      // EXISTING-PATIENT-INTENT → Handle intent for existing patients (book, reschedule, cancel)
+      // EXISTING-PATIENT-INTENT → Handle intent for existing patients (book, change, or ask question)
       if (route === "existing-patient-intent") {
         const knownName = (req.query.knownName as string) || "";
         const firstName = extractFirstName(knownName);
@@ -1273,9 +1261,13 @@ export function registerVoice(app: Express) {
         const wantsToReschedule = speechRaw.includes("reschedule") || speechRaw.includes("change") ||
                                   speechRaw.includes("move") || speechRaw.includes("different time");
         const wantsToCancel = speechRaw.includes("cancel") || speechRaw.includes("cancel");
+        const hasQuestion = speechRaw.includes("question") || speechRaw.includes("ask") ||
+                           speechRaw.includes("hours") || speechRaw.includes("location") ||
+                           speechRaw.includes("parking") || speechRaw.includes("price") ||
+                           speechRaw.includes("cost") || speechRaw.includes("where");
 
         console.log("[EXISTING-PATIENT-INTENT] Speech:", speechRaw);
-        console.log("[EXISTING-PATIENT-INTENT] wantsToBook:", wantsToBook, "wantsToReschedule:", wantsToReschedule, "wantsToCancel:", wantsToCancel);
+        console.log("[EXISTING-PATIENT-INTENT] wantsToBook:", wantsToBook, "wantsToReschedule:", wantsToReschedule, "wantsToCancel:", wantsToCancel, "hasQuestion:", hasQuestion);
 
         if (wantsToReschedule) {
           // Route to reschedule flow
@@ -1328,8 +1320,155 @@ export function registerVoice(app: Express) {
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } else if (wantsToBook) {
-          // Route to booking flow - ask if for them or someone else
+          // Route to booking flow - ask for day/time preference EARLY
           console.log("[EXISTING-PATIENT-INTENT] Routing to booking flow");
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-day-time-preference&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}&isExisting=1`),
+            method: "POST",
+            hints: "monday, tuesday, wednesday, thursday, friday, saturday, sunday, tomorrow, today, next week, morning, afternoon, evening, anytime, whenever"
+          });
+          // Ask for day/time preference EARLY in the flow
+          saySafe(g, `Do you have a particular day and time in mind? I'll try to find something as close as I can to that.`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (hasQuestion) {
+          // Route to FAQ/question answering flow
+          console.log("[EXISTING-PATIENT-INTENT] Routing to FAQ flow");
+          // Redirect to FSM handler with FAQ step
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear - ask again (no apology unless it's a real ASR failure)
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=existing-patient-intent&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            method: "POST",
+            hints: "book, appointment, change, reschedule, cancel, question, hours, location"
+          });
+          // Only say "didn't catch" after an actual unclear response
+          saySafe(g, `I didn't catch that. You can say: book an appointment, change an appointment, or ask a question.`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // NEW-PATIENT-INTENT → Handle intent for new/unrecognized callers (book, change, or ask question)
+      if (route === "new-patient-intent") {
+        const wantsToBook = speechRaw.includes("book") || speechRaw.includes("appointment") ||
+                           speechRaw.includes("new patient") || speechRaw.includes("first") ||
+                           (speechRaw.includes("schedule") && !speechRaw.includes("reschedule"));
+        const wantsToReschedule = speechRaw.includes("reschedule") || speechRaw.includes("change") ||
+                                  speechRaw.includes("move") || speechRaw.includes("different time");
+        const wantsToCancel = speechRaw.includes("cancel");
+        const hasQuestion = speechRaw.includes("question") || speechRaw.includes("ask") ||
+                           speechRaw.includes("hours") || speechRaw.includes("location") ||
+                           speechRaw.includes("parking") || speechRaw.includes("price") ||
+                           speechRaw.includes("cost") || speechRaw.includes("where");
+
+        console.log("[NEW-PATIENT-INTENT] Speech:", speechRaw);
+        console.log("[NEW-PATIENT-INTENT] wantsToBook:", wantsToBook, "wantsToReschedule:", wantsToReschedule, "wantsToCancel:", wantsToCancel, "hasQuestion:", hasQuestion);
+
+        if (wantsToReschedule || wantsToCancel) {
+          // Transfer to reception for appointment changes (new patients likely don't have appointments yet)
+          console.log("[NEW-PATIENT-INTENT] Transferring to reception for appointment change");
+          saySafe(vr, "Let me transfer you to our reception team who can help with that.");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        } else if (wantsToBook) {
+          // Route to new patient booking flow - ask for day/time preference EARLY
+          console.log("[NEW-PATIENT-INTENT] Routing to new patient booking flow");
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=ask-day-time-preference&callSid=${encodeURIComponent(callSid)}&isExisting=0`),
+            method: "POST",
+            hints: "monday, tuesday, wednesday, thursday, friday, saturday, sunday, tomorrow, today, next week, morning, afternoon, evening, anytime, whenever"
+          });
+          // Ask for day/time preference EARLY in the flow
+          saySafe(g, `Do you have a particular day and time in mind? I'll try to find something as close as I can to that.`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        } else if (hasQuestion) {
+          // Route to FAQ/question answering flow
+          console.log("[NEW-PATIENT-INTENT] Routing to FAQ flow");
+          // Redirect to FSM handler with FAQ step
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
+          return res.type("text/xml").send(vr.toString());
+        } else {
+          // Unclear - ask again (no apology unless it's a real ASR failure)
+          const g = vr.gather({
+            input: ["speech"],
+            timeout: 5,
+            speechTimeout: "auto",
+            actionOnEmptyResult: true,
+            action: abs(`/api/voice/handle?route=new-patient-intent&callSid=${encodeURIComponent(callSid)}`),
+            method: "POST",
+            hints: "book, appointment, new patient, change, question, hours, location"
+          });
+          // Only say "didn't catch" after an actual unclear response
+          saySafe(g, `I didn't catch that. You can say: book a new patient visit, change an appointment, or ask a question.`);
+          g.pause({ length: 1 });
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          return res.type("text/xml").send(vr.toString());
+        }
+      }
+
+      // ASK-DAY-TIME-PREFERENCE → Process day/time preference and route to booking flow
+      if (route === "ask-day-time-preference") {
+        const knownName = (req.query.knownName as string) || "";
+        const isExisting = (req.query.isExisting as string) === "1";
+
+        // Parse day of week
+        const requestedDay = parseDayOfWeek(speechRaw);
+
+        // Detect time preference (morning, afternoon, evening)
+        let timePart: "morning" | "afternoon" | undefined = undefined;
+        if (speechRaw.includes("morning")) {
+          timePart = "morning";
+        } else if (speechRaw.includes("afternoon") || speechRaw.includes("arvo")) {
+          timePart = "afternoon";
+        }
+
+        console.log("[ASK-DAY-TIME-PREFERENCE] Speech:", speechRaw);
+        console.log("[ASK-DAY-TIME-PREFERENCE] requestedDay:", requestedDay, "timePart:", timePart, "isExisting:", isExisting);
+
+        // Store preferences in context
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const existingContext = (conversation?.context as any) || {};
+            await storage.updateConversation(call.conversationId, {
+              context: {
+                ...existingContext,
+                requestedDay,
+                timePart,
+                preferredDay: requestedDay,
+                preferredTime: timePart
+              }
+            });
+            console.log("[ASK-DAY-TIME-PREFERENCE] Stored preferences:", { requestedDay, timePart });
+          }
+        } catch (err) {
+          console.error("[ASK-DAY-TIME-PREFERENCE] Error storing preferences:", err);
+        }
+
+        // Route to appropriate booking flow based on whether they're existing or new
+        if (isExisting) {
+          // Existing patient - ask if appointment is for them or someone else
+          const firstName = extractFirstName(knownName);
           const g = vr.gather({
             input: ["speech"],
             timeout: 5,
@@ -1338,28 +1477,27 @@ export function registerVoice(app: Express) {
             action: abs(`/api/voice/handle?route=check-appointment-for&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
           });
-          const appointmentForPrompts = [
-            `Perfect! And is this appointment for you, or is it for someone else?`,
-            `Great! Just to confirm - is the appointment for you, or for another person?`,
-            `Lovely! Who's the appointment for - yourself, or someone else?`
-          ];
-          const randomPrompt = appointmentForPrompts[Math.floor(Math.random() * appointmentForPrompts.length)];
-          saySafe(g, randomPrompt);
+          saySafe(g, `Perfect! Is this appointment for you, or is it for someone else?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // Unclear - ask again
+          // New patient - collect their name
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 10,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=existing-patient-intent&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            action: abs(`/api/voice/handle?route=ask-name-new&callSid=${encodeURIComponent(callSid)}`),
             method: "POST",
-            hints: "book, reschedule, cancel"
           });
-          saySafe(g, `Sorry, I didn't catch that. Would you like to book, reschedule, or cancel an appointment?`);
+          const namePrompts = [
+            `Great! Since it's your first visit with us, what's your full name? Or say 'text me' and I'll send you a link.`,
+            `Perfect! I'll need your full name for our records. You can spell it out, or say 'text me' for a link.`,
+            `Lovely! What's your full name? Or say 'text me' if you'd prefer to type it instead.`
+          ];
+          const randomPrompt = namePrompts[Math.floor(Math.random() * namePrompts.length)];
+          saySafeSSML(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
