@@ -1430,8 +1430,26 @@ export function registerVoice(app: Express) {
         const knownName = (req.query.knownName as string) || "";
         const isExisting = (req.query.isExisting as string) === "1";
 
-        // Parse day of week
-        const requestedDay = parseDayOfWeek(speechRaw);
+        // Parse day of week - handle relative days FIRST
+        let requestedDay: string | undefined = undefined;
+
+        // Check for "today" first
+        if (speechRaw.includes("today") || speechRaw.includes("right now") || speechRaw.includes("immediately")) {
+          // Get today's day name
+          const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+          const todayDayNumber = dayjs().tz().day();
+          requestedDay = dayNames[todayDayNumber];
+          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'today', converted to:", requestedDay);
+        } else if (speechRaw.includes("tomorrow")) {
+          // Get tomorrow's day name
+          const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+          const tomorrowDayNumber = dayjs().tz().add(1, 'day').day();
+          requestedDay = dayNames[tomorrowDayNumber];
+          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'tomorrow', converted to:", requestedDay);
+        } else {
+          // Try parsing day-of-week names (monday, tuesday, etc.)
+          requestedDay = parseDayOfWeek(speechRaw);
+        }
 
         // Detect time preference (morning, afternoon, evening)
         let timePart: "morning" | "afternoon" | undefined = undefined;
