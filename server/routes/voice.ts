@@ -4661,7 +4661,7 @@ export function registerVoice(app: Express) {
             slug: tenantCtx.slug,
             clinicName: tenantCtx.clinicName,
             timezone: tenantCtx.timezone,
-            hasClinikoConfig: !!tenantCtx.clinikoApiKey
+            hasClinikoConfig: !!tenantCtx.cliniko?.apiKey
           } : "NO TENANT CONTEXT");
           console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Request parameters:", {
             fromISO: fromDate,
