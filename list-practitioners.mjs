@@ -22,7 +22,7 @@ try {
 }
 
 const CLINIKO_API_KEY = process.env.CLINIKO_API_KEY;
-const CLINIKO_SHARD = process.env.CLINIKO_SHARD || 'au4';
+const CLINIKO_SHARD = process.env.CLINIKO_REGION || process.env.CLINIKO_SHARD || 'au4';
 
 if (!CLINIKO_API_KEY) {
   console.error('❌ CLINIKO_API_KEY not set in environment');
