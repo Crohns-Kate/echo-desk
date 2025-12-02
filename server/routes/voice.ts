@@ -1432,23 +1432,28 @@ export function registerVoice(app: Express) {
 
         // Parse day of week - handle relative days FIRST
         let requestedDay: string | undefined = undefined;
+        let requestedDate: string | undefined = undefined; // Store ISO date for unambiguous lookup
 
         // Check for "today" first
         if (speechRaw.includes("today") || speechRaw.includes("right now") || speechRaw.includes("immediately")) {
-          // Get today's day name
+          // Get today's day name and ISO date
           const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
           const todayDayNumber = dayjs().tz().day();
           requestedDay = dayNames[todayDayNumber];
-          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'today', converted to:", requestedDay);
+          requestedDate = dayjs().tz().format("YYYY-MM-DD");
+          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'today', converted to:", requestedDay, "date:", requestedDate);
         } else if (speechRaw.includes("tomorrow")) {
-          // Get tomorrow's day name
+          // Get tomorrow's day name and ISO date
           const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-          const tomorrowDayNumber = dayjs().tz().add(1, 'day').day();
+          const tomorrow = dayjs().tz().add(1, 'day');
+          const tomorrowDayNumber = tomorrow.day();
           requestedDay = dayNames[tomorrowDayNumber];
-          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'tomorrow', converted to:", requestedDay);
+          requestedDate = tomorrow.format("YYYY-MM-DD");
+          console.log("[ASK-DAY-TIME-PREFERENCE] Detected 'tomorrow', converted to:", requestedDay, "date:", requestedDate);
         } else {
           // Try parsing day-of-week names (monday, tuesday, etc.)
           requestedDay = parseDayOfWeek(speechRaw);
+          // For day names, don't set requestedDate - let get-availability-specific-day calculate it
         }
 
         // Detect time preference (morning, afternoon, evening)
@@ -1460,7 +1465,7 @@ export function registerVoice(app: Express) {
         }
 
         console.log("[ASK-DAY-TIME-PREFERENCE] Speech:", speechRaw);
-        console.log("[ASK-DAY-TIME-PREFERENCE] requestedDay:", requestedDay, "timePart:", timePart, "isExisting:", isExisting);
+        console.log("[ASK-DAY-TIME-PREFERENCE] requestedDay:", requestedDay, "requestedDate:", requestedDate, "timePart:", timePart, "isExisting:", isExisting);
 
         // Store preferences in context
         try {
@@ -1472,12 +1477,14 @@ export function registerVoice(app: Express) {
               context: {
                 ...existingContext,
                 requestedDay,
+                requestedDate, // Store the ISO date for unambiguous lookup
                 timePart,
                 preferredDay: requestedDay,
+                preferredDate: requestedDate,
                 preferredTime: timePart
               }
             });
-            console.log("[ASK-DAY-TIME-PREFERENCE] Stored preferences:", { requestedDay, timePart });
+            console.log("[ASK-DAY-TIME-PREFERENCE] Stored preferences:", { requestedDay, requestedDate, timePart });
           }
         } catch (err) {
           console.error("[ASK-DAY-TIME-PREFERENCE] Error storing preferences:", err);
@@ -4558,8 +4565,9 @@ export function registerVoice(app: Express) {
         const isReturningPatient = (req.query.returning as string) === '1';
         const requestedDay = ((req.query.day as string) || "").toLowerCase();
 
-        // Get time preference from context first (if collected early), then fall back to speech
+        // Get time preference and date from context first (if collected early), then fall back to speech
         let timePart: 'morning' | 'afternoon' | undefined;
+        let storedDate: string | undefined;
 
         try {
           const call = await storage.getCallByCallSid(callSid);
@@ -4575,9 +4583,18 @@ export function registerVoice(app: Express) {
               timePart = context.preferredTime;
               console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored preferredTime from context:", timePart);
             }
+
+            // Check if a specific ISO date was stored (for "today"/"tomorrow")
+            if (context?.requestedDate) {
+              storedDate = context.requestedDate;
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored requestedDate from context:", storedDate);
+            } else if (context?.preferredDate) {
+              storedDate = context.preferredDate;
+              console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored preferredDate from context:", storedDate);
+            }
           }
         } catch (err) {
-          console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Error getting timePart from context:", err);
+          console.error("[GET-AVAILABILITY-SPECIFIC-DAY] Error getting preferences from context:", err);
         }
 
         // If not in context, try to extract from speech
@@ -4628,37 +4645,49 @@ export function registerVoice(app: Express) {
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - SELECTED appointmentTypeId:", appointmentTypeId);
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]   - Using:", appointmentTypeId === env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID ? "NEW PATIENT ✅" : "STANDARD ⚠️");
 
-        // Calculate the date for the requested day of week
-        const weekdayMap: { [key: string]: number } = {
-          "sunday": 0,
-          "monday": 1,
-          "tuesday": 2,
-          "wednesday": 3,
-          "thursday": 4,
-          "friday": 5,
-          "saturday": 6
-        };
+        // Calculate the date - use stored ISO date if available, otherwise calculate from day name
+        let fromDate: string;
+        let toDate: string;
 
-        const targetDayNumber = weekdayMap[requestedDay];
-        if (targetDayNumber === undefined) {
-          saySafe(vr, "Sorry, I didn't catch which day you wanted. Let me ask again.");
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
-          return res.type("text/xml").send(vr.toString());
+        if (storedDate) {
+          // Use the stored ISO date (for "today"/"tomorrow")
+          fromDate = storedDate;
+          toDate = storedDate;
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Using stored date:", fromDate);
+        } else {
+          // Calculate from day name
+          const weekdayMap: { [key: string]: number } = {
+            "sunday": 0,
+            "monday": 1,
+            "tuesday": 2,
+            "wednesday": 3,
+            "thursday": 4,
+            "friday": 5,
+            "saturday": 6
+          };
+
+          const targetDayNumber = weekdayMap[requestedDay];
+          if (targetDayNumber === undefined) {
+            saySafe(vr, "Sorry, I didn't catch which day you wanted. Let me ask again.");
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
+            return res.type("text/xml").send(vr.toString());
+          }
+
+          const tzNow = dayjs().tz();
+          const currentDayNumber = tzNow.day();
+
+          // Calculate days ahead to the requested day
+          // If the day is in the past this week, go to next week
+          let daysAhead = targetDayNumber - currentDayNumber;
+          if (daysAhead <= 0) {
+            daysAhead += 7;
+          }
+
+          const targetDate = tzNow.add(daysAhead, 'day');
+          fromDate = targetDate.format("YYYY-MM-DD");
+          toDate = fromDate;
+          console.log("[GET-AVAILABILITY-SPECIFIC-DAY] Calculated date from day name:", fromDate);
         }
-
-        const tzNow = dayjs().tz();
-        const currentDayNumber = tzNow.day();
-
-        // Calculate days ahead to the requested day
-        // If the day is in the past this week, go to next week
-        let daysAhead = targetDayNumber - currentDayNumber;
-        if (daysAhead <= 0) {
-          daysAhead += 7;
-        }
-
-        const targetDate = tzNow.add(daysAhead, 'day');
-        const fromDate = targetDate.format("YYYY-MM-DD");
-        const toDate = fromDate;
 
         console.log("[GET-AVAILABILITY-SPECIFIC-DAY]", { requestedDay, fromDate, toDate, isNewPatient, appointmentTypeId, timePart });
 
