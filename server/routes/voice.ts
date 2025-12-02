@@ -1540,10 +1540,47 @@ export function registerVoice(app: Express) {
         console.log("[CHECK-APPOINTMENT-FOR] forSelf:", forSelf, "forOther:", forOther);
 
         if (forSelf) {
-          // Appointment is for the caller - proceed to intent detection
-          console.log("[CHECK-APPOINTMENT-FOR] Appointment is for caller, proceeding to start");
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(vr.toString());
+          // Appointment is for the caller - check if day/time preference was already collected
+          console.log("[CHECK-APPOINTMENT-FOR] Appointment is for caller");
+
+          let hasPreference = false;
+          let requestedDay = "";
+          let requestedDate: string | undefined;
+          let timePart: "morning" | "afternoon" | undefined;
+
+          try {
+            const call = await storage.getCallByCallSid(callSid);
+            if (call?.conversationId) {
+              const conversation = await storage.getConversation(call.conversationId);
+              const context = conversation?.context as any;
+              requestedDay = context?.requestedDay || context?.preferredDay || "";
+              requestedDate = context?.requestedDate || context?.preferredDate;
+              timePart = context?.timePart || context?.preferredTime;
+
+              // Check if we have day preference from early collection
+              if (requestedDay && requestedDay.length > 0) {
+                hasPreference = true;
+                console.log("[CHECK-APPOINTMENT-FOR] Day/time preference already collected:", { requestedDay, requestedDate, timePart });
+              }
+            }
+          } catch (err) {
+            console.error("[CHECK-APPOINTMENT-FOR] Error getting context:", err);
+          }
+
+          // If preference was already collected, skip ask-week and go directly to availability search
+          if (hasPreference && requestedDay) {
+            console.log("[CHECK-APPOINTMENT-FOR] Using stored preference, skipping ask-week");
+            console.log("[CHECK-APPOINTMENT-FOR] Redirecting to get-availability-specific-day with:", { requestedDay, requestedDate, timePart });
+
+            // Redirect directly to availability search with the collected day/time
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=get-availability-specific-day&callSid=${encodeURIComponent(callSid)}&returning=1&day=${encodeURIComponent(requestedDay)}`));
+            return res.type("text/xml").send(vr.toString());
+          } else {
+            // No preference stored, proceed to normal flow
+            console.log("[CHECK-APPOINTMENT-FOR] No stored preference, proceeding to start route");
+            vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
+            return res.type("text/xml").send(vr.toString());
+          }
         } else if (forOther) {
           // Appointment is for someone else - ask for their name
           console.log("[CHECK-APPOINTMENT-FOR] Appointment is for someone else, asking for name");
