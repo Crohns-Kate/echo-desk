@@ -886,4 +886,109 @@ export function registerApp(app: Express) {
       res.status(500).json({ error: 'Failed to fetch call details' });
     }
   });
+
+  // Diagnostic endpoint to test Cliniko API access
+  app.get('/api/debug/cliniko-test', async (req: Request, res: Response) => {
+    try {
+      const { getTenantContext } = await import('../services/tenantResolver');
+
+      // Get spinalogic tenant
+      const tenant = await storage.getTenant('spinalogic');
+      if (!tenant) {
+        return res.json({ error: 'Tenant "spinalogic" not found in database' });
+      }
+
+      const tenantCtx = getTenantContext(tenant as any);
+
+      const apiKey = tenantCtx?.cliniko?.apiKey;
+      const shard = tenantCtx?.cliniko?.shard || 'au4';
+
+      if (!apiKey) {
+        return res.json({ error: 'No Cliniko API key configured for tenant' });
+      }
+
+      const base = `https://api.${shard}.cliniko.com/v1`;
+      const headers = {
+        'Accept': 'application/json',
+        'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}`
+      };
+
+      const results: any = {
+        tenant: { id: tenant.id, slug: tenant.slug, shard },
+        tests: {}
+      };
+
+      // Test 1: List practitioners
+      try {
+        const response = await fetch(`${base}/practitioners?per_page=50`, { headers });
+        if (response.ok) {
+          const data = await response.json();
+          const practitioners = data.practitioners || [];
+          results.tests.practitioners = {
+            status: 'success',
+            count: practitioners.length,
+            data: practitioners.map((p: any) => ({
+              id: p.id,
+              name: `${p.first_name} ${p.last_name}`,
+              active: p.active,
+              showInBookings: p.show_in_online_bookings
+            }))
+          };
+        } else {
+          const text = await response.text();
+          results.tests.practitioners = { status: 'error', code: response.status, message: text };
+        }
+      } catch (err: any) {
+        results.tests.practitioners = { status: 'error', message: err.message };
+      }
+
+      // Test 2: Try to access the configured practitioner
+      const practitionerId = '1797514426522281888';
+      try {
+        const response = await fetch(`${base}/practitioners/${practitionerId}`, { headers });
+        if (response.ok) {
+          const practitioner = await response.json();
+          results.tests.configuredPractitioner = {
+            status: 'success',
+            id: practitioner.id,
+            name: `${practitioner.first_name} ${practitioner.last_name}`,
+            active: practitioner.active
+          };
+        } else {
+          const text = await response.text();
+          results.tests.configuredPractitioner = {
+            status: 'error',
+            code: response.status,
+            message: text,
+            practitionerId
+          };
+        }
+      } catch (err: any) {
+        results.tests.configuredPractitioner = { status: 'error', message: err.message, practitionerId };
+      }
+
+      // Test 3: List businesses
+      try {
+        const response = await fetch(`${base}/businesses?per_page=50`, { headers });
+        if (response.ok) {
+          const data = await response.json();
+          const businesses = data.businesses || [];
+          results.tests.businesses = {
+            status: 'success',
+            count: businesses.length,
+            data: businesses.map((b: any) => ({ id: b.id, name: b.name }))
+          };
+        } else {
+          const text = await response.text();
+          results.tests.businesses = { status: 'error', code: response.status, message: text };
+        }
+      } catch (err: any) {
+        results.tests.businesses = { status: 'error', message: err.message };
+      }
+
+      res.json(results);
+    } catch (error: any) {
+      res.json({ error: error.message, stack: error.stack });
+    }
+  });
 }
