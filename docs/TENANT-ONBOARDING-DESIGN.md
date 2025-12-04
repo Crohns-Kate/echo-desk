@@ -541,28 +541,267 @@ GET  /api/admin/audit-log         - View audit log
 
 ---
 
-## 10. Free Tier Considerations
+## 10. Trial & Subscription Model
 
-For free tier (50 calls/month):
-- Still need phone number (cost: ~$1.50/mo)
-- Options:
-  1. **Trial Period:** 14-day free trial with provisioned number
-  2. **Forwarding Only:** They set up forwarding, we provide number
-  3. **Shared Pool:** Use shared number with extension routing (complex)
-  4. **BYOT (Bring Your Own Twilio):** They create Twilio account, we configure
+### 7-Day Free Trial
 
-**Recommended:** Option 2 (Forwarding) for free tier
-- We provision number but include in our cost
-- They only pay if they upgrade or exceed limits
-- Easy upgrade path to paid tier
+**Flow:**
+1. Customer signs up via Stripe checkout
+2. Credit card captured but NOT charged
+3. 7-day free trial begins
+4. Provisioned Twilio number assigned immediately from pool
+5. Full access to all features during trial
+6. Day 7: Auto-convert to paid tier (Starter $99/mo)
+7. If they cancel before day 7: Number returned to pool
+
+**Trial Extensions:**
+- Tenant can request extension via portal
+- Admin approves/denies (manual for now)
+- Extensions granted in 7-day increments
+- Max 2 extensions (21 days total trial)
+
+### Phone Number Pool System
+
+**Why a Pool:**
+- Instant provisioning (no Twilio API delay at signup)
+- Recycle numbers from churned trials
+- Maintain ~20 numbers ready for assignment
+
+**Database Schema:**
+```sql
+CREATE TABLE phone_number_pool (
+  id SERIAL PRIMARY KEY,
+  phone_number VARCHAR(50) NOT NULL UNIQUE,
+  twilio_phone_sid VARCHAR(255) NOT NULL,
+  area_code VARCHAR(10),
+  status VARCHAR(50) DEFAULT 'available', -- available, assigned, releasing
+  tenant_id INTEGER REFERENCES tenants(id),
+  assigned_at TIMESTAMP,
+  released_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Index for quick available number lookup
+CREATE INDEX idx_phone_pool_status ON phone_number_pool(status, area_code);
+```
+
+**Pool Management:**
+
+```typescript
+// server/services/phonePool.ts
+
+// 1. Assign number to new tenant
+async function assignNumber(tenantId: number, preferredAreaCode?: string) {
+  // Find available number (prefer matching area code)
+  const number = await db.query(`
+    SELECT * FROM phone_number_pool
+    WHERE status = 'available'
+    ORDER BY
+      CASE WHEN area_code = $1 THEN 0 ELSE 1 END,
+      created_at ASC
+    LIMIT 1
+  `, [preferredAreaCode || '02']);
+
+  if (!number) {
+    // Pool exhausted - provision new number on-demand
+    return await provisionNewNumber(tenantId, preferredAreaCode);
+  }
+
+  // Assign to tenant
+  await db.query(`
+    UPDATE phone_number_pool
+    SET status = 'assigned', tenant_id = $1, assigned_at = NOW()
+    WHERE id = $2
+  `, [tenantId, number.id]);
+
+  // Update Twilio webhooks for this tenant
+  await updateTwilioWebhooks(number.twilio_phone_sid, tenantId);
+
+  return number;
+}
+
+// 2. Release number back to pool (churn/cancel)
+async function releaseNumber(tenantId: number) {
+  // Mark as releasing (30-day quarantine before reuse)
+  await db.query(`
+    UPDATE phone_number_pool
+    SET status = 'releasing', tenant_id = NULL, released_at = NOW()
+    WHERE tenant_id = $1
+  `, [tenantId]);
+
+  // Reset Twilio webhooks to default handler
+  // After 30 days, cron job marks as 'available'
+}
+
+// 3. Replenish pool (cron job or manual)
+async function replenishPool(targetCount: number = 20) {
+  const available = await db.query(`
+    SELECT COUNT(*) FROM phone_number_pool WHERE status = 'available'
+  `);
+
+  const needed = targetCount - available.count;
+
+  for (let i = 0; i < needed; i++) {
+    await provisionNewNumber(null); // Unassigned, goes to pool
+  }
+}
+```
+
+**Pool Lifecycle:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PHONE NUMBER LIFECYCLE                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  [PROVISION]                                                     │
+│       │                                                          │
+│       ▼                                                          │
+│  ┌─────────┐    Assign to     ┌──────────┐                      │
+│  │AVAILABLE│ ───────────────► │ ASSIGNED │                      │
+│  └─────────┘    new tenant    └──────────┘                      │
+│       ▲                             │                           │
+│       │                             │ Tenant churns/             │
+│       │                             │ cancels                    │
+│       │                             ▼                           │
+│       │    30-day quarantine  ┌───────────┐                     │
+│       └─────────────────────  │ RELEASING │                     │
+│           then recycle        └───────────┘                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Quarantine Period (30 days):**
+- Prevents new tenant getting calls meant for old tenant
+- Old callers get "This number is no longer in service" message
+- After 30 days, number is clean and can be reassigned
+
+### Subscription Tiers (Updated)
+
+| Tier | Price | Trial | Features |
+|------|-------|-------|----------|
+| **Trial** | $0 for 7 days | Credit card required | Full Pro features |
+| **Starter** | $99/mo | Auto-convert from trial | 500 calls, recording, SMS |
+| **Pro** | $299/mo | - | 2000 calls, transcription, QA |
+| **Enterprise** | $599/mo | - | Unlimited, priority support |
+
+### Churn Handling
+
+**When trial expires without payment:**
+1. Send warning email at day 5
+2. Send final reminder at day 7 morning
+3. If no payment by day 7 EOD:
+   - Deactivate AI (calls go to voicemail message)
+   - Release phone number to pool (30-day quarantine)
+   - Keep tenant data for 90 days (in case they return)
+   - After 90 days, purge data
+
+**When paid subscription cancels:**
+1. Access continues until period end
+2. Send win-back email
+3. At period end:
+   - Deactivate AI
+   - Release phone number
+   - Keep data 90 days
+
+---
+
+## 11. Transactional Email (Resend)
+
+### Setup
+Using [Resend](https://resend.com) for transactional emails:
+- Free tier: 3,000 emails/month
+- Simple API, React email templates
+- Good deliverability
+
+**Environment Variables:**
+```
+RESEND_API_KEY=re_xxxxxxxxxxxxx
+EMAIL_FROM=Echo Desk <noreply@echodesk.com.au>
+```
+
+### Email Templates Needed
+
+1. **Welcome Email** (after Stripe checkout)
+   - Login URL
+   - Temporary password
+   - Quick start guide link
+
+2. **Trial Reminder (Day 5)**
+   - "Your trial ends in 2 days"
+   - Usage stats
+   - Upgrade CTA
+
+3. **Trial Expiring (Day 7)**
+   - "Last day of your trial"
+   - What happens if you don't upgrade
+   - Upgrade CTA
+
+4. **Password Reset**
+   - Reset link (expires 1 hour)
+   - Security notice
+
+5. **Team Invite**
+   - Invitation link
+   - Clinic name
+   - Role assigned
+
+6. **Payment Failed**
+   - Update payment method link
+   - Grace period info
+
+7. **Weekly Report**
+   - Call statistics
+   - Top intents
+   - Alerts summary
+
+---
+
+## 12. Australia-Specific Configuration
+
+### Phone Numbers
+- Country: Australia (+61)
+- Area codes to stock in pool:
+  - 02 (NSW/ACT) - Primary
+  - 03 (VIC/TAS)
+  - 07 (QLD)
+  - 08 (SA/WA/NT)
+- Mobile numbers (04xx) - Consider for future
+
+### Twilio Configuration
+```typescript
+// Australia-specific Twilio settings
+const TWILIO_CONFIG = {
+  country: 'AU',
+  numberTypes: ['local'], // Local numbers only for now
+  areaCodes: ['02', '03', '07', '08'],
+  defaultAreaCode: '02', // Sydney/NSW
+  voiceUrl: `${PUBLIC_BASE_URL}/api/voice/incoming`,
+  smsUrl: `${PUBLIC_BASE_URL}/api/sms/incoming`,
+  statusCallback: `${PUBLIC_BASE_URL}/api/voice/status`,
+};
+```
+
+### Timezones
+- Default: Australia/Brisbane (AEST/AEDT)
+- Support all Australian timezones:
+  - Australia/Sydney
+  - Australia/Melbourne
+  - Australia/Brisbane
+  - Australia/Adelaide
+  - Australia/Perth
+  - Australia/Darwin
+  - Australia/Hobart
 
 ---
 
 ## Next Steps
 
-1. Review and approve this design
-2. Create database migration for new tables
+1. ✅ Design document finalized
+2. Create database migration for users, sessions, phone pool
 3. Implement authentication system
-4. Build onboarding wizard UI
-5. Add phone provisioning API
-6. Test end-to-end flow
+4. Build phone pool management service
+5. Set up Resend for transactional emails
+6. Create onboarding wizard UI (8 steps)
+7. Build tenant self-service portal
+8. Add admin impersonation and audit logging
+9. Test end-to-end flow
