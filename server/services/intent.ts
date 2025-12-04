@@ -4,6 +4,7 @@ export interface IntentResult {
   action: 'book' | 'reschedule' | 'cancel' | 'operator' | 'info' | 'fees' | 'faq_parking' | 'faq_hours' | 'faq_location' | 'faq_services' | 'faq_techniques' | 'faq_practitioner' | 'unknown';
   day?: string;
   part?: 'morning' | 'afternoon';
+  preferredTime?: string; // Specific time like "2pm", "14:00", etc.
   confidence?: number;
 }
 
@@ -47,6 +48,7 @@ async function classifyWithLLM(text: string): Promise<IntentResult> {
   "action": "book" | "reschedule" | "cancel" | "operator" | "info" | "fees" | "faq_parking" | "faq_hours" | "faq_location" | "faq_services" | "faq_techniques" | "faq_practitioner" | "unknown",
   "day": string (optional - e.g., "monday", "tomorrow", "today"),
   "part": "morning" | "afternoon" (optional),
+  "preferredTime": string (optional - e.g., "2pm", "14:00", "2:30pm"),
   "confidence": number (0-1)
 }
 
@@ -110,6 +112,7 @@ JSON:`;
       action: result.action || 'unknown',
       day: result.day,
       part: result.part,
+      preferredTime: result.preferredTime,
       confidence: result.confidence || 0.8
     };
   } catch (error: any) {
@@ -121,10 +124,36 @@ JSON:`;
   }
 }
 
+/**
+ * Extract time from text (e.g., "2pm", "2:00pm", "14:00", "2 o'clock")
+ */
+function extractTime(text: string): string | undefined {
+  // Match patterns like: 2pm, 2:00pm, 14:00, 2 o'clock, 2 p.m., etc.
+  const timePatterns = [
+    /(\d{1,2}):?(\d{2})?\s*([ap]\.?m\.?)/i,  // 2pm, 2:00pm, 2 p.m.
+    /(\d{1,2})\s*o'?clock/i,                  // 2 o'clock
+    /(\d{1,2}):(\d{2})/,                      // 14:00, 2:30
+  ];
+
+  for (const pattern of timePatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      // Return the matched time string
+      return match[0];
+    }
+  }
+
+  return undefined;
+}
+
 function classifyWithKeywords(text: string): IntentResult {
   let action: IntentResult['action'] = 'unknown';
   let day: string | undefined;
   let part: 'morning' | 'afternoon' | undefined;
+  let preferredTime: string | undefined;
+
+  // Extract specific time if mentioned
+  preferredTime = extractTime(text);
 
   // Action detection (order matters - check specific intents before general ones)
   if (
@@ -218,12 +247,14 @@ function classifyWithKeywords(text: string): IntentResult {
     day = 'today';
   }
 
-  // Part of day detection
-  if (text.includes('morning') || text.includes('early')) {
-    part = 'morning';
-  } else if (text.includes('afternoon') || text.includes('late')) {
-    part = 'afternoon';
+  // Part of day detection (only if no specific time was extracted)
+  if (!preferredTime) {
+    if (text.includes('morning') || text.includes('early')) {
+      part = 'morning';
+    } else if (text.includes('afternoon') || text.includes('late')) {
+      part = 'afternoon';
+    }
   }
 
-  return { action, day, part, confidence: 0.6 };
+  return { action, day, part, preferredTime, confidence: 0.6 };
 }

@@ -4697,8 +4697,19 @@ export function registerVoice(app: Express) {
             saySafe(vr, "Perfect! See you soon. Bye!");
             vr.hangup();
           } else {
-            saySafe(vr, "Let me transfer you to our reception for help with that.");
-            vr.hangup();
+            // Check if they're asking an FAQ question
+            const { detectFaqIntent } = await import('../services/faq');
+            const faqCategory = detectFaqIntent(speechRaw);
+
+            if (faqCategory && speechRaw.length > 5) {
+              // They're asking a question - handle it as FAQ
+              console.log('[final_check] Detected FAQ intent:', faqCategory);
+              await handler.handleFAQ(speechRaw);
+            } else {
+              // Not an FAQ - transfer to reception
+              saySafe(vr, "Let me transfer you to our reception for help with that.");
+              vr.hangup();
+            }
           }
           break;
 

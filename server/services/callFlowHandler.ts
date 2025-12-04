@@ -41,6 +41,7 @@ export interface CallContext {
   };
   complaint?: string;
   preferredDay?: string; // Natural language day extracted from complaint (e.g., "saturday", "today")
+  preferredTime?: string; // Preferred time extracted from complaint (e.g., "2pm", "14:00")
   appointmentSlots?: Array<{
     startISO: string;
     speakable: string;
@@ -588,9 +589,13 @@ export class CallFlowHandler {
         this.ctx.preferredDay = intent.day;
         console.log('[handleChiefComplaint] Extracted preferred day:', intent.day);
       }
+      if (intent.preferredTime) {
+        this.ctx.preferredTime = intent.preferredTime;
+        console.log('[handleChiefComplaint] Extracted preferred time:', intent.preferredTime);
+      }
     } catch (err) {
       console.warn('[handleChiefComplaint] Failed to classify intent:', err);
-      // Continue without preferred day
+      // Continue without preferred day/time
     }
 
     saySafe(this.vr, `Let me find the next available appointment.`);
@@ -633,7 +638,13 @@ export class CallFlowHandler {
 
           if (fallbackSlots.length > 0) {
             // Offer alternatives
-            this.ctx.appointmentSlots = fallbackSlots.slice(0, 3).map(slot => ({
+            // Rank by preferred time if specified
+            let rankedFallbackSlots = fallbackSlots;
+            if (this.ctx.preferredTime) {
+              rankedFallbackSlots = this.rankSlotsByTime(fallbackSlots, this.ctx.preferredTime);
+            }
+
+            this.ctx.appointmentSlots = rankedFallbackSlots.slice(0, 3).map(slot => ({
               startISO: slot.startISO,
               speakable: this.formatSpeakableTime(slot.startISO),
               practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
@@ -658,7 +669,14 @@ export class CallFlowHandler {
       }
 
       // Found slots for the requested day
-      this.ctx.appointmentSlots = slots.slice(0, 3).map(slot => ({
+      // If they specified a preferred time, rank slots by proximity to that time
+      let rankedSlots = slots;
+      if (this.ctx.preferredTime) {
+        console.log('[handleAppointmentSearch]   - Preferred time:', this.ctx.preferredTime);
+        rankedSlots = this.rankSlotsByTime(slots, this.ctx.preferredTime);
+      }
+
+      this.ctx.appointmentSlots = rankedSlots.slice(0, 3).map(slot => ({
         startISO: slot.startISO,
         speakable: this.formatSpeakableTime(slot.startISO),
         practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
@@ -676,6 +694,70 @@ export class CallFlowHandler {
     }
 
     await this.saveContext();
+  }
+
+  /**
+   * Parse time string to hour (24-hour format)
+   * Examples: "2pm" -> 14, "2:30pm" -> 14.5, "14:00" -> 14
+   */
+  private parseTimeToHours(timeStr: string): number {
+    const lowerTime = timeStr.toLowerCase().trim();
+
+    // Match patterns like "2pm", "2:30pm", "14:00"
+    const ampmMatch = lowerTime.match(/(\d{1,2}):?(\d{2})?\s*([ap]\.?m\.?)/i);
+    if (ampmMatch) {
+      let hours = parseInt(ampmMatch[1], 10);
+      const minutes = ampmMatch[2] ? parseInt(ampmMatch[2], 10) : 0;
+      const isPM = ampmMatch[3].toLowerCase().startsWith('p');
+
+      if (isPM && hours !== 12) hours += 12;
+      if (!isPM && hours === 12) hours = 0;
+
+      return hours + (minutes / 60);
+    }
+
+    // Match 24-hour format like "14:00"
+    const militaryMatch = lowerTime.match(/(\d{1,2}):(\d{2})/);
+    if (militaryMatch) {
+      const hours = parseInt(militaryMatch[1], 10);
+      const minutes = parseInt(militaryMatch[2], 10);
+      return hours + (minutes / 60);
+    }
+
+    return -1; // Could not parse
+  }
+
+  /**
+   * Rank slots by proximity to preferred time
+   * Returns slots sorted with closest time first
+   */
+  private rankSlotsByTime(slots: Array<{ startISO: string }>, preferredTime: string): Array<{ startISO: string }> {
+    const preferredHours = this.parseTimeToHours(preferredTime);
+
+    if (preferredHours === -1) {
+      // Could not parse preferred time, return slots as-is
+      return slots;
+    }
+
+    // Calculate time difference for each slot and sort
+    const rankedSlots = slots.map(slot => {
+      const slotDate = dayjs(slot.startISO).tz(this.getTimezone());
+      const slotHours = slotDate.hour() + (slotDate.minute() / 60);
+      const timeDiff = Math.abs(slotHours - preferredHours);
+
+      return { slot, timeDiff };
+    });
+
+    // Sort by time difference (closest first)
+    rankedSlots.sort((a, b) => a.timeDiff - b.timeDiff);
+
+    console.log(`[rankSlotsByTime] Preferred time: ${preferredTime} (${preferredHours.toFixed(1)}h)`);
+    rankedSlots.slice(0, 3).forEach(({ slot, timeDiff }) => {
+      const slotDate = dayjs(slot.startISO).tz(this.getTimezone());
+      console.log(`  - ${slotDate.format('h:mma ddd MMM D')} (${timeDiff.toFixed(1)}h difference)`);
+    });
+
+    return rankedSlots.map(r => r.slot);
   }
 
   /**
