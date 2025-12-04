@@ -274,6 +274,87 @@ async function clinikoPatch(path: string, payload: any): Promise<any> {
   }, { maxRetries: 3, baseDelay: 1000 });
 }
 
+/**
+ * Update an existing patient in Cliniko
+ */
+async function updatePatient(patientId: string, updates: {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}): Promise<any> {
+  const payload: any = {};
+
+  if (updates.firstName) payload.first_name = updates.firstName;
+  if (updates.lastName) payload.last_name = updates.lastName;
+  if (updates.email) payload.email = sanitizeEmail(updates.email);
+
+  console.log('[Cliniko] Updating patient', patientId, 'with:', payload);
+
+  try {
+    const updated = await clinikoPatch(`/patients/${patientId}`, payload);
+    console.log('[Cliniko] Successfully updated patient:', patientId);
+    return updated;
+  } catch (e) {
+    console.error('[Cliniko] Failed to update patient:', patientId, e);
+    throw e;
+  }
+}
+
+/**
+ * Check if patient needs updating and update if necessary
+ * Returns true if update was performed
+ */
+async function checkAndUpdatePatient(
+  patient: any,
+  newFullName?: string,
+  newEmail?: string
+): Promise<boolean> {
+  const updates: { firstName?: string; lastName?: string; email?: string } = {};
+
+  // Check if name needs updating
+  if (newFullName && newFullName.trim()) {
+    const [newFirst, ...rest] = newFullName.trim().split(/\s+/);
+    const newLast = rest.join(' ') || '';
+
+    const existingFirst = (patient.first_name || '').trim();
+    const existingLast = (patient.last_name || '').trim();
+
+    // Only update if the new name is more complete or different
+    // Avoid updating if new name is less specific (e.g., "Unknown" vs actual name)
+    const isMoreComplete = newFirst && newFirst !== 'Unknown' && newFirst !== 'New Caller';
+    const isDifferent = newFirst.toLowerCase() !== existingFirst.toLowerCase() ||
+                        newLast.toLowerCase() !== existingLast.toLowerCase();
+
+    if (isMoreComplete && isDifferent && existingFirst !== newFirst) {
+      console.log('[Cliniko] Name change detected:');
+      console.log('[Cliniko]   Old:', existingFirst, existingLast);
+      console.log('[Cliniko]   New:', newFirst, newLast);
+      updates.firstName = newFirst;
+      if (newLast) updates.lastName = newLast;
+    }
+  }
+
+  // Check if email needs updating
+  const sanitizedNewEmail = sanitizeEmail(newEmail || '');
+  const existingEmail = (patient.email || '').trim().toLowerCase();
+
+  if (sanitizedNewEmail && sanitizedNewEmail !== existingEmail) {
+    console.log('[Cliniko] Email change detected:');
+    console.log('[Cliniko]   Old:', existingEmail || '(none)');
+    console.log('[Cliniko]   New:', sanitizedNewEmail);
+    updates.email = sanitizedNewEmail;
+  }
+
+  // Perform update if needed
+  if (Object.keys(updates).length > 0) {
+    await updatePatient(patient.id, updates);
+    return true;
+  }
+
+  console.log('[Cliniko] No updates needed for patient:', patient.id);
+  return false;
+}
+
 // --- search strategies ---
 // Use native email and phone_number query params (NOT q= free-text search)
 export async function findPatientByEmail(emailRaw: string) {
@@ -354,6 +435,14 @@ export async function getOrCreatePatient({
     const p = await findPatientByEmail(email);
     if (p) {
       console.log('[Cliniko] Found existing patient by email:', p.id);
+
+      // Check if we need to update name or email
+      const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
+      if (needsUpdate) {
+        // Refetch the updated patient
+        const updated = await findPatientByEmail(email);
+        return updated || p;
+      }
       return p;
     }
   }
@@ -375,11 +464,27 @@ export async function getOrCreatePatient({
           // Don't return p - fall through to create new patient
         } else {
           console.log('[Cliniko] Found existing patient by phone with matching name:', p.id);
+
+          // Update patient if needed (e.g., email was missing or changed)
+          const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
+          if (needsUpdate && phone) {
+            // Refetch the updated patient
+            const updated = await findPatientByPhone(phone);
+            return updated || p;
+          }
           return p;
         }
       } else {
         // No name provided to check, assume it's the same person
         console.log('[Cliniko] Found existing patient by phone (no name to verify):', p.id);
+
+        // Still try to update if we have new information
+        const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
+        if (needsUpdate && phone) {
+          // Refetch the updated patient
+          const updated = await findPatientByPhone(phone);
+          return updated || p;
+        }
         return p;
       }
     }
