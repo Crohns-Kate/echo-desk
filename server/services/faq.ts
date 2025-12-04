@@ -45,6 +45,7 @@ export function detectFaqIntent(speechInput: string): string | null {
     { keywords: ['bring', 'what should i', 'prepare'], category: 'preparation' },
     { keywords: ['cancel', 'cancellation', 'policy'], category: 'cancellation' },
     { keywords: ['first visit', 'new patient', 'first time'], category: 'first-visit' },
+    { keywords: ['how long', 'duration', 'length of', 'appointment take'], category: 'duration' },
   ];
 
   for (const trigger of faqTriggers) {
