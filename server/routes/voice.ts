@@ -868,97 +868,64 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         }
 
-        // Classify intent to route properly
+        // Check if they're asking a FAQ question using the new FAQ detection
+        const { detectFaqIntent, searchFaqByQuery, formatFaqAnswerForSpeech } = await import('../services/faq');
+        const faqCategory = detectFaqIntent(speechRaw);
+
+        console.log("[ANYTHING-ELSE] Checking for FAQ...");
+        console.log("[ANYTHING-ELSE]   - Input:", speechRaw);
+        console.log("[ANYTHING-ELSE]   - FAQ category detected:", faqCategory);
+
+        if (faqCategory && speechRaw.length > 5) {
+          // They're asking a FAQ question - answer it directly
+          const faq = await searchFaqByQuery(speechRaw);
+
+          if (faq) {
+            console.log("[ANYTHING-ELSE] Found FAQ answer:", faq.question);
+            const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
+
+            // Answer and ask if they need anything else
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 4,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`),
+              method: 'POST'
+            });
+
+            saySafe(g, formattedAnswer);
+            g.pause({ length: 1 });
+            saySafe(g, "Is there anything else I can help you with?");
+
+            // Fallback if no response
+            saySafe(vr, "Perfect! See you soon. Bye!");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+        }
+
+        // Not a FAQ - check if they want to book
         const intentResult = await classifyIntent(speechRaw);
-        console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
+        console.log("[ANYTHING-ELSE] Detected booking intent:", intentResult);
         const intent = intentResult.action;
 
-        // Route based on intent
         if (intent === "book" || intent === "reschedule" || intent === "cancel") {
           // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
-        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
-          // Route to FAQ answering for recognized question types
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
-          return res.type("text/xml").send(vr.toString());
-        } else {
-          // Unknown intent - ask them to clarify
-          const g = vr.gather({
-            input: ["speech"],
-            timeout: 5,
-            speechTimeout: "auto",
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=capture-question&callSid=${encodeURIComponent(callSid)}`),
-            method: "POST",
-          });
-          const questionPrompts = [
-            "Of course! What would you like to know?",
-            "Sure thing! What's your question?",
-            "No worries! How can I help?"
-          ];
-          const randomPrompt = questionPrompts[Math.floor(Math.random() * questionPrompts.length)];
-          saySafe(g, randomPrompt);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(vr.toString());
         }
+
+        // Unknown - say goodbye
+        saySafe(vr, "No worries! Feel free to call us back anytime. Have a great day!");
+        vr.hangup();
+        return res.type("text/xml").send(vr.toString());
       }
 
-      // CAPTURE-QUESTION → Capture their question and create an alert for reception
+      // CAPTURE-QUESTION → This route is now obsolete and redirects to anything-else
       if (route === "capture-question") {
-        const question = speechRaw || "";
-
-        // First, try to classify intent and answer from knowledge base
-        const intentResult = await classifyIntent(question);
-        console.log("[CAPTURE-QUESTION] Detected intent:", intentResult);
-        const intent = intentResult.action;
-
-        // If it's a FAQ question, route to answer-faq instead of creating alert
-        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
-          console.log("[CAPTURE-QUESTION] Routing to answer-faq for:", intent);
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(question)}`));
-          return res.type("text/xml").send(vr.toString());
-        }
-
-        // Not a FAQ - create an alert for the reception team
-        try {
-          const call = await storage.getCallByCallSid(callSid);
-          const tenant = await getTenantForCall(callSid);
-
-          if (tenant && call) {
-            await storage.createAlert({
-              tenantId: tenant.id,
-              conversationId: call.conversationId || undefined,
-              reason: "caller_question",
-              payload: {
-                question: question,
-                fromNumber: from,
-                callSid: callSid,
-                timestamp: new Date().toISOString()
-              },
-              status: "open"
-            });
-            console.log("[CAPTURE-QUESTION] Created alert for question:", question);
-          }
-        } catch (err) {
-          console.error("[CAPTURE-QUESTION] Failed to create alert:", err);
-        }
-
-        // Acknowledge and let them know the team will follow up
-        saySafe(vr, "Thanks for that! I've noted your question and one of our team will get back to you with the details. Is there anything else I can help with?");
-
-        // Give them a chance to ask another question or say no
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 3,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=final-anything-else&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=final-goodbye&callSid=${encodeURIComponent(callSid)}`));
+        console.log("[CAPTURE-QUESTION] Redirecting to anything-else route");
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
@@ -2446,26 +2413,39 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Move to email collection with SMS link option
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 10,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // Warm prompts offering email spelling or SMS link option
-        const emailPrompts = [
-          "For your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.",
-          "Lovely! What email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.",
-          "Wonderful! I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link."
+        // BETTER APPROACH: Skip voice email collection and send SMS form immediately
+        // This avoids the painful voice spelling process entirely
+        console.log("[ASK-NAME-NEW] Skipping voice email collection, sending SMS form instead");
+
+        // Set patientMode for FSM flow
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const existingContext = (conversation?.context as any) || {};
+            await storage.updateConversation(call.conversationId, {
+              context: {
+                ...existingContext,
+                patientMode: "new",
+                isNewPatient: true,
+                patientId: null  // Ensure no existing patient ID is used
+              }
+            });
+            console.log("[ASK-NAME-NEW] Set patientMode=new, redirecting to form flow");
+          }
+        } catch (err) {
+          console.error("[ASK-NAME-NEW] Failed to set patientMode:", err);
+        }
+
+        // Redirect to NEW FSM flow which sends form and waits for completion
+        const formMessages = [
+          "Perfect! I'll text you a quick form to fill in your email and contact details. Takes just 30 seconds.",
+          "Great! Let me send you a text message with a link to enter your details. Much easier than spelling it out!",
+          "Wonderful! I'm sending you a text now with a form link. It's quick and easy."
         ];
-        const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
-        saySafeSSML(g, randomPrompt);
-        g.pause({ length: 1 });
-        // If timeout, re-ask for email instead of restarting
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
+        const randomMsg = formMessages[Math.floor(Math.random() * formMessages.length)];
+        saySafe(vr, randomMsg);
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=send_form`));
         return res.type("text/xml").send(vr.toString());
       }
 
