@@ -307,7 +307,7 @@ async function updatePatient(patientId: string, updates: {
 async function checkAndUpdatePatient(
   patient: any,
   newFullName?: string,
-  newEmail?: string
+  newEmail?: string | null
 ): Promise<boolean> {
   const updates: { firstName?: string; lastName?: string; email?: string } = {};
 
