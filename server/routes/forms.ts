@@ -323,6 +323,11 @@ export function registerForms(app: Express) {
         phone
       };
 
+      console.log('[POST /api/forms/submit] Storing form data in conversation context:');
+      console.log('[POST /api/forms/submit]   - callSid:', callSid);
+      console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+      console.log('[POST /api/forms/submit]   - formData:', formData);
+
       await storage.updateConversation(call.conversationId, {
         context: {
           formToken: token,
@@ -331,7 +336,7 @@ export function registerForms(app: Express) {
         }
       });
 
-      console.log('[POST /api/forms/submit] Form submitted:', { callSid, firstName, lastName, email });
+      console.log('[POST /api/forms/submit] ✅ Form data stored successfully');
 
       res.json({
         success: true,

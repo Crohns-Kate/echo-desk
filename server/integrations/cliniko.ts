@@ -417,17 +417,24 @@ export async function findPatientByPhone(phoneRaw: string) {
 }
 
 // --- Upsert/Create patient ---
-export async function getOrCreatePatient({ 
-  fullName, 
-  email: emailRaw, 
-  phone: phoneRaw 
-}: { 
-  fullName?: string; 
-  email?: string; 
+export async function getOrCreatePatient({
+  fullName,
+  email: emailRaw,
+  phone: phoneRaw
+}: {
+  fullName?: string;
+  email?: string;
   phone?: string;
 }) {
   const email = sanitizeEmail(emailRaw || "");
   const phone = sanitizePhoneE164AU(phoneRaw || "");
+
+  console.log('[Cliniko] getOrCreatePatient called with:');
+  console.log('[Cliniko]   - fullName:', fullName);
+  console.log('[Cliniko]   - email (raw):', emailRaw);
+  console.log('[Cliniko]   - email (sanitized):', email);
+  console.log('[Cliniko]   - phone (raw):', phoneRaw);
+  console.log('[Cliniko]   - phone (sanitized):', phone);
 
   // Try finders first
   if (email) {
@@ -435,12 +442,15 @@ export async function getOrCreatePatient({
     const p = await findPatientByEmail(email);
     if (p) {
       console.log('[Cliniko] Found existing patient by email:', p.id);
+      console.log('[Cliniko]   - Existing name:', p.first_name, p.last_name);
+      console.log('[Cliniko]   - Existing email:', p.email);
 
       // Check if we need to update name or email
       const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
       if (needsUpdate) {
         // Refetch the updated patient
         const updated = await findPatientByEmail(email);
+        console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
         return updated || p;
       }
       return p;
@@ -450,6 +460,10 @@ export async function getOrCreatePatient({
     console.log('[Cliniko] getOrCreatePatient: Searching by phone:', phone);
     const p = await findPatientByPhone(phone);
     if (p) {
+      console.log('[Cliniko] Found existing patient by phone:', p.id);
+      console.log('[Cliniko]   - Existing name:', p.first_name, p.last_name);
+      console.log('[Cliniko]   - Existing email:', p.email);
+
       // Check if the name matches (if fullName is provided)
       if (fullName && fullName.trim()) {
         const existingFullName = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
@@ -470,6 +484,7 @@ export async function getOrCreatePatient({
           if (needsUpdate && phone) {
             // Refetch the updated patient
             const updated = await findPatientByPhone(phone);
+            console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
             return updated || p;
           }
           return p;
@@ -483,6 +498,7 @@ export async function getOrCreatePatient({
         if (needsUpdate && phone) {
           // Refetch the updated patient
           const updated = await findPatientByPhone(phone);
+          console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
           return updated || p;
         }
         return p;
