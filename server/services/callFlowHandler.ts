@@ -915,6 +915,17 @@ export class CallFlowHandler {
         fullName = this.ctx.patientName;
       }
 
+      const emailToUse = this.ctx.formData?.email || this.ctx.patientEmail || undefined;
+
+      console.log('[handleConfirmBooking] Passing to createAppointmentForPatient:');
+      console.log('[handleConfirmBooking]   - phone:', phoneToUse);
+      console.log('[handleConfirmBooking]   - fullName:', fullName);
+      console.log('[handleConfirmBooking]   - email:', emailToUse);
+      console.log('[handleConfirmBooking]   - formData present:', !!this.ctx.formData);
+      if (this.ctx.formData) {
+        console.log('[handleConfirmBooking]   - formData.email:', this.ctx.formData.email);
+      }
+
       // Create appointment (this also creates patient if needed)
       const practitionerId = this.tenantCtx?.cliniko?.practitionerId || env.CLINIKO_PRACTITIONER_ID;
       const appointment = await createAppointmentForPatient(phoneToUse, {
@@ -925,7 +936,7 @@ export class CallFlowHandler {
           ? `New patient appointment booked via voice call at ${new Date().toISOString()}`
           : `Follow-up appointment booked via voice call at ${new Date().toISOString()}`,
         fullName: fullName || undefined,
-        email: this.ctx.formData?.email || this.ctx.patientEmail || undefined,
+        email: emailToUse,
         tenantCtx: this.tenantCtx
       });
 

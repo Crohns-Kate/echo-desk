@@ -323,15 +323,27 @@ export function registerForms(app: Express) {
         phone
       };
 
+      console.log('[POST /api/forms/submit] Storing form data in conversation context:');
+      console.log('[POST /api/forms/submit]   - callSid:', callSid);
+      console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+      console.log('[POST /api/forms/submit]   - formData:', formData);
+
+      // CRITICAL FIX: Merge with existing context instead of replacing it
+      const conversation = await storage.getConversation(call.conversationId);
+      const existingContext = (conversation?.context || {}) as any;
+
+      console.log('[POST /api/forms/submit] Existing context state:', existingContext.state);
+
       await storage.updateConversation(call.conversationId, {
         context: {
+          ...existingContext,  // Preserve existing context (state, slots, etc.)
           formToken: token,
           formData: formData,
           formSubmittedAt: new Date().toISOString()
         }
       });
 
-      console.log('[POST /api/forms/submit] Form submitted:', { callSid, firstName, lastName, email });
+      console.log('[POST /api/forms/submit] ✅ Form data merged into context successfully');
 
       res.json({
         success: true,
