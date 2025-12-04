@@ -470,11 +470,21 @@ export async function createAppointmentForPatient(phone: string, payload: {
 }): Promise<ClinikoAppointment> {
   const { base, headers } = getClinikoConfig(payload.tenantCtx);
 
+  console.log('[createAppointmentForPatient] Called with:');
+  console.log('[createAppointmentForPatient]   - phone:', phone);
+  console.log('[createAppointmentForPatient]   - fullName:', payload.fullName);
+  console.log('[createAppointmentForPatient]   - email:', payload.email);
+
   const patient = await getOrCreatePatient({
     phone,
     fullName: payload.fullName,
     email: payload.email
   });
+
+  console.log('[createAppointmentForPatient] Patient returned from getOrCreatePatient:');
+  console.log('[createAppointmentForPatient]   - ID:', patient.id);
+  console.log('[createAppointmentForPatient]   - Name:', patient.first_name, patient.last_name);
+  console.log('[createAppointmentForPatient]   - Email:', patient.email);
 
   // Get business ID if not provided
   let businessId = payload.businessId;
