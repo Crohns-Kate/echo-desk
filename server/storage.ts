@@ -2,6 +2,7 @@
 import {
   tenants,
   phoneMap,
+  users,
   conversations,
   callLogs,
   alerts,
@@ -10,6 +11,7 @@ import {
   faqs,
   type Tenant,
   type PhoneMap,
+  type User,
   type Conversation,
   type CallLog,
   type Alert,
@@ -18,6 +20,7 @@ import {
   type Faq,
   type InsertTenant,
   type InsertPhoneMap,
+  type InsertUser,
   type InsertCallLog,
   type InsertAlert,
   type InsertAppointment,
@@ -522,6 +525,52 @@ export class DatabaseStorage implements IStorage {
         lastUsedAt: new Date(),
       })
       .where(eq(faqs.id, id));
+  }
+
+  async getFaqById(id: number): Promise<Faq | undefined> {
+    const [faq] = await db.select().from(faqs).where(eq(faqs.id, id)).limit(1);
+    return faq;
+  }
+
+  async updateFaq(id: number, updates: Partial<InsertFaq>): Promise<Faq | undefined> {
+    const [faq] = await db.update(faqs)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(faqs.id, id))
+      .returning();
+    return faq;
+  }
+
+  async deleteFaq(id: number): Promise<void> {
+    await db.delete(faqs).where(eq(faqs.id, id));
+  }
+
+  // User Management
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1);
+    return user;
+  }
+
+  async getUserById(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return user;
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const [user] = await db.insert(users).values(insertUser).returning();
+    console.log('[DB] Created user:', user.email, 'for tenant:', user.tenantId);
+    return user;
+  }
+
+  async updateUser(id: number, updates: Partial<InsertUser>): Promise<User | undefined> {
+    const [user] = await db.update(users)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+    return user;
+  }
+
+  async listUsersByTenant(tenantId: number): Promise<User[]> {
+    return db.select().from(users).where(eq(users.tenantId, tenantId)).orderBy(users.createdAt);
   }
 
   async seed(): Promise<void> {

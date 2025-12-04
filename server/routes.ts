@@ -641,6 +641,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Register dashboard API routes
   registerApp(app);
 
+  // Register client dashboard routes (authentication, settings, FAQs)
+  const { registerDashboard } = await import('./routes/dashboard');
+  registerDashboard(app);
+
   // ═══════════════════════════════════════════════════════════
   // TENANT ADMIN API
   // ═══════════════════════════════════════════════════════════
