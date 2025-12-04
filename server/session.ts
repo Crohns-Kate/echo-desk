@@ -13,6 +13,11 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
 });
 
+// Handle pool errors gracefully
+pool.on("error", (err) => {
+  console.error("[Session] Pool error:", err.message);
+});
+
 // Create connect-pg-simple store
 const PgSession = connectPgSimple(session);
 
@@ -21,7 +26,8 @@ export const sessionMiddleware = session({
   store: new PgSession({
     pool,
     tableName: "sessions",
-    createTableIfMissing: false, // We create table via migration
+    createTableIfMissing: true, // Auto-create sessions table if not exists
+    pruneSessionInterval: 60 * 15, // Prune expired sessions every 15 minutes
   }),
   secret: process.env.SESSION_SECRET || "echo-desk-dev-secret-change-in-production",
   resave: false,
