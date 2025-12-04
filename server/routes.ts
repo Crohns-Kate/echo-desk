@@ -6,6 +6,7 @@ import { registerApp } from "./routes/app";
 import { initializeWebSocket } from "./services/websocket";
 import authRoutes from "./routes/auth";
 import phonePoolRoutes from "./routes/phonePool";
+import tenantRoutes from "./routes/tenant";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Initialize database
@@ -16,6 +17,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Phone pool admin routes (super admin only)
   app.use("/api/admin/phone-pool", phonePoolRoutes);
+
+  // Tenant self-service routes (authenticated tenant users)
+  app.use("/api/tenant", tenantRoutes);
 
   // Simple health check for Twilio and monitoring
   app.get('/health', (_req, res) => {

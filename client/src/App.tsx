@@ -1,10 +1,12 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { AppLayout } from "@/components/layout/app-layout";
+import { AuthProvider } from "@/components/AuthProvider";
+import { useAuth } from "@/hooks/useAuth";
 import Dashboard from "@/pages/dashboard";
 import Calls from "@/pages/calls";
 import CallDetail from "@/pages/call-detail";
@@ -17,9 +19,42 @@ import TenantOnboarding from "@/pages/tenant-onboarding";
 import FaqManagement from "@/pages/faq-management";
 import Billing from "@/pages/billing";
 import Settings from "@/pages/settings";
+import Login from "@/pages/login";
+import ForgotPassword from "@/pages/forgot-password";
+import ResetPassword from "@/pages/reset-password";
+import ChangePassword from "@/pages/change-password";
+import TenantDashboard from "@/pages/tenant-dashboard";
 import NotFound from "@/pages/not-found";
+import { Loader2 } from "lucide-react";
 
-function Router() {
+// Loading spinner component
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto" />
+        <p className="mt-2 text-sm text-gray-500">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+// Public routes (login, forgot password, etc.)
+function PublicRoutes() {
+  return (
+    <Switch>
+      <Route path="/login" component={Login} />
+      <Route path="/forgot-password" component={ForgotPassword} />
+      <Route path="/reset-password" component={ResetPassword} />
+      <Route>
+        <Redirect to="/login" />
+      </Route>
+    </Switch>
+  );
+}
+
+// Authenticated routes for super admin
+function AdminRoutes() {
   useWebSocket();
 
   return (
@@ -43,13 +78,69 @@ function Router() {
   );
 }
 
+// Authenticated routes for tenant users
+function TenantRoutes() {
+  useWebSocket();
+
+  return (
+    <AppLayout>
+      <Switch>
+        <Route path="/" component={TenantDashboard} />
+        <Route path="/calls" component={Calls} />
+        <Route path="/calls/:id" component={CallDetail} />
+        <Route path="/transcripts" component={Transcripts} />
+        <Route path="/alerts" component={Alerts} />
+        <Route path="/faqs" component={FaqManagement} />
+        <Route path="/settings" component={Settings} />
+        <Route path="/billing" component={Billing} />
+        <Route component={NotFound} />
+      </Switch>
+    </AppLayout>
+  );
+}
+
+// Main router that handles auth state
+function Router() {
+  const { isLoading, isAuthenticated, isSuperAdmin, mustChangePassword } = useAuth();
+  const [location] = useLocation();
+
+  // Show loading while checking auth
+  if (isLoading) {
+    return <LoadingScreen />;
+  }
+
+  // Public routes for non-authenticated users
+  if (!isAuthenticated) {
+    // Allow reset-password to work without being logged in
+    if (location.startsWith("/reset-password")) {
+      return <ResetPassword />;
+    }
+    return <PublicRoutes />;
+  }
+
+  // Force password change if required
+  if (mustChangePassword) {
+    return <ChangePassword />;
+  }
+
+  // Super admin gets full admin routes
+  if (isSuperAdmin) {
+    return <AdminRoutes />;
+  }
+
+  // Tenant users get scoped routes
+  return <TenantRoutes />;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-      </TooltipProvider>
+      <AuthProvider>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+        </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
