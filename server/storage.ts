@@ -573,6 +573,16 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(users).where(eq(users.tenantId, tenantId)).orderBy(users.createdAt);
   }
 
+  async getUserByVerificationToken(token: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.emailVerificationToken, token)).limit(1);
+    return user;
+  }
+
+  async getUserByResetToken(token: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.passwordResetToken, token)).limit(1);
+    return user;
+  }
+
   async seed(): Promise<void> {
     // Check if default tenant exists
     const existing = await this.getTenant('default');

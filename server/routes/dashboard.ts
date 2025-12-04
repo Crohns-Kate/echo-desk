@@ -12,10 +12,12 @@ import { Request, Response, Express } from 'express';
 import { storage } from '../storage';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 import { createCheckoutSession, createPortalSession, getSubscription } from '../services/stripe';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 const SALT_ROUNDS = 10;
+const BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:3000';
 
 // Middleware to verify JWT token and extract tenant
 async function authenticateUser(req: Request, res: Response, next: Function) {
@@ -44,7 +46,7 @@ export function registerDashboard(app: Express) {
 
   /**
    * POST /api/dashboard/signup
-   * Complete signup after Stripe payment
+   * Complete signup (works for free tier or after Stripe payment)
    * Creates tenant + first user account
    */
   app.post('/api/dashboard/signup', async (req: Request, res: Response) => {
@@ -56,7 +58,8 @@ export function registerDashboard(app: Express) {
         lastName,
         clinicName,
         timezone,
-        stripeCustomerId
+        stripeCustomerId,
+        tier = 'free'  // Default to free tier
       } = req.body;
 
       // Validation
@@ -66,6 +69,12 @@ export function registerDashboard(app: Express) {
 
       if (password.length < 8) {
         return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
       }
 
       // Check if user already exists
@@ -95,24 +104,31 @@ export function registerDashboard(app: Express) {
         timezone: timezone || 'Australia/Brisbane',
         greeting: `Thanks for calling ${clinicName}`,
         stripeCustomerId: stripeCustomerId || undefined,
-        subscriptionTier: stripeCustomerId ? 'starter' : 'free',
+        subscriptionTier: tier,
         subscriptionStatus: 'active',
       });
 
       // Hash password
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
+      // Generate email verification token
+      const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+
       // Create user account
       const user = await storage.createUser({
         tenantId: tenant.id,
-        email,
+        email: email.toLowerCase(),
         passwordHash,
         firstName,
         lastName,
         role: 'owner',
-        emailVerified: true, // Auto-verify if they came from Stripe
+        emailVerified: false,  // Require email verification
+        emailVerificationToken,
         isActive: true,
       });
+
+      // TODO: Send verification email
+      console.log(`[Dashboard] Verification link: ${BASE_URL}/verify-email?token=${emailVerificationToken}`);
 
       // Generate JWT
       const token = jwt.sign(
@@ -121,7 +137,7 @@ export function registerDashboard(app: Express) {
         { expiresIn: '7d' }
       );
 
-      console.log(`[Dashboard] New signup: ${email} for clinic: ${clinicName} (${slug})`);
+      console.log(`[Dashboard] New signup: ${email} for clinic: ${clinicName} (${slug}) - ${tier} tier`);
 
       res.json({
         success: true,
@@ -132,6 +148,7 @@ export function registerDashboard(app: Express) {
           firstName: user.firstName,
           lastName: user.lastName,
           role: user.role,
+          emailVerified: user.emailVerified,
         },
         tenant: {
           id: tenant.id,
@@ -139,6 +156,7 @@ export function registerDashboard(app: Express) {
           clinicName: tenant.clinicName,
           subscriptionTier: tenant.subscriptionTier,
         },
+        message: 'Account created! Please check your email to verify your account.',
       });
 
     } catch (error: any) {
@@ -536,6 +554,188 @@ export function registerDashboard(app: Express) {
     } catch (error: any) {
       console.error('[Dashboard] Get stats error:', error);
       res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+  });
+
+  /**
+   * GET /api/dashboard/verify-email
+   * Verify email address using token
+   */
+  app.get('/api/dashboard/verify-email', async (req: Request, res: Response) => {
+    try {
+      const { token } = req.query;
+
+      if (!token) {
+        return res.status(400).json({ error: 'Verification token is required' });
+      }
+
+      // Find user by verification token
+      const user = await storage.getUserByVerificationToken(token as string);
+
+      if (!user) {
+        return res.status(404).json({ error: 'Invalid or expired verification token' });
+      }
+
+      if (user.emailVerified) {
+        return res.json({ success: true, message: 'Email already verified' });
+      }
+
+      // Mark email as verified
+      await storage.updateUser(user.id, {
+        emailVerified: true,
+        emailVerificationToken: null,
+      });
+
+      console.log(`[Dashboard] Email verified for user: ${user.email}`);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully! You can now log in.',
+      });
+
+    } catch (error: any) {
+      console.error('[Dashboard] Email verification error:', error);
+      res.status(500).json({ error: 'Failed to verify email' });
+    }
+  });
+
+  /**
+   * POST /api/dashboard/forgot-password
+   * Request password reset
+   */
+  app.post('/api/dashboard/forgot-password', async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+
+      const user = await storage.getUserByEmail(email);
+
+      // Don't reveal if user exists (security best practice)
+      if (!user) {
+        return res.json({
+          success: true,
+          message: 'If an account exists with that email, you will receive a password reset link.',
+        });
+      }
+
+      // Generate password reset token
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      const resetExpires = new Date(Date.now() + 3600000); // 1 hour
+
+      await storage.updateUser(user.id, {
+        passwordResetToken: resetToken,
+        passwordResetExpires: resetExpires,
+      });
+
+      // TODO: Send password reset email
+      console.log(`[Dashboard] Password reset link: ${BASE_URL}/reset-password?token=${resetToken}`);
+
+      res.json({
+        success: true,
+        message: 'If an account exists with that email, you will receive a password reset link.',
+      });
+
+    } catch (error: any) {
+      console.error('[Dashboard] Forgot password error:', error);
+      res.status(500).json({ error: 'Failed to process request' });
+    }
+  });
+
+  /**
+   * POST /api/dashboard/reset-password
+   * Reset password using token
+   */
+  app.post('/api/dashboard/reset-password', async (req: Request, res: Response) => {
+    try {
+      const { token, password } = req.body;
+
+      if (!token || !password) {
+        return res.status(400).json({ error: 'Token and new password are required' });
+      }
+
+      if (password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+
+      // Find user by reset token
+      const user = await storage.getUserByResetToken(token);
+
+      if (!user) {
+        return res.status(404).json({ error: 'Invalid or expired reset token' });
+      }
+
+      // Check if token has expired
+      if (user.passwordResetExpires && new Date() > user.passwordResetExpires) {
+        return res.status(400).json({ error: 'Reset token has expired' });
+      }
+
+      // Hash new password
+      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+
+      // Update password and clear reset token
+      await storage.updateUser(user.id, {
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetExpires: null,
+      });
+
+      console.log(`[Dashboard] Password reset for user: ${user.email}`);
+
+      res.json({
+        success: true,
+        message: 'Password reset successfully! You can now log in with your new password.',
+      });
+
+    } catch (error: any) {
+      console.error('[Dashboard] Reset password error:', error);
+      res.status(500).json({ error: 'Failed to reset password' });
+    }
+  });
+
+  /**
+   * POST /api/dashboard/resend-verification
+   * Resend email verification link
+   */
+  app.post('/api/dashboard/resend-verification', async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+
+      const user = await storage.getUserByEmail(email);
+
+      if (!user) {
+        // Don't reveal if user exists
+        return res.json({ success: true, message: 'Verification email sent if account exists.' });
+      }
+
+      if (user.emailVerified) {
+        return res.json({ success: true, message: 'Email already verified' });
+      }
+
+      // Generate new verification token
+      const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+
+      await storage.updateUser(user.id, {
+        emailVerificationToken,
+      });
+
+      // TODO: Send verification email
+      console.log(`[Dashboard] Verification link: ${BASE_URL}/verify-email?token=${emailVerificationToken}`);
+
+      res.json({
+        success: true,
+        message: 'Verification email sent if account exists.',
+      });
+
+    } catch (error: any) {
+      console.error('[Dashboard] Resend verification error:', error);
+      res.status(500).json({ error: 'Failed to resend verification' });
     }
   });
 }
