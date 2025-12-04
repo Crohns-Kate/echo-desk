@@ -565,6 +565,26 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
+  // Quarantine handler - plays "number not in service" for recycled numbers
+  app.post("/api/voice/quarantine", async (req: Request, res: Response) => {
+    console.log("[VOICE][QUARANTINE] Number in quarantine, playing message");
+    const vr = new twilio.twiml.VoiceResponse();
+    vr.say(
+      { voice: "Polly.Olivia-Neural" },
+      "We're sorry. The number you have dialed is no longer in service. Please check the number and try again."
+    );
+    vr.hangup();
+    res.type("text/xml").send(vr.toString());
+  });
+
+  // Quarantine handler for SMS
+  app.post("/api/sms/quarantine", async (req: Request, res: Response) => {
+    console.log("[SMS][QUARANTINE] Number in quarantine, no response");
+    // Don't respond to SMS on quarantined numbers
+    res.sendStatus(200);
+  });
+
+  // ───────────────────────────────────────────────
   // Entry point for each call
   app.post("/api/voice/incoming", async (req: Request, res: Response) => {
     const callSid =

@@ -5,6 +5,7 @@ import { registerVoice } from "./routes/voice";
 import { registerApp } from "./routes/app";
 import { initializeWebSocket } from "./services/websocket";
 import authRoutes from "./routes/auth";
+import phonePoolRoutes from "./routes/phonePool";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Initialize database
@@ -12,6 +13,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Authentication routes (before other API routes)
   app.use("/api/auth", authRoutes);
+
+  // Phone pool admin routes (super admin only)
+  app.use("/api/admin/phone-pool", phonePoolRoutes);
 
   // Simple health check for Twilio and monitoring
   app.get('/health', (_req, res) => {
