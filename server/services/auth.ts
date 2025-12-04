@@ -3,7 +3,7 @@
  * Handles user authentication, password hashing, and session management
  */
 
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { db } from "../db";
 import { users, tenants, auditLog } from "../../shared/schema";
