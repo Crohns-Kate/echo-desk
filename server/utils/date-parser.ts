@@ -122,6 +122,29 @@ export function parseNaturalDate(
     };
   }
 
+  // Handle relative time expressions: "in X days/weeks/months"
+  const relativeMatch = expr.match(/in\s+(\d+|a|an|one|two|three)\s+(day|days|week|weeks|month|months)/);
+  if (relativeMatch) {
+    const numberWord = relativeMatch[1];
+    const unit = relativeMatch[2];
+
+    // Convert word numbers to digits
+    const numberMap: Record<string, number> = {
+      'a': 1, 'an': 1, 'one': 1, 'two': 2, 'three': 3
+    };
+    const amount = numberMap[numberWord] || parseInt(numberWord, 10);
+
+    // Normalize unit to singular
+    const normalizedUnit = unit.replace(/s$/, '') as 'day' | 'week' | 'month';
+
+    const targetDate = today.add(amount, normalizedUnit);
+    return {
+      from: targetDate.startOf('day'),
+      to: targetDate.endOf('day'),
+      description: `in ${amount} ${normalizedUnit}${amount > 1 ? 's' : ''} (${targetDate.format('MMM D')})`
+    };
+  }
+
   // Handle explicit dates: "23rd", "the 23rd", "on the 23rd", "may 23rd", "23rd of may", etc.
   const explicitDateResult = parseExplicitDate(expr, now, timezone);
   if (explicitDateResult) {

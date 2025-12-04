@@ -2581,13 +2581,13 @@ export function registerVoice(app: Express) {
             console.error("[ASK-EMAIL-NEW] Failed to update retry count:", err);
           }
 
-          // After 2 failed attempts, offer to skip
-          if (emailRetryCount >= 2) {
-            console.log("[ASK-EMAIL-NEW] Max retries reached, skipping email collection");
+          // After 1 failed attempt, send SMS link instead
+          if (emailRetryCount >= 1) {
+            console.log("[ASK-EMAIL-NEW] After 1 retry, sending SMS link instead of voice retry");
             const skipMessages = firstName ? [
-              `No worries ${firstName}, we can sort that out later. Let's keep going.`
+              `No worries ${firstName}, I'll text you a link to enter your email instead. Much easier!`
             ] : [
-              `That's okay, we can get that sorted later. Let's continue.`
+              `That's okay, I'll text you a link where you can type it in instead.`
             ];
             const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
             saySafe(vr, randomSkip);
@@ -2645,12 +2645,12 @@ export function registerVoice(app: Express) {
             console.error("[ASK-EMAIL-NEW] Failed to update retry count:", err);
           }
 
-          // After 2 attempts with no speech, skip
-          if (emailRetryCount >= 2) {
-            console.log("[ASK-EMAIL-NEW] No speech after multiple attempts, skipping email");
+          // After 1 attempt with no speech, send SMS link
+          if (emailRetryCount >= 1) {
+            console.log("[ASK-EMAIL-NEW] No speech after 1 attempt, sending SMS link instead");
             const skipMessages = [
-              `That's okay, we'll get your email sorted out later. Let's keep going.`,
-              `No worries, we can collect that another time. Let's continue.`
+              `I'll text you a link where you can type in your email instead. Much easier!`,
+              `No worries, I'll send you a text message link to enter it there.`
             ];
             const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
             saySafe(vr, randomSkip);
