@@ -119,6 +119,11 @@ export class CallFlowHandler {
         if (conversation?.context) {
           // Restore state from storage
           const stored = conversation.context as Partial<CallContext>;
+          console.log('[CallFlowHandler] Loading context from DB:');
+          console.log('[CallFlowHandler]   - state:', stored.state);
+          console.log('[CallFlowHandler]   - formData present:', !!stored.formData);
+          console.log('[CallFlowHandler]   - selectedSlotIndex:', stored.selectedSlotIndex);
+          console.log('[CallFlowHandler]   - appointmentSlots count:', stored.appointmentSlots?.length || 0);
           this.ctx = {
             ...this.ctx,
             ...stored,
@@ -126,7 +131,8 @@ export class CallFlowHandler {
             callSid: this.ctx.callSid,
             callerPhone: this.ctx.callerPhone
           };
-          console.log('[CallFlowHandler] Restored context:', this.ctx.state);
+          console.log('[CallFlowHandler] After merge - formData:', this.ctx.formData);
+          console.log('[CallFlowHandler] After merge - selectedSlotIndex:', this.ctx.selectedSlotIndex);
         }
         this.ctx.conversationId = String(call.conversationId);
       }
@@ -141,10 +147,15 @@ export class CallFlowHandler {
   async saveContext(): Promise<void> {
     try {
       if (this.ctx.conversationId) {
+        console.log('[CallFlowHandler] Saving context to DB:');
+        console.log('[CallFlowHandler]   - state:', this.ctx.state);
+        console.log('[CallFlowHandler]   - formData present:', !!this.ctx.formData);
+        console.log('[CallFlowHandler]   - selectedSlotIndex:', this.ctx.selectedSlotIndex);
+        console.log('[CallFlowHandler]   - appointmentSlots count:', this.ctx.appointmentSlots?.length || 0);
         await storage.updateConversation(Number(this.ctx.conversationId), {
           context: this.ctx
         });
-        console.log('[CallFlowHandler] Saved context:', this.ctx.state);
+        console.log('[CallFlowHandler] ✅ Context saved successfully');
       }
     } catch (err) {
       console.error('[CallFlowHandler] Failed to save context:', err);
@@ -525,9 +536,19 @@ export class CallFlowHandler {
         const conversation = await storage.getConversation(call.conversationId);
         const context = conversation?.context as Partial<CallContext>;
 
+        console.log('[handleCheckFormStatus] Checking for form data in context');
+        console.log('[handleCheckFormStatus] formData present:', !!context?.formData);
         if (context?.formData) {
-          // Form completed!
-          this.ctx.formData = context.formData;
+          console.log('[handleCheckFormStatus] formData:', context.formData);
+        }
+
+        if (context?.formData) {
+          // Form completed! Reload entire context to ensure we have everything
+          console.log('[handleCheckFormStatus] Form completed! Reloading full context');
+          await this.loadContext();  // Reload entire context from DB
+          console.log('[handleCheckFormStatus] After reload - formData:', this.ctx.formData);
+          console.log('[handleCheckFormStatus] After reload - selectedSlotIndex:', this.ctx.selectedSlotIndex);
+          console.log('[handleCheckFormStatus] After reload - appointmentSlots count:', this.ctx.appointmentSlots?.length || 0);
           this.transitionTo(CallState.FORM_RECEIVED);
           await this.handleFormReceived();
           return;
