@@ -237,10 +237,10 @@ router.post(
 
       const result = await createPasswordResetToken(email);
 
-      // TODO: Send email with reset link
-      // For now, just log the token (remove in production!)
+      // Send password reset email
       if (result.token) {
-        console.log(`Password reset token for ${email}: ${result.token}`);
+        const { sendPasswordResetEmail } = await import("../services/email");
+        await sendPasswordResetEmail(email, result.token);
 
         // Log password reset request
         await logAuditEvent(
