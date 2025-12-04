@@ -4,10 +4,14 @@ import { storage } from "./storage";
 import { registerVoice } from "./routes/voice";
 import { registerApp } from "./routes/app";
 import { initializeWebSocket } from "./services/websocket";
+import authRoutes from "./routes/auth";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Initialize database
   await storage.seed();
+
+  // Authentication routes (before other API routes)
+  app.use("/api/auth", authRoutes);
 
   // Simple health check for Twilio and monitoring
   app.get('/health', (_req, res) => {
