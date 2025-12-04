@@ -118,6 +118,19 @@ function normalizeSpokenEmail(raw: string): { email: string | null; errorType: s
   s = s.replace(/\bhotmail\b/, "hotmail");
   s = s.replace(/\boutlook\b/, "outlook");
 
+  // Try to intelligently add @ if missing but we detect common email providers
+  // e.g., "johnsmithgmail.com" → "johnsmith@gmail.com"
+  if (!s.includes("@")) {
+    const providerPattern = /(gmail|yahoo|hotmail|outlook|icloud|live|me)\.com/;
+    const match = s.match(providerPattern);
+    if (match) {
+      const provider = match[0]; // e.g., "gmail.com"
+      const beforeProvider = s.substring(0, s.indexOf(provider));
+      s = beforeProvider + "@" + provider;
+      console.log("[normalizeSpokenEmail] Auto-inserted @ before provider:", s);
+    }
+  }
+
   // Remove remaining spaces
   s = s.replace(/\s+/g, "");
 
@@ -2603,10 +2616,10 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
           const retryPrompts = firstName ? [
-            `Sorry ${firstName}, ${errorFeedback}Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`,
-            `${errorFeedback}Let me try again. Can you spell it out for me? Like 'jane underscore doe at outlook dot com'.`
+            `Sorry ${firstName}, ${errorFeedback}Could you spell it out slowly? For example, john, dot, smith, at, gmail, dot, com.`,
+            `${errorFeedback}Let me try again. Can you spell it out for me? Like jane, dot, doe, at, outlook, dot, com. Make sure to say "at" for the @ symbol.`
           ] : [
-            `Sorry, ${errorFeedback}Could you spell it out slowly? For example, 'john dot smith at gmail dot com'.`
+            `Sorry, ${errorFeedback}Could you spell it out slowly? For example, john, dot, smith, at, gmail, dot, com. Make sure to say "at" between your name and the provider.`
           ];
           const randomRetry = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
           saySafe(g, randomRetry);

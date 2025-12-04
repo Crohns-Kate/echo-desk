@@ -345,3 +345,75 @@ function findNextWeekday(fromDate: Dayjs, targetWeekday: number, timezone: strin
 export function formatDateRange(range: DateRange): string {
   return `${range.from.format('MMM D h:mma')} - ${range.to.format('MMM D h:mma')} (${range.description})`;
 }
+
+/**
+ * Extract time preference from natural language
+ * Handles: "2pm", "2:00pm", "14:00", "2 o'clock", "two pm", "half past two", etc.
+ *
+ * @param text - Text that may contain time preference
+ * @returns Hour (0-23) and minute (0-59), or null if no time found
+ */
+export function extractTimePreference(text: string | undefined): { hour: number; minute: number } | null {
+  if (!text) return null;
+
+  const cleaned = text.toLowerCase().trim();
+
+  // Pattern 1: "2pm", "2 pm", "14:00", "2:30pm", "14:30"
+  const timePattern = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b/i;
+  const match = cleaned.match(timePattern);
+
+  if (match) {
+    let hour = parseInt(match[1], 10);
+    const minute = match[2] ? parseInt(match[2], 10) : 0;
+    const meridiem = match[3]?.toLowerCase().replace(/\./g, '');
+
+    // Convert 12-hour to 24-hour format
+    if (meridiem === 'pm' || meridiem === 'pm') {
+      if (hour !== 12) hour += 12;
+    } else if (meridiem === 'am' || meridiem === 'am') {
+      if (hour === 12) hour = 0;
+    } else {
+      // No meridiem specified - use context
+      // If hour is 1-7, assume PM for appointments (13:00-19:00)
+      // If hour is 8-12, could be AM
+      if (hour >= 1 && hour <= 7) {
+        hour += 12; // Assume afternoon
+      }
+    }
+
+    // Validate hour and minute
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute };
+    }
+  }
+
+  // Pattern 2: Word numbers - "two pm", "three thirty", etc.
+  const wordNumbers: Record<string, number> = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+    'eleven': 11, 'twelve': 12
+  };
+
+  for (const [word, num] of Object.entries(wordNumbers)) {
+    const wordPattern = new RegExp(`\\b${word}\\s*(o'?clock|am|pm|a\\.m\\.|p\\.m\\.)\\b`, 'i');
+    const wordMatch = cleaned.match(wordPattern);
+    if (wordMatch) {
+      let hour = num;
+      const meridiem = wordMatch[1]?.toLowerCase().replace(/\./g, '').replace(/o'?clock/, '').trim();
+
+      if (meridiem === 'pm') {
+        if (hour !== 12) hour += 12;
+      } else if (meridiem === 'am') {
+        if (hour === 12) hour = 0;
+      } else if (hour >= 1 && hour <= 7) {
+        hour += 12; // Assume PM for typical appointment times
+      }
+
+      if (hour >= 0 && hour <= 23) {
+        return { hour, minute: 0 };
+      }
+    }
+  }
+
+  return null;
+}

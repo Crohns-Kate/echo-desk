@@ -4,7 +4,7 @@ import { findPatientByPhoneRobust, createAppointmentForPatient, getAvailability 
 import { sendNewPatientForm } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { AUST_TZ } from '../time';
-import { parseNaturalDate, formatDateRange } from '../utils/date-parser';
+import { parseNaturalDate, formatDateRange, extractTimePreference } from '../utils/date-parser';
 import { classifyIntent } from './intent';
 import type { TenantContext } from './tenantResolver';
 import { CallState } from '../types/call-state';
@@ -41,7 +41,7 @@ export interface CallContext {
   };
   complaint?: string;
   preferredDay?: string; // Natural language day extracted from complaint (e.g., "saturday", "today")
-  preferredTime?: string; // Preferred time extracted from complaint (e.g., "2pm", "14:00")
+  preferredTime?: { hour: number; minute: number }; // Specific time preference (e.g., {hour: 14, minute: 0} for 2pm)
   appointmentSlots?: Array<{
     startISO: string;
     speakable: string;
@@ -600,12 +600,25 @@ export class CallFlowHandler {
         console.log('[handleChiefComplaint] Extracted preferred day:', intent.day);
       }
       if (intent.preferredTime) {
-        this.ctx.preferredTime = intent.preferredTime;
-        console.log('[handleChiefComplaint] Extracted preferred time:', intent.preferredTime);
+        // Parse the time string into hour/minute object
+        const parsedTime = extractTimePreference(intent.preferredTime);
+        if (parsedTime) {
+          this.ctx.preferredTime = parsedTime;
+          console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+        }
       }
     } catch (err) {
       console.warn('[handleChiefComplaint] Failed to classify intent:', err);
       // Continue without preferred day/time
+    }
+
+    // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
+    if (!this.ctx.preferredTime) {
+      const timePreference = extractTimePreference(speechRaw);
+      if (timePreference) {
+        this.ctx.preferredTime = timePreference;
+        console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
+      }
     }
 
     saySafe(this.vr, `Let me find the next available appointment.`);
@@ -625,13 +638,15 @@ export class CallFlowHandler {
 
       console.log('[handleAppointmentSearch] Searching for appointments:');
       console.log('[handleAppointmentSearch]   - Preferred day:', this.ctx.preferredDay || 'none specified');
+      console.log('[handleAppointmentSearch]   - Preferred time:', this.ctx.preferredTime ? `${this.ctx.preferredTime.hour}:${String(this.ctx.preferredTime.minute).padStart(2, '0')}` : 'none specified');
       console.log('[handleAppointmentSearch]   - Date range:', formatDateRange(dateRange));
 
       const { slots } = await getAvailability({
         fromISO: dateRange.from.toISOString(),
         toISO: dateRange.to.toISOString(),
         timezone: this.getTimezone(),
-        tenantCtx: this.tenantCtx
+        tenantCtx: this.tenantCtx,
+        preferredTime: this.ctx.preferredTime
       });
 
       if (slots.length === 0) {
@@ -741,13 +756,8 @@ export class CallFlowHandler {
    * Rank slots by proximity to preferred time
    * Returns slots sorted with closest time first
    */
-  private rankSlotsByTime(slots: Array<{ startISO: string }>, preferredTime: string): Array<{ startISO: string }> {
-    const preferredHours = this.parseTimeToHours(preferredTime);
-
-    if (preferredHours === -1) {
-      // Could not parse preferred time, return slots as-is
-      return slots;
-    }
+  private rankSlotsByTime(slots: Array<{ startISO: string }>, preferredTime: { hour: number; minute: number }): Array<{ startISO: string }> {
+    const preferredHours = preferredTime.hour + (preferredTime.minute / 60);
 
     // Calculate time difference for each slot and sort
     const rankedSlots = slots.map(slot => {
@@ -761,7 +771,8 @@ export class CallFlowHandler {
     // Sort by time difference (closest first)
     rankedSlots.sort((a, b) => a.timeDiff - b.timeDiff);
 
-    console.log(`[rankSlotsByTime] Preferred time: ${preferredTime} (${preferredHours.toFixed(1)}h)`);
+    const preferredTimeStr = `${preferredTime.hour}:${String(preferredTime.minute).padStart(2, '0')}`;
+    console.log(`[rankSlotsByTime] Preferred time: ${preferredTimeStr} (${preferredHours.toFixed(1)}h)`);
     rankedSlots.slice(0, 3).forEach(({ slot, timeDiff }) => {
       const slotDate = dayjs(slot.startISO).tz(this.getTimezone());
       console.log(`  - ${slotDate.format('h:mma ddd MMM D')} (${timeDiff.toFixed(1)}h difference)`);
@@ -1043,26 +1054,48 @@ export class CallFlowHandler {
   async handleFAQFollowup(speechRaw: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
-    // Check if they want to book
-    const wantsToBook = speech.includes('book') || speech.includes('appointment') ||
-                        speech.includes('yes') || speech.includes('schedule');
+    // Check if they want to book - use more specific patterns to avoid false positives
+    // "book an appointment" vs "how long is the appointment?"
+    const bookingPhrases = [
+      'book', 'schedule', 'make an appointment',
+      'want an appointment', 'need an appointment',
+      'get an appointment', 'yes please', 'yes i would'
+    ];
+    const wantsToBook = bookingPhrases.some(phrase => speech.includes(phrase)) ||
+                        (speech === 'yes' || speech === 'sure' || speech === 'okay');
+
+    // Check if this is a question (likely another FAQ)
+    const isQuestion = speech.includes('how') || speech.includes('what') ||
+                      speech.includes('when') || speech.includes('where') ||
+                      speech.includes('why') || speech.includes('who') ||
+                      speech.includes('?') || speech.includes('cost') ||
+                      speech.includes('price') || speech.includes('long') ||
+                      speech.includes('much') || speech.includes('location') ||
+                      speech.includes('hours') || speech.includes('parking');
 
     // Check if they're done
     const isDone = speech.includes('no') || speech.includes('nothing') ||
-                   speech.includes("that's all") || speech.includes("that's it");
+                   speech.includes("that's all") || speech.includes("that's it") ||
+                   speech.includes('no thanks') || speech.includes("i'm good");
 
-    if (wantsToBook) {
-      // Continue to booking flow
-      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
-      saySafe(this.vr, "Great! Let's get you booked in.");
-      await this.handlePatientTypeDetect('', '');
-    } else if (isDone) {
+    if (isDone) {
       // They're done
       this.transitionTo(CallState.CLOSING);
       saySafe(this.vr, "Perfect! Have a great day. Bye!");
       this.vr.hangup();
+    } else if (isQuestion) {
+      // They have another question - stay in FAQ mode
+      console.log('[handleFAQFollowup] Detected another question, staying in FAQ mode');
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQ(speechRaw);
+    } else if (wantsToBook) {
+      // Continue to booking flow
+      console.log('[handleFAQFollowup] Detected booking intent, transitioning to booking flow');
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      saySafe(this.vr, "Great! Let's get you booked in.");
+      await this.handlePatientTypeDetect('', '');
     } else {
-      // Try to answer another FAQ
+      // Unclear - try to answer as FAQ first
       this.transitionTo(CallState.FAQ_ANSWERING);
       await this.handleFAQ(speechRaw);
     }
