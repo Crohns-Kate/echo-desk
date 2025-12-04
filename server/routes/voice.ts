@@ -2413,26 +2413,39 @@ export function registerVoice(app: Express) {
           }
         }
 
-        // Move to email collection with SMS link option
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 10,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        // Warm prompts offering email spelling or SMS link option
-        const emailPrompts = [
-          "For your file, what's the best email for you? If it's easier, I can text you a link and you can type it in - or you're welcome to spell it out now, whichever you prefer.",
-          "Lovely! What email should I use for your confirmation? You can spell it out, or I can text you a link to enter it if that's easier.",
-          "Wonderful! I'll need an email address. Feel free to spell it slowly, or say 'text me' and I'll send you a link."
+        // BETTER APPROACH: Skip voice email collection and send SMS form immediately
+        // This avoids the painful voice spelling process entirely
+        console.log("[ASK-NAME-NEW] Skipping voice email collection, sending SMS form instead");
+
+        // Set patientMode for FSM flow
+        try {
+          const call = await storage.getCallByCallSid(callSid);
+          if (call?.conversationId) {
+            const conversation = await storage.getConversation(call.conversationId);
+            const existingContext = (conversation?.context as any) || {};
+            await storage.updateConversation(call.conversationId, {
+              context: {
+                ...existingContext,
+                patientMode: "new",
+                isNewPatient: true,
+                patientId: null  // Ensure no existing patient ID is used
+              }
+            });
+            console.log("[ASK-NAME-NEW] Set patientMode=new, redirecting to form flow");
+          }
+        } catch (err) {
+          console.error("[ASK-NAME-NEW] Failed to set patientMode:", err);
+        }
+
+        // Redirect to NEW FSM flow which sends form and waits for completion
+        const formMessages = [
+          "Perfect! I'll text you a quick form to fill in your email and contact details. Takes just 30 seconds.",
+          "Great! Let me send you a text message with a link to enter your details. Much easier than spelling it out!",
+          "Wonderful! I'm sending you a text now with a form link. It's quick and easy."
         ];
-        const randomPrompt = emailPrompts[Math.floor(Math.random() * emailPrompts.length)];
-        saySafeSSML(g, randomPrompt);
-        g.pause({ length: 1 });
-        // If timeout, re-ask for email instead of restarting
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
+        const randomMsg = formMessages[Math.floor(Math.random() * formMessages.length)];
+        saySafe(vr, randomMsg);
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=send_form`));
         return res.type("text/xml").send(vr.toString());
       }
 
