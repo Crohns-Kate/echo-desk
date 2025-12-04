@@ -180,6 +180,7 @@ export async function getAvailability(opts?: {
   appointmentTypeId?: string;
   businessId?: string;
   tenantCtx?: TenantContext;
+  preferredTime?: { hour: number; minute: number }; // Specific time preference for sorting results
 }): Promise<{ slots: Array<{ startISO: string; endISO?: string; label?: string }> }> {
   const { base, headers } = getClinikoConfig(opts?.tenantCtx);
 
@@ -351,11 +352,30 @@ export async function getAvailability(opts?: {
 
         console.log(`[Cliniko] Found ${times.length} total slots, ${filtered.length} after ${opts?.part || 'no'} filter (using fallback type)`);
 
-        const slots = filtered.slice(0, 50).map(t => ({
+        let slots = filtered.slice(0, 50).map(t => ({
           startISO: t.appointment_start,
           endISO: dayjs(t.appointment_start).add(duration, 'minute').toISOString(),
           label: undefined
         }));
+
+        // Sort by proximity to preferred time if provided
+        if (opts?.preferredTime) {
+          const preferredMinutes = opts.preferredTime.hour * 60 + opts.preferredTime.minute;
+          console.log(`[Cliniko] Sorting fallback slots by proximity to preferred time: ${opts.preferredTime.hour}:${String(opts.preferredTime.minute).padStart(2, '0')}`);
+
+          slots = slots.sort((a, b) => {
+            const aTime = dayjs(a.startISO).tz(tz);
+            const bTime = dayjs(b.startISO).tz(tz);
+
+            const aMinutes = aTime.hour() * 60 + aTime.minute();
+            const bMinutes = bTime.hour() * 60 + bTime.minute();
+
+            const aDiff = Math.abs(aMinutes - preferredMinutes);
+            const bDiff = Math.abs(bMinutes - preferredMinutes);
+
+            return aDiff - bDiff;
+          });
+        }
 
         return { slots };
       }
@@ -399,11 +419,36 @@ export async function getAvailability(opts?: {
     console.log(`[Cliniko] Found ${times.length} total slots, ${filtered.length} after ${opts?.part || 'no'} filter`);
 
     const duration = appointmentType.duration_in_minutes;
-    const slots = filtered.slice(0, 50).map(t => ({
+    let slots = filtered.slice(0, 50).map(t => ({
       startISO: t.appointment_start,
       endISO: dayjs(t.appointment_start).add(duration, 'minute').toISOString(),
       label: undefined
     }));
+
+    // Sort by proximity to preferred time if provided
+    if (opts?.preferredTime) {
+      const preferredMinutes = opts.preferredTime.hour * 60 + opts.preferredTime.minute;
+      console.log(`[Cliniko] Sorting slots by proximity to preferred time: ${opts.preferredTime.hour}:${String(opts.preferredTime.minute).padStart(2, '0')}`);
+
+      slots = slots.sort((a, b) => {
+        const aTime = dayjs(a.startISO).tz(tz);
+        const bTime = dayjs(b.startISO).tz(tz);
+
+        const aMinutes = aTime.hour() * 60 + aTime.minute();
+        const bMinutes = bTime.hour() * 60 + bTime.minute();
+
+        const aDiff = Math.abs(aMinutes - preferredMinutes);
+        const bDiff = Math.abs(bMinutes - preferredMinutes);
+
+        return aDiff - bDiff;
+      });
+
+      console.log(`[Cliniko] Top 3 closest slots to ${opts.preferredTime.hour}:${String(opts.preferredTime.minute).padStart(2, '0')}:`);
+      slots.slice(0, 3).forEach((slot, idx) => {
+        const slotTime = dayjs(slot.startISO).tz(tz);
+        console.log(`[Cliniko]   ${idx + 1}. ${slotTime.format('h:mma, ddd MMM D')}`);
+      });
+    }
 
     return { slots };
   } catch (e) {
