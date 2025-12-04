@@ -868,97 +868,64 @@ export function registerVoice(app: Express) {
           return res.type("text/xml").send(vr.toString());
         }
 
-        // Classify intent to route properly
+        // Check if they're asking a FAQ question using the new FAQ detection
+        const { detectFaqIntent, searchFaqByQuery, formatFaqAnswerForSpeech } = await import('../services/faq');
+        const faqCategory = detectFaqIntent(speechRaw);
+
+        console.log("[ANYTHING-ELSE] Checking for FAQ...");
+        console.log("[ANYTHING-ELSE]   - Input:", speechRaw);
+        console.log("[ANYTHING-ELSE]   - FAQ category detected:", faqCategory);
+
+        if (faqCategory && speechRaw.length > 5) {
+          // They're asking a FAQ question - answer it directly
+          const faq = await searchFaqByQuery(speechRaw);
+
+          if (faq) {
+            console.log("[ANYTHING-ELSE] Found FAQ answer:", faq.question);
+            const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
+
+            // Answer and ask if they need anything else
+            const g = vr.gather({
+              input: ['speech'],
+              timeout: 4,
+              speechTimeout: 'auto',
+              actionOnEmptyResult: true,
+              action: abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`),
+              method: 'POST'
+            });
+
+            saySafe(g, formattedAnswer);
+            g.pause({ length: 1 });
+            saySafe(g, "Is there anything else I can help you with?");
+
+            // Fallback if no response
+            saySafe(vr, "Perfect! See you soon. Bye!");
+            vr.hangup();
+            return res.type("text/xml").send(vr.toString());
+          }
+        }
+
+        // Not a FAQ - check if they want to book
         const intentResult = await classifyIntent(speechRaw);
-        console.log("[ANYTHING-ELSE] Detected intent:", intentResult);
+        console.log("[ANYTHING-ELSE] Detected booking intent:", intentResult);
         const intent = intentResult.action;
 
-        // Route based on intent
         if (intent === "book" || intent === "reschedule" || intent === "cancel") {
           // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
           return res.type("text/xml").send(vr.toString());
-        } else if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
-          // Route to FAQ answering for recognized question types
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
-          return res.type("text/xml").send(vr.toString());
-        } else {
-          // Unknown intent - ask them to clarify
-          const g = vr.gather({
-            input: ["speech"],
-            timeout: 5,
-            speechTimeout: "auto",
-            actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=capture-question&callSid=${encodeURIComponent(callSid)}`),
-            method: "POST",
-          });
-          const questionPrompts = [
-            "Of course! What would you like to know?",
-            "Sure thing! What's your question?",
-            "No worries! How can I help?"
-          ];
-          const randomPrompt = questionPrompts[Math.floor(Math.random() * questionPrompts.length)];
-          saySafe(g, randomPrompt);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(vr.toString());
         }
+
+        // Unknown - say goodbye
+        saySafe(vr, "No worries! Feel free to call us back anytime. Have a great day!");
+        vr.hangup();
+        return res.type("text/xml").send(vr.toString());
       }
 
-      // CAPTURE-QUESTION → Capture their question and create an alert for reception
+      // CAPTURE-QUESTION → This route is now obsolete and redirects to anything-else
       if (route === "capture-question") {
-        const question = speechRaw || "";
-
-        // First, try to classify intent and answer from knowledge base
-        const intentResult = await classifyIntent(question);
-        console.log("[CAPTURE-QUESTION] Detected intent:", intentResult);
-        const intent = intentResult.action;
-
-        // If it's a FAQ question, route to answer-faq instead of creating alert
-        if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services" || intent === "faq_techniques" || intent === "faq_practitioner" || intent === "fees") {
-          console.log("[CAPTURE-QUESTION] Routing to answer-faq for:", intent);
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(question)}`));
-          return res.type("text/xml").send(vr.toString());
-        }
-
-        // Not a FAQ - create an alert for the reception team
-        try {
-          const call = await storage.getCallByCallSid(callSid);
-          const tenant = await getTenantForCall(callSid);
-
-          if (tenant && call) {
-            await storage.createAlert({
-              tenantId: tenant.id,
-              conversationId: call.conversationId || undefined,
-              reason: "caller_question",
-              payload: {
-                question: question,
-                fromNumber: from,
-                callSid: callSid,
-                timestamp: new Date().toISOString()
-              },
-              status: "open"
-            });
-            console.log("[CAPTURE-QUESTION] Created alert for question:", question);
-          }
-        } catch (err) {
-          console.error("[CAPTURE-QUESTION] Failed to create alert:", err);
-        }
-
-        // Acknowledge and let them know the team will follow up
-        saySafe(vr, "Thanks for that! I've noted your question and one of our team will get back to you with the details. Is there anything else I can help with?");
-
-        // Give them a chance to ask another question or say no
-        const g = vr.gather({
-          input: ["speech"],
-          timeout: 3,
-          speechTimeout: "auto",
-          actionOnEmptyResult: true,
-          action: abs(`/api/voice/handle?route=final-anything-else&callSid=${encodeURIComponent(callSid)}`),
-          method: "POST",
-        });
-        g.pause({ length: 1 });
-        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=final-goodbye&callSid=${encodeURIComponent(callSid)}`));
+        console.log("[CAPTURE-QUESTION] Redirecting to anything-else route");
+        vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`));
         return res.type("text/xml").send(vr.toString());
       }
 
