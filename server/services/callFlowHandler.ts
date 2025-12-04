@@ -600,19 +600,25 @@ export class CallFlowHandler {
         console.log('[handleChiefComplaint] Extracted preferred day:', intent.day);
       }
       if (intent.preferredTime) {
-        this.ctx.preferredTime = intent.preferredTime;
-        console.log('[handleChiefComplaint] Extracted preferred time:', intent.preferredTime);
+        // Parse the time string into hour/minute object
+        const parsedTime = extractTimePreference(intent.preferredTime);
+        if (parsedTime) {
+          this.ctx.preferredTime = parsedTime;
+          console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+        }
       }
     } catch (err) {
       console.warn('[handleChiefComplaint] Failed to classify intent:', err);
       // Continue without preferred day/time
     }
 
-    // Extract specific time preference (e.g., "2pm", "2:00pm")
-    const timePreference = extractTimePreference(speechRaw);
-    if (timePreference) {
-      this.ctx.preferredTime = timePreference;
-      console.log('[handleChiefComplaint] Extracted preferred time:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
+    // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
+    if (!this.ctx.preferredTime) {
+      const timePreference = extractTimePreference(speechRaw);
+      if (timePreference) {
+        this.ctx.preferredTime = timePreference;
+        console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
+      }
     }
 
     saySafe(this.vr, `Let me find the next available appointment.`);
@@ -750,13 +756,8 @@ export class CallFlowHandler {
    * Rank slots by proximity to preferred time
    * Returns slots sorted with closest time first
    */
-  private rankSlotsByTime(slots: Array<{ startISO: string }>, preferredTime: string): Array<{ startISO: string }> {
-    const preferredHours = this.parseTimeToHours(preferredTime);
-
-    if (preferredHours === -1) {
-      // Could not parse preferred time, return slots as-is
-      return slots;
-    }
+  private rankSlotsByTime(slots: Array<{ startISO: string }>, preferredTime: { hour: number; minute: number }): Array<{ startISO: string }> {
+    const preferredHours = preferredTime.hour + (preferredTime.minute / 60);
 
     // Calculate time difference for each slot and sort
     const rankedSlots = slots.map(slot => {
@@ -770,7 +771,8 @@ export class CallFlowHandler {
     // Sort by time difference (closest first)
     rankedSlots.sort((a, b) => a.timeDiff - b.timeDiff);
 
-    console.log(`[rankSlotsByTime] Preferred time: ${preferredTime} (${preferredHours.toFixed(1)}h)`);
+    const preferredTimeStr = `${preferredTime.hour}:${String(preferredTime.minute).padStart(2, '0')}`;
+    console.log(`[rankSlotsByTime] Preferred time: ${preferredTimeStr} (${preferredHours.toFixed(1)}h)`);
     rankedSlots.slice(0, 3).forEach(({ slot, timeDiff }) => {
       const slotDate = dayjs(slot.startISO).tz(this.getTimezone());
       console.log(`  - ${slotDate.format('h:mma ddd MMM D')} (${timeDiff.toFixed(1)}h difference)`);
