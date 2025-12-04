@@ -104,6 +104,17 @@ async function seedFaqs() {
       isActive: true,
     },
 
+    // Appointment Duration
+    {
+      tenantId: tenant.id,
+      category: 'duration',
+      question: 'How long is an appointment?',
+      answer: 'A standard follow-up appointment is 30 minutes. Your first visit takes about 45 minutes as it includes a comprehensive assessment. We allocate enough time to address your needs thoroughly.',
+      keywords: ['how long', 'duration', 'length', 'appointment take', 'how much time', 'minutes'],
+      priority: 7,
+      isActive: true,
+    },
+
     // Emergency/Urgent Care
     {
       tenantId: tenant.id,
