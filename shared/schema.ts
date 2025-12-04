@@ -1,8 +1,79 @@
 import { sql } from "drizzle-orm";
-import { pgTable, serial, text, boolean, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, boolean, timestamp, integer, jsonb, varchar, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
+
+// ============================================================================
+// USERS & AUTHENTICATION
+// ============================================================================
+
+// Users table - authentication for tenant admins and super admins
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").references(() => tenants.id, { onDelete: "cascade" }),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").notNull().default("tenant_admin"), // 'super_admin', 'tenant_admin', 'tenant_staff'
+  name: text("name"),
+  isActive: boolean("is_active").default(true),
+  emailVerified: boolean("email_verified").default(false),
+  emailVerificationToken: text("email_verification_token"),
+  passwordResetToken: text("password_reset_token"),
+  passwordResetExpires: timestamp("password_reset_expires"),
+  mustChangePassword: boolean("must_change_password").default(false),
+  lastLoginAt: timestamp("last_login_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Sessions table - for express-session with connect-pg-simple
+export const sessions = pgTable("sessions", {
+  sid: varchar("sid", { length: 255 }).primaryKey(),
+  sess: jsonb("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => ({
+  expireIdx: index("idx_sessions_expire").on(table.expire),
+}));
+
+// Audit log - tracks changes for security and debugging
+export const auditLog = pgTable("audit_log", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id),
+  tenantId: integer("tenant_id").references(() => tenants.id),
+  action: text("action").notNull(), // 'login', 'logout', 'update_settings', 'create_faq', etc.
+  entityType: text("entity_type"), // 'tenant', 'faq', 'user', etc.
+  entityId: integer("entity_id"),
+  oldValues: jsonb("old_values"),
+  newValues: jsonb("new_values"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ============================================================================
+// PHONE NUMBER POOL
+// ============================================================================
+
+// Phone number pool - pre-provisioned Twilio numbers for instant assignment
+export const phoneNumberPool = pgTable("phone_number_pool", {
+  id: serial("id").primaryKey(),
+  phoneNumber: text("phone_number").notNull().unique(),
+  twilioPhoneSid: text("twilio_phone_sid").notNull(),
+  areaCode: text("area_code"), // '02', '03', '07', '08'
+  status: text("status").notNull().default("available"), // 'available', 'assigned', 'releasing'
+  tenantId: integer("tenant_id").references(() => tenants.id),
+  assignedAt: timestamp("assigned_at"),
+  releasedAt: timestamp("released_at"),
+  quarantineEndsAt: timestamp("quarantine_ends_at"), // When number can be reused
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  statusAreaCodeIdx: index("idx_phone_pool_status_area").on(table.status, table.areaCode),
+}));
+
+// ============================================================================
+// TENANTS (existing table with new columns)
+// ============================================================================
 
 // Tenants table - multi-tenant support for different clinics
 export const tenants = pgTable("tenants", {
@@ -49,13 +120,39 @@ export const tenants = pgTable("tenants", {
   smsEnabled: boolean("sms_enabled").default(true),
 
   // Subscription/Billing
-  subscriptionTier: text("subscription_tier").default("free"), // free, starter, pro, enterprise
-  subscriptionStatus: text("subscription_status").default("active"),
+  subscriptionTier: text("subscription_tier").default("trial"), // trial, starter, pro, enterprise
+  subscriptionStatus: text("subscription_status").default("trialing"), // trialing, active, past_due, canceled
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
+  trialEndsAt: timestamp("trial_ends_at"), // When 7-day trial expires
+  trialExtensionCount: integer("trial_extension_count").default(0), // Max 2 extensions
+
+  // Phone Setup
+  phoneSetupType: text("phone_setup_type").default("pending"), // pending, provisioned, forwarding
+  twilioPhoneSid: text("twilio_phone_sid"), // SID of assigned Twilio number
+  forwardingSourceNumber: text("forwarding_source_number"), // Their original number (if forwarding)
+  forwardingSchedule: text("forwarding_schedule").default("after_hours"), // after_hours, busy, always
+
+  // Onboarding Progress
+  onboardingCompleted: boolean("onboarding_completed").default(false),
+  onboardingStep: integer("onboarding_step").default(0), // 0-8
+  activatedAt: timestamp("activated_at"), // When AI was first activated
+
+  // Extended Business Details
+  addressStreet: text("address_street"),
+  addressCity: text("address_city"),
+  addressState: text("address_state"),
+  addressPostcode: text("address_postcode"),
+  websiteUrl: text("website_url"),
+
+  // Notification Preferences
+  alertEmails: text("alert_emails").array(), // Multiple alert recipients
+  weeklyReportEnabled: boolean("weekly_report_enabled").default(true),
+  afterHoursMessage: text("after_hours_message"),
+  holdMessage: text("hold_message"),
 
   // Metadata
-  isActive: boolean("is_active").default(true),
+  isActive: boolean("is_active").default(false), // Default false until onboarding complete
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -170,11 +267,41 @@ export const faqs = pgTable("faqs", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// Relations
+// ============================================================================
+// RELATIONS
+// ============================================================================
+
+export const usersRelations = relations(users, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [users.tenantId],
+    references: [tenants.id],
+  }),
+}));
+
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   callLogs: many(callLogs),
   alerts: many(alerts),
   conversations: many(conversations),
+  users: many(users),
+  phoneNumbers: many(phoneNumberPool),
+}));
+
+export const phoneNumberPoolRelations = relations(phoneNumberPool, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [phoneNumberPool.tenantId],
+    references: [tenants.id],
+  }),
+}));
+
+export const auditLogRelations = relations(auditLog, ({ one }) => ({
+  user: one(users, {
+    fields: [auditLog.userId],
+    references: [users.id],
+  }),
+  tenant: one(tenants, {
+    fields: [auditLog.tenantId],
+    references: [tenants.id],
+  }),
 }));
 
 export const conversationsRelations = relations(conversations, ({ one }) => ({
@@ -236,7 +363,26 @@ export const insertFaqSchema = createInsertSchema(faqs).omit({
   updatedAt: true,
 });
 
-// Types
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLog).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPhoneNumberPoolSchema = createInsertSchema(phoneNumberPool).omit({
+  id: true,
+  createdAt: true,
+});
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
 export type Tenant = typeof tenants.$inferSelect;
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 
@@ -261,3 +407,23 @@ export type InsertQaReport = z.infer<typeof insertQaReportSchema>;
 
 export type Faq = typeof faqs.$inferSelect;
 export type InsertFaq = z.infer<typeof insertFaqSchema>;
+
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
+
+export type AuditLog = typeof auditLog.$inferSelect;
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+
+export type PhoneNumberPoolEntry = typeof phoneNumberPool.$inferSelect;
+export type InsertPhoneNumberPoolEntry = z.infer<typeof insertPhoneNumberPoolSchema>;
+
+export type Session = typeof sessions.$inferSelect;
+
+// User roles enum for type safety
+export type UserRole = 'super_admin' | 'tenant_admin' | 'tenant_staff';
+
+// Subscription tiers enum
+export type SubscriptionTier = 'trial' | 'starter' | 'pro' | 'enterprise';
+
+// Phone pool status enum
+export type PhonePoolStatus = 'available' | 'assigned' | 'releasing';

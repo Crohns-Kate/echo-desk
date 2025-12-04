@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { sessionMiddleware } from "./session";
 
 const app = express();
 
@@ -9,6 +10,9 @@ app.set("trust proxy", 1);
 
 // Normal JSON parser for general endpoints
 app.use(express.json());
+
+// Session middleware (must be before routes)
+app.use(sessionMiddleware);
 
 // URL-encoded parser ONLY for /api/voice routes (applied in routes.ts)
 // This prevents "stream is not readable" errors
