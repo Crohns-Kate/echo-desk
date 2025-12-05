@@ -318,13 +318,18 @@ export async function getAvailability(opts?: {
         const duration = fallbackType.duration_in_minutes;
 
         // Continue with fallback type instead of throwing error
-        const from = opts?.fromISO || new Date(Date.now() + 86400000).toISOString().split('T')[0];
-        const to = opts?.toISO || from;
+        // IMPORTANT: Cliniko API expects date-only format (YYYY-MM-DD), not full ISO timestamps
+        const fromDate = opts?.fromISO
+          ? opts.fromISO.includes('T') ? opts.fromISO.split('T')[0] : opts.fromISO
+          : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const toDate = opts?.toISO
+          ? opts.toISO.includes('T') ? opts.toISO.split('T')[0] : opts.toISO
+          : fromDate;
 
-        console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'} with fallback type`);
+        console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'} with fallback type`);
 
         const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-          `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${from}&to=${to}&per_page=50`,
+          `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${fromDate}&to=${toDate}&per_page=50`,
           base, headers
         );
 
@@ -384,13 +389,18 @@ export async function getAvailability(opts?: {
     }
 
     // Use provided date range or default to tomorrow
-    const from = opts?.fromISO || new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const to = opts?.toISO || from;  // Same day query by default
+    // IMPORTANT: Cliniko API expects date-only format (YYYY-MM-DD), not full ISO timestamps
+    const fromDate = opts?.fromISO
+      ? opts.fromISO.includes('T') ? opts.fromISO.split('T')[0] : opts.fromISO
+      : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const toDate = opts?.toISO
+      ? opts.toISO.includes('T') ? opts.toISO.split('T')[0] : opts.toISO
+      : fromDate;  // Same day query by default
 
-    console.log(`[Cliniko] Fetching availability from=${from} to=${to} part=${opts?.part || 'any'}`);
+    console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'}`);
 
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
-      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${from}&to=${to}&per_page=50`,
+      `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${fromDate}&to=${toDate}&per_page=50`,
       base, headers
     );
 
