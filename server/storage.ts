@@ -35,6 +35,7 @@ export interface IStorage {
   listTenants(): Promise<Tenant[]>;
   createTenant(tenant: InsertTenant): Promise<Tenant>;
   updateTenant(id: number, updates: Partial<InsertTenant>): Promise<Tenant | undefined>;
+  deleteTenant(id: number): Promise<boolean>;
 
   // Phone mapping
   getPhoneMap(phone: string): Promise<PhoneMap | undefined>;
@@ -125,6 +126,18 @@ export class DatabaseStorage implements IStorage {
       .where(eq(tenants.id, id))
       .returning();
     return tenant || undefined;
+  }
+
+  async deleteTenant(id: number): Promise<boolean> {
+    // Delete related data first (cascade)
+    await db.delete(callLogs).where(eq(callLogs.tenantId, id));
+    await db.delete(conversations).where(eq(conversations.tenantId, id));
+    await db.delete(alerts).where(eq(alerts.tenantId, id));
+    await db.delete(faqs).where(eq(faqs.tenantId, id));
+
+    // Delete the tenant
+    const result = await db.delete(tenants).where(eq(tenants.id, id)).returning();
+    return result.length > 0;
   }
 
   async getPhoneMap(phone: string): Promise<PhoneMap | undefined> {
