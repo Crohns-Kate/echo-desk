@@ -36,7 +36,7 @@ export const SUBSCRIPTION_TIERS = {
   starter: {
     name: "Starter",
     price: 99,
-    priceId: process.env.STRIPE_STARTER_PRICE_ID,
+    priceId: process.env.STRIPE_STARTER_PRICE_ID?.trim(),
     features: {
       maxCallsPerMonth: 500,
       recording: true,
@@ -49,7 +49,7 @@ export const SUBSCRIPTION_TIERS = {
   pro: {
     name: "Professional",
     price: 299,
-    priceId: process.env.STRIPE_PRO_PRICE_ID,
+    priceId: process.env.STRIPE_PRO_PRICE_ID?.trim(),
     features: {
       maxCallsPerMonth: 2000,
       recording: true,
@@ -62,7 +62,7 @@ export const SUBSCRIPTION_TIERS = {
   enterprise: {
     name: "Enterprise",
     price: 599,
-    priceId: process.env.STRIPE_ENTERPRISE_PRICE_ID,
+    priceId: process.env.STRIPE_ENTERPRISE_PRICE_ID?.trim(),
     features: {
       maxCallsPerMonth: -1, // unlimited
       recording: true,
