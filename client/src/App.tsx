@@ -109,7 +109,7 @@ function Router() {
   const [location] = useLocation();
 
   // Always allow these public routes regardless of auth state
-  const publicPaths = ["/pricing", "/signup", "/reset-password"];
+  const publicPaths = ["/pricing", "/signup", "/reset-password", "/login", "/forgot-password"];
   const isPublicPath = publicPaths.some(path => location.startsWith(path));
 
   // Show loading while checking auth (but not for public paths)
@@ -122,6 +122,8 @@ function Router() {
     if (location.startsWith("/pricing")) return <Pricing />;
     if (location.startsWith("/signup")) return <Signup />;
     if (location.startsWith("/reset-password")) return <ResetPassword />;
+    if (location.startsWith("/login")) return <Login />;
+    if (location.startsWith("/forgot-password")) return <ForgotPassword />;
   }
 
   // Non-authenticated users see public routes
