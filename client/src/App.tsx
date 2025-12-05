@@ -24,6 +24,8 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import ChangePassword from "@/pages/change-password";
 import TenantDashboard from "@/pages/tenant-dashboard";
+import Pricing from "@/pages/pricing";
+import Signup from "@/pages/signup";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 
@@ -39,15 +41,17 @@ function LoadingScreen() {
   );
 }
 
-// Public routes (login, forgot password, etc.)
+// Public routes (login, forgot password, pricing, signup, etc.)
 function PublicRoutes() {
   return (
     <Switch>
+      <Route path="/pricing" component={Pricing} />
+      <Route path="/signup" component={Signup} />
       <Route path="/login" component={Login} />
       <Route path="/forgot-password" component={ForgotPassword} />
       <Route path="/reset-password" component={ResetPassword} />
       <Route>
-        <Redirect to="/login" />
+        <Redirect to="/pricing" />
       </Route>
     </Switch>
   );
@@ -104,17 +108,24 @@ function Router() {
   const { isLoading, isAuthenticated, isSuperAdmin, mustChangePassword } = useAuth();
   const [location] = useLocation();
 
-  // Show loading while checking auth
-  if (isLoading) {
+  // Always allow these public routes regardless of auth state
+  const publicPaths = ["/pricing", "/signup", "/reset-password"];
+  const isPublicPath = publicPaths.some(path => location.startsWith(path));
+
+  // Show loading while checking auth (but not for public paths)
+  if (isLoading && !isPublicPath) {
     return <LoadingScreen />;
   }
 
-  // Public routes for non-authenticated users
+  // Public routes accessible to everyone
+  if (isPublicPath) {
+    if (location.startsWith("/pricing")) return <Pricing />;
+    if (location.startsWith("/signup")) return <Signup />;
+    if (location.startsWith("/reset-password")) return <ResetPassword />;
+  }
+
+  // Non-authenticated users see public routes
   if (!isAuthenticated) {
-    // Allow reset-password to work without being logged in
-    if (location.startsWith("/reset-password")) {
-      return <ResetPassword />;
-    }
     return <PublicRoutes />;
   }
 

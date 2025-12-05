@@ -320,4 +320,149 @@ router.get("/check", (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/auth/signup
+ * Create new tenant and user account
+ */
+router.post(
+  "/signup",
+  rateLimit(10, 60 * 60 * 1000), // 10 signups per hour per IP
+  async (req: Request, res: Response) => {
+    try {
+      const { clinicName, email, firstName, lastName, phone, plan } = req.body;
+
+      // Validate required fields
+      if (!clinicName || !email || !firstName) {
+        return res.status(400).json({ error: "Clinic name, email, and first name are required" });
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+
+      // Check if email already exists
+      const { getUserByEmail } = await import("../services/auth");
+      const existingUser = await getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ error: "An account with this email already exists" });
+      }
+
+      // Import required services
+      const { storage } = await import("../storage");
+      const { createUserWithTempPassword, generateToken } = await import("../services/auth");
+      const { createCheckoutSession, SUBSCRIPTION_TIERS, isStripeConfigured } = await import("../services/stripe");
+
+      // Generate slug from clinic name
+      let slug = clinicName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+
+      // Ensure slug is unique
+      let counter = 0;
+      let baseSlug = slug;
+      while (await storage.getTenant(slug)) {
+        counter++;
+        slug = `${baseSlug}-${counter}`;
+      }
+
+      // Create tenant
+      const tenant = await storage.createTenant({
+        slug,
+        clinicName,
+        email,
+        timezone: "Australia/Brisbane",
+        subscriptionTier: plan || "free",
+        subscriptionStatus: plan === "free" ? "active" : "pending",
+        isActive: plan === "free", // Free plans are active immediately
+        onboardingCompleted: false,
+        onboardingStep: 1,
+      });
+
+      console.log(`[Signup] Created tenant: ${tenant.id} (${slug})`);
+
+      // Create user with temporary password
+      const fullName = lastName ? `${firstName} ${lastName}` : firstName;
+      const { user, tempPassword } = await createUserWithTempPassword(
+        email,
+        fullName,
+        tenant.id,
+        "tenant_admin"
+      );
+
+      console.log(`[Signup] Created user: ${user.id} for tenant ${tenant.id}`);
+
+      // Log signup event
+      await logAuditEvent(
+        "signup",
+        user.id,
+        tenant.id,
+        "user",
+        user.id,
+        { plan, clinicName },
+        undefined,
+        req.ip,
+        req.headers["user-agent"]
+      );
+
+      // Handle based on plan type
+      const tierConfig = SUBSCRIPTION_TIERS[plan as keyof typeof SUBSCRIPTION_TIERS];
+      const isPaidPlan = tierConfig && tierConfig.price > 0;
+
+      if (isPaidPlan && isStripeConfigured()) {
+        // Create Stripe checkout session
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const result = await createCheckoutSession(
+          tenant.id,
+          plan as any,
+          `${baseUrl}/login?signup=success&tenant=${tenant.id}`,
+          `${baseUrl}/signup?canceled=true`
+        );
+
+        if ("error" in result) {
+          console.error(`[Signup] Failed to create checkout session:`, result.error);
+          return res.status(500).json({ error: result.error });
+        }
+
+        console.log(`[Signup] Created Stripe checkout session for tenant ${tenant.id}`);
+
+        // Send welcome email with credentials (account activates after payment)
+        try {
+          const { sendWelcomeEmail } = await import("../services/email");
+          await sendWelcomeEmail(email, clinicName, tempPassword!);
+          console.log(`[Signup] Sent welcome email to ${email} (pending payment)`);
+        } catch (emailError) {
+          console.error(`[Signup] Failed to send welcome email:`, emailError);
+        }
+
+        return res.json({
+          checkoutUrl: result.url,
+          tenantId: tenant.id,
+        });
+      } else {
+        // Free plan - activate immediately and send welcome email
+        try {
+          const { sendWelcomeEmail } = await import("../services/email");
+          await sendWelcomeEmail(email, clinicName, tempPassword!);
+          console.log(`[Signup] Sent welcome email to ${email}`);
+        } catch (emailError) {
+          console.error(`[Signup] Failed to send welcome email:`, emailError);
+          // Continue anyway - user can use forgot password
+        }
+
+        return res.json({
+          success: true,
+          redirectUrl: "/login?signup=success",
+          tenantId: tenant.id,
+        });
+      }
+    } catch (error: any) {
+      console.error("Signup error:", error);
+      res.status(500).json({ error: error.message || "Signup failed" });
+    }
+  }
+);
+
 export default router;
