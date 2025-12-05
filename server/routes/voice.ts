@@ -1456,8 +1456,36 @@ export function registerVoice(app: Express) {
           // For day names, don't set requestedDate - let get-availability-specific-day calculate it
         }
 
-        // Detect time preference (morning, afternoon, evening)
+        // Detect time preference (morning, afternoon, evening, or specific time)
         let timePart: "morning" | "afternoon" | undefined = undefined;
+        let specificTime: { hour: number; minute: number } | undefined = undefined;
+
+        // First check for specific times like "1pm", "1 p.m.", "2:30pm", "14:00"
+        const timePatterns = [
+          // "1pm", "1 pm", "1p.m.", "1 p.m."
+          /(\d{1,2})\s*(?::|\.)?(?:(\d{2}))?\s*([ap])\.?\s*m\.?/i,
+          // "1 o'clock"
+          /(\d{1,2})\s*o['']?\s*clock/i,
+        ];
+
+        for (const pattern of timePatterns) {
+          const match = speechRaw.match(pattern);
+          if (match) {
+            let hour = parseInt(match[1], 10);
+            const minute = match[2] ? parseInt(match[2], 10) : 0;
+            const isPM = match[3]?.toLowerCase() === 'p';
+
+            // Convert to 24-hour format
+            if (isPM && hour !== 12) hour += 12;
+            if (!isPM && hour === 12) hour = 0;
+
+            specificTime = { hour, minute };
+            console.log("[ASK-DAY-TIME-PREFERENCE] Detected specific time:", `${hour}:${String(minute).padStart(2, '0')}`);
+            break;
+          }
+        }
+
+        // Also check for general time of day
         if (speechRaw.includes("morning")) {
           timePart = "morning";
         } else if (speechRaw.includes("afternoon") || speechRaw.includes("arvo")) {
@@ -1465,7 +1493,7 @@ export function registerVoice(app: Express) {
         }
 
         console.log("[ASK-DAY-TIME-PREFERENCE] Speech:", speechRaw);
-        console.log("[ASK-DAY-TIME-PREFERENCE] requestedDay:", requestedDay, "requestedDate:", requestedDate, "timePart:", timePart, "isExisting:", isExisting);
+        console.log("[ASK-DAY-TIME-PREFERENCE] requestedDay:", requestedDay, "requestedDate:", requestedDate, "timePart:", timePart, "specificTime:", specificTime, "isExisting:", isExisting);
 
         // Store preferences in context
         try {
@@ -1479,12 +1507,13 @@ export function registerVoice(app: Express) {
                 requestedDay,
                 requestedDate, // Store the ISO date for unambiguous lookup
                 timePart,
+                specificTime, // Store specific time like { hour: 13, minute: 0 } for 1pm
                 preferredDay: requestedDay,
                 preferredDate: requestedDate,
-                preferredTime: timePart
+                preferredTime: specificTime || timePart // Prefer specific time over general time of day
               }
             });
-            console.log("[ASK-DAY-TIME-PREFERENCE] Stored preferences:", { requestedDay, requestedDate, timePart });
+            console.log("[ASK-DAY-TIME-PREFERENCE] Stored preferences:", { requestedDay, requestedDate, timePart, specificTime });
           }
         } catch (err) {
           console.error("[ASK-DAY-TIME-PREFERENCE] Error storing preferences:", err);
