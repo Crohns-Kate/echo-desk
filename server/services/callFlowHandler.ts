@@ -186,7 +186,7 @@ export class CallFlowHandler {
       timeout: 5,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'book, appointment, new patient, change, reschedule, question, hours, location, parking',
+      hints: 'book, appointment, new patient, make an appointment, need an appointment, schedule, change, reschedule, cancel, question, ask, hours, location',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
       method: 'POST'
     });
@@ -196,11 +196,11 @@ export class CallFlowHandler {
     let greetingMessage: string;
 
     if (this.tenantCtx?.greeting && this.tenantCtx.greeting !== "Thanks for calling") {
-      // Use tenant's custom greeting + intent question
-      greetingMessage = `${this.tenantCtx.greeting} I'll help the team book you in or answer your questions. Are you calling to book a new patient visit, change an appointment, or just ask a question?`;
+      // Use tenant's custom greeting + simplified follow-up
+      greetingMessage = `${this.tenantCtx.greeting} Are you calling to book an appointment, change one, or ask a question?`;
     } else {
-      // Default greeting + intent question
-      greetingMessage = `Thanks for calling ${clinicName}. I'll help the team book you in or answer your questions. Are you calling to book a new patient visit, change an appointment, or just ask a question?`;
+      // Default greeting - more conversational and fluent
+      greetingMessage = `Thanks for calling ${clinicName}! How can I help you today? Are you looking to book an appointment, change an existing one, or do you have a question?`;
     }
 
     saySafe(g, greetingMessage);
@@ -214,18 +214,30 @@ export class CallFlowHandler {
     const speech = speechRaw.toLowerCase().trim();
 
     // Detect three main intents: book, change appointment, or ask question
-    const wantsToBook = speech.includes('book') || speech.includes('appointment') ||
-                       speech.includes('new patient') || speech.includes('first') ||
+    // Enhanced with more natural speech patterns
+    const wantsToBook = speech.includes('book') ||
+                       speech.includes('appointment') ||
+                       speech.includes('new patient') ||
+                       speech.includes('first') ||
+                       speech.includes('make an') ||
+                       speech.includes('need an') ||
+                       speech.includes('want an') ||
+                       speech.includes('like to') ||
+                       speech.includes('see someone') ||
+                       speech.includes('come in') ||
+                       speech.includes('visit') ||
+                       speech.includes('available') ||
                        (speech.includes('schedule') && !speech.includes('reschedule'));
 
     const wantsToChange = speech.includes('reschedule') || speech.includes('change') ||
                           speech.includes('move') || speech.includes('cancel') ||
-                          speech.includes('different time');
+                          speech.includes('different time') || speech.includes('existing');
 
     const hasQuestion = speech.includes('question') || speech.includes('ask') ||
                        speech.includes('hours') || speech.includes('location') ||
                        speech.includes('parking') || speech.includes('price') ||
-                       speech.includes('cost') || speech.includes('where');
+                       speech.includes('cost') || speech.includes('where') ||
+                       speech.includes('what') || speech.includes('how much');
 
     console.log('[handlePatientTypeDetect] Speech:', speechRaw);
     console.log('[handlePatientTypeDetect] wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange, 'hasQuestion:', hasQuestion);
@@ -259,16 +271,16 @@ export class CallFlowHandler {
           timeout: 5,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'book, appointment, change, question, hours, location',
+          hints: 'book, appointment, new patient, make an appointment, need an appointment, schedule, change, reschedule, question, ask',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
           method: 'POST'
         });
 
-        // Retry prompt without premature apologies
+        // Retry prompt - clearer options
         const retryPrompts = [
-          "I didn't catch that. You can say: book an appointment, change an appointment, or ask a question.",
-          "I didn't quite get that. Would you like to book an appointment, change one, or ask a question?",
-          "Can you repeat that? Are you calling to book, change an appointment, or ask about our services?"
+          "I didn't catch that. Are you calling to book, change an appointment, or ask a question?",
+          "Sorry, I missed that. Would you like to book an appointment, change one, or ask a question?",
+          "I didn't quite hear you. Just say book, change, or question."
         ];
         const randomPrompt = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
         saySafe(g, randomPrompt);
@@ -505,15 +517,23 @@ export class CallFlowHandler {
         clinicName: this.getClinicName()
       });
 
-      saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out - takes about 30 seconds.");
+      saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out - takes about 30 seconds. Just say done when you've finished, or press 1.");
 
       this.transitionTo(CallState.WAITING_FOR_FORM);
 
-      // Start polling for form completion
-      this.vr.play('http://com.twilio.sounds.music.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3');
-      this.vr.redirect({
+      // Wait for form with speech/dtmf input
+      const g = this.vr.gather({
+        input: ['speech', 'dtmf'],
+        timeout: 20,
+        speechTimeout: 'auto',
+        numDigits: 1,
+        actionOnEmptyResult: true,
+        hints: 'done, finished, completed, I\'m done, all done, ready',
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`,
         method: 'POST'
-      }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
+      });
+      // Play hold music during the gather
+      g.play('http://com.twilio.sounds.music.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3');
 
     } catch (err) {
       console.error('[handleSendFormLink] Error:', err);
@@ -528,7 +548,7 @@ export class CallFlowHandler {
   /**
    * Check if form has been completed
    */
-  async handleCheckFormStatus(): Promise<void> {
+  async handleCheckFormStatus(speechRaw?: string, digits?: string): Promise<void> {
     try {
       // Check storage for form completion
       const call = await storage.getCallByCallSid(this.ctx.callSid);
@@ -561,16 +581,36 @@ export class CallFlowHandler {
       if (waitingTime > 120000) {
         // 2 minutes timeout
         this.transitionTo(CallState.ERROR_RECOVERY);
-        saySafe(this.vr, "I haven't received the form yet. No worries - I'll call you back in 5 minutes when you're ready, or you can call us anytime.");
+        saySafe(this.vr, "I haven't received the form yet. No worries - you can call us back when you're ready.");
         this.vr.hangup();
         return;
       }
 
-      // Continue waiting - check again in 3 seconds
-      this.vr.pause({ length: 3 });
-      this.vr.redirect({
+      // User said something or pressed a key but form not complete yet
+      const speech = (speechRaw || '').toLowerCase();
+      const userTriggered = digits === '1' || speech.includes('done') || speech.includes('finish') || speech.includes('ready') || speech.includes('complet');
+
+      if (userTriggered) {
+        // User indicated they're done but form not received yet
+        saySafe(this.vr, "Still waiting for the form to come through. Give it a few more seconds and say done when you're finished.");
+      } else {
+        // Just a periodic check, give a gentle reminder
+        saySafe(this.vr, "Still waiting for the form. Just say done when you're finished.");
+      }
+
+      // Continue waiting with speech/dtmf input
+      const g = this.vr.gather({
+        input: ['speech', 'dtmf'],
+        timeout: 20,
+        speechTimeout: 'auto',
+        numDigits: 1,
+        actionOnEmptyResult: true,
+        hints: 'done, finished, completed, I\'m done, all done, ready',
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`,
         method: 'POST'
-      }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
+      });
+      // Play hold music during the gather
+      g.play('http://com.twilio.sounds.music.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3');
 
     } catch (err) {
       console.error('[handleCheckFormStatus] Error:', err);
@@ -693,8 +733,8 @@ export class CallFlowHandler {
             this.ctx.appointmentSlots = rankedFallbackSlots.slice(0, 3).map(slot => ({
               startISO: slot.startISO,
               speakable: this.formatSpeakableTime(slot.startISO),
-              practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
-              appointmentTypeId: process.env.CLINIKO_APPT_TYPE_ID
+              practitionerId: this.tenantCtx?.cliniko?.practitionerId || process.env.CLINIKO_PRACTITIONER_ID,
+              appointmentTypeId: this.tenantCtx?.cliniko?.standardApptTypeId || process.env.CLINIKO_APPT_TYPE_ID
             }));
 
             saySafe(this.vr, `I don't have any openings on ${this.ctx.preferredDay}, but here are the nearest available times.`);
@@ -725,8 +765,8 @@ export class CallFlowHandler {
       this.ctx.appointmentSlots = rankedSlots.slice(0, 3).map(slot => ({
         startISO: slot.startISO,
         speakable: this.formatSpeakableTime(slot.startISO),
-        practitionerId: process.env.CLINIKO_PRACTITIONER_ID,
-        appointmentTypeId: process.env.CLINIKO_APPT_TYPE_ID
+        practitionerId: this.tenantCtx?.cliniko?.practitionerId || process.env.CLINIKO_PRACTITIONER_ID,
+        appointmentTypeId: this.tenantCtx?.cliniko?.standardApptTypeId || process.env.CLINIKO_APPT_TYPE_ID
       }));
 
       this.transitionTo(CallState.PRESENT_OPTIONS);
