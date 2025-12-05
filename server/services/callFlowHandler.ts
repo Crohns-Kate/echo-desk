@@ -1037,6 +1037,41 @@ export class CallFlowHandler {
 
       console.log('[handleFAQ] Searching for FAQ answer:', speechRaw);
 
+      // Check if caller is declaring intent to ask (not actually asking a question)
+      const speech = speechRaw.toLowerCase().trim();
+      const isJustDeclaringIntent =
+        speech === 'ask' ||
+        speech === 'ask a' ||
+        speech === 'question' ||
+        speech === 'ask a question' ||
+        speech === 'i have a question' ||
+        speech === 'question please' ||
+        speech === 'yes' ||
+        speech.length < 5; // Too short to be a real question
+
+      if (isJustDeclaringIntent) {
+        // They want to ask a question but haven't said it yet - prompt them
+        console.log('[handleFAQ] Caller declared intent to ask, prompting for actual question');
+        const g = this.vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          hints: 'hours, location, parking, cost, price, how long, what time, when',
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`,
+          method: 'POST'
+        });
+        saySafe(g, "Of course! What would you like to know?");
+        g.pause({ length: 2 });
+
+        // If no response, ask again
+        saySafe(this.vr, "Go ahead, I'm listening.");
+        this.vr.redirect({
+          method: 'POST'
+        }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`);
+        return;
+      }
+
       // Search for matching FAQ
       const faq = await searchFaqByQuery(speechRaw);
 
@@ -1064,9 +1099,22 @@ export class CallFlowHandler {
         saySafe(this.vr, "Feel free to call back anytime. Bye!");
         this.vr.hangup();
       } else {
-        // No FAQ found - continue to booking flow
-        console.log('[handleFAQ] No FAQ match found, continuing to patient type detection');
-        saySafe(this.vr, "I can help you book an appointment. Let me get some details.");
+        // No FAQ found - ask if they'd like to rephrase or book instead
+        console.log('[handleFAQ] No FAQ match found for:', speechRaw);
+        const g = this.vr.gather({
+          input: ['speech'],
+          timeout: 5,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          hints: 'book, appointment, different question, repeat',
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
+          method: 'POST'
+        });
+        saySafe(g, "I'm not sure about that one. Would you like to ask something else, or shall I help you book an appointment?");
+        g.pause({ length: 1 });
+
+        // Default to booking if no response
+        saySafe(this.vr, "No worries. Let me help you book an appointment instead.");
         this.transitionTo(CallState.PATIENT_TYPE_DETECT);
         await this.handlePatientTypeDetect('', '');
       }
