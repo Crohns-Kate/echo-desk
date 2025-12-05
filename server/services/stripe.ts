@@ -363,12 +363,13 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 
   const id = parseInt(tenantId, 10);
 
-  // Update tenant with customer and subscription IDs
+  // Update tenant with customer and subscription IDs, and activate
   await storage.updateTenant(id, {
     stripeCustomerId: session.customer as string,
     stripeSubscriptionId: session.subscription as string,
     subscriptionTier: tier,
     subscriptionStatus: "active",
+    isActive: true,
   });
 
   console.log(`[Stripe] Checkout completed for tenant ${id}, tier: ${tier}`);
