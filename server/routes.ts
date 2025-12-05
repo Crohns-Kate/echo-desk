@@ -811,6 +811,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Delete tenant
+  app.delete('/api/admin/tenants/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'Invalid tenant ID' });
+      }
+
+      // Verify tenant exists
+      const tenant = await storage.getTenantById(id);
+      if (!tenant) {
+        return res.status(404).json({ error: 'Tenant not found' });
+      }
+
+      // Delete the tenant and all related data
+      const deleted = await storage.deleteTenant(id);
+      if (!deleted) {
+        return res.status(500).json({ error: 'Failed to delete tenant' });
+      }
+
+      console.log(`[Admin] Deleted tenant ${id} (${tenant.clinicName})`);
+      res.json({ success: true, deletedTenantId: id });
+    } catch (err: any) {
+      console.error('[Admin] Delete tenant error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Get tenant stats
   app.get('/api/admin/tenants/:id/stats', async (req, res) => {
     try {

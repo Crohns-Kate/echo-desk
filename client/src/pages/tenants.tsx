@@ -16,6 +16,16 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Building2,
   Globe,
   Clock,
@@ -29,7 +39,9 @@ import {
   Key,
   HelpCircle,
   Wand2,
-  CreditCard
+  CreditCard,
+  Trash2,
+  Loader2
 } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
@@ -295,6 +307,7 @@ export default function Tenants() {
   const queryClient = useQueryClient();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [deletingTenant, setDeletingTenant] = useState<Tenant | null>(null);
   const [formData, setFormData] = useState<TenantFormData>(defaultFormData);
 
   const { data: tenants, isLoading } = useQuery<Tenant[]>({
@@ -343,6 +356,27 @@ export default function Tenants() {
       setEditingTenant(null);
       setFormData(defaultFormData);
       toast({ title: "Tenant updated", description: "Clinic settings have been saved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/admin/tenants/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to delete tenant");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/tenants"] });
+      setDeletingTenant(null);
+      toast({ title: "Tenant deleted", description: "The clinic and all its data have been permanently removed." });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -451,6 +485,42 @@ export default function Tenants() {
           </DialogContent>
         </Dialog>
 
+        {/* Delete Confirmation Dialog */}
+        <AlertDialog open={!!deletingTenant} onOpenChange={(open) => !open && setDeletingTenant(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete "{deletingTenant?.clinicName}"?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete this tenant and all associated data including:
+                <ul className="list-disc list-inside mt-2 space-y-1">
+                  <li>Call logs and recordings</li>
+                  <li>Conversations and transcripts</li>
+                  <li>FAQs and alerts</li>
+                  <li>User accounts</li>
+                </ul>
+                <p className="mt-2 font-medium text-destructive">This action cannot be undone.</p>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => deletingTenant && deleteMutation.mutate(deletingTenant.id)}
+                disabled={deleteMutation.isPending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {deleteMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  "Delete Tenant"
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Tenants List */}
         <div className="space-y-4">
           {isLoading ? (
@@ -506,6 +576,15 @@ export default function Tenants() {
                       </Link>
                       <Button variant="ghost" size="sm" onClick={() => openEditDialog(tenant)}>
                         <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDeletingTenant(tenant)}
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        title="Delete tenant"
+                      >
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
