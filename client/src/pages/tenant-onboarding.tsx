@@ -890,30 +890,51 @@ export default function TenantOnboarding() {
                   Test Connection
                 </Button>
 
+                {/* Help section for finding IDs */}
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="font-medium text-blue-900 mb-2">How to find your Cliniko IDs:</p>
+                  <ol className="text-sm text-blue-800 space-y-2 list-decimal list-inside">
+                    <li><strong>Practitioner ID:</strong> Go to Settings → Practitioners → Click on a practitioner → The ID is in the URL (e.g., /practitioners/<strong>123456</strong>)</li>
+                    <li><strong>Appointment Type IDs:</strong> Go to Settings → Appointment Types → Click on a type → The ID is in the URL (e.g., /appointment_types/<strong>789012</strong>)</li>
+                  </ol>
+                  <p className="text-xs text-blue-600 mt-2">
+                    Tip: Open Cliniko in another tab and copy these IDs from the URL bar
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t">
                   <div className="space-y-2">
                     <Label>Practitioner ID</Label>
                     <Input
                       value={data.clinikoPractitionerId}
                       onChange={(e) => setData({ ...data, clinikoPractitionerId: e.target.value })}
-                      placeholder="123456"
+                      placeholder="e.g. 123456"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      The practitioner who will receive bookings
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Standard Appt Type ID</Label>
                     <Input
                       value={data.clinikoStandardApptTypeId}
                       onChange={(e) => setData({ ...data, clinikoStandardApptTypeId: e.target.value })}
-                      placeholder="789012"
+                      placeholder="e.g. 789012"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      For existing patients
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>New Patient Appt Type ID</Label>
                     <Input
                       value={data.clinikoNewPatientApptTypeId}
                       onChange={(e) => setData({ ...data, clinikoNewPatientApptTypeId: e.target.value })}
-                      placeholder="345678"
+                      placeholder="e.g. 345678"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      For first-time patients (usually longer)
+                    </p>
                   </div>
                 </div>
               </div>
