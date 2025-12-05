@@ -338,6 +338,12 @@ export async function handleWebhook(
         break;
       }
 
+      case "checkout.session.expired": {
+        const session = event.data.object as Stripe.Checkout.Session;
+        await handleCheckoutExpired(session);
+        break;
+      }
+
       default:
         console.log(`[Stripe] Unhandled event type: ${event.type}`);
     }
@@ -447,6 +453,39 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
   console.log(`[Stripe] Payment failed for tenant ${tenant.id}`);
 
   // TODO: Send notification email to tenant
+}
+
+/**
+ * Handle expired checkout session (abandoned cart)
+ */
+async function handleCheckoutExpired(session: Stripe.Checkout.Session) {
+  const tenantId = session.metadata?.tenantId;
+  const tier = session.metadata?.tier;
+  const customerEmail = session.customer_email || session.customer_details?.email;
+
+  console.log(`[Stripe] Checkout expired - tenant: ${tenantId}, tier: ${tier}, email: ${customerEmail}`);
+
+  if (!tenantId) {
+    console.log("[Stripe] No tenantId in expired checkout session");
+    return;
+  }
+
+  const id = parseInt(tenantId, 10);
+  const tenant = await storage.getTenantById(id);
+
+  if (!tenant) {
+    console.log(`[Stripe] Tenant ${id} not found for expired checkout`);
+    return;
+  }
+
+  // Create an alert for abandoned cart
+  await storage.createAlert({
+    tenantId: id,
+    reason: `abandoned_cart: ${tier} plan ($${SUBSCRIPTION_TIERS[tier as SubscriptionTier]?.price || 0}/mo) - ${customerEmail || tenant.email}`,
+    status: "open",
+  });
+
+  console.log(`[Stripe] Abandoned cart alert created for tenant ${id}`);
 }
 
 /**

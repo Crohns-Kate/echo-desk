@@ -8,8 +8,13 @@ const app = express();
 // Trust proxy for correct protocol/host behind Replit
 app.set("trust proxy", 1);
 
-// Normal JSON parser for general endpoints
-app.use(express.json());
+// Normal JSON parser for general endpoints (skip Stripe webhook - needs raw body)
+app.use((req, res, next) => {
+  if (req.path === '/api/webhooks/stripe') {
+    return next(); // Skip JSON parsing for Stripe webhook - it needs raw body for signature verification
+  }
+  express.json()(req, res, next);
+});
 
 // Session middleware (must be before routes)
 app.use(sessionMiddleware);
