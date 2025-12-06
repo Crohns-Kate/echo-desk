@@ -188,6 +188,8 @@ export class CallFlowHandler {
           console.log('[CallFlowHandler] Loading context from DB:');
           console.log('[CallFlowHandler]   - state:', stored.state);
           console.log('[CallFlowHandler]   - formData present:', !!stored.formData);
+          console.log('[CallFlowHandler]   - preferredDay:', stored.preferredDay || 'none');
+          console.log('[CallFlowHandler]   - preferredTime:', stored.preferredTime ? `${stored.preferredTime.hour}:${String(stored.preferredTime.minute).padStart(2, '0')}` : 'none');
           console.log('[CallFlowHandler]   - selectedSlotIndex:', stored.selectedSlotIndex);
           console.log('[CallFlowHandler]   - appointmentSlots count:', stored.appointmentSlots?.length || 0);
           this.ctx = {
@@ -547,111 +549,139 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle patient type/intent detection
+   * Handle patient type/intent detection - FAQ-FIRST approach
+   * Check for questions first, only go to booking when explicitly requested
    */
   async handlePatientTypeDetect(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
-    // Very forgiving booking intent detection
-    // Treat any combination of booking-related words as booking intent
-    const hasBookWord = speech.includes('book');
-    const hasPatientWord = speech.includes('patient');
-    const hasAppointmentWord = speech.includes('appointment');
-    const hasVisitWord = speech.includes('visit');
+    // === 1. DETECT QUESTIONS FIRST (FAQ-first approach) ===
+    // Check for question words and FAQ topics BEFORE checking booking intent
+    const isQuestion =
+      // Explicit question patterns
+      speech.includes('?') ||
+      speech.startsWith('how') ||
+      speech.startsWith('what') ||
+      speech.startsWith('when') ||
+      speech.startsWith('where') ||
+      speech.startsWith('who') ||
+      speech.startsWith('why') ||
+      speech.startsWith('do you') ||
+      speech.startsWith('can you') ||
+      speech.startsWith('are you') ||
+      speech.includes('question') ||
+      speech.includes('wondering') ||
+      speech.includes('like to know') ||
+      speech.includes('tell me about');
 
-    // Primary booking patterns - very forgiving
+    // FAQ topic detection (specific information requests)
+    const isFAQTopic =
+      speech.includes('how much') ||
+      speech.includes('cost') ||
+      speech.includes('price') ||
+      speech.includes('fee') ||
+      speech.includes('charge') ||
+      speech.includes('hours') ||
+      speech.includes('open') ||
+      speech.includes('close') ||
+      speech.includes('location') ||
+      speech.includes('address') ||
+      speech.includes('directions') ||
+      speech.includes('parking') ||
+      speech.includes('what to expect') ||
+      speech.includes('first visit') ||
+      speech.includes('what happens') ||
+      speech.includes('what do you') ||
+      speech.includes('what services') ||
+      speech.includes('technique') ||
+      speech.includes('who is') ||
+      speech.includes('who will');
+
+    // === 2. DETECT APPOINTMENT CHANGES ===
+    const wantsToChange =
+      speech.includes('reschedule') ||
+      speech.includes('change my appointment') ||
+      speech.includes('move my appointment') ||
+      speech.includes('cancel') ||
+      speech.includes('different time') ||
+      (speech.includes('change') && speech.includes('appointment'));
+
+    // === 3. DETECT EXPLICIT BOOKING INTENT ===
+    // Only trigger booking when clearly stated - not just any mention of "visit" or "first"
     const wantsToBook =
-      // "book" + "patient" anywhere (e.g., "I want to book a new patient appointment")
-      (hasBookWord && hasPatientWord) ||
-      // "new patient" anywhere
-      speech.includes('new patient') ||
-      // "patient visit" anywhere
-      (hasPatientWord && hasVisitWord) ||
-      // "book a visit" or "book visit"
-      (hasBookWord && hasVisitWord) ||
-      // "book me in"
+      // Explicit booking requests
+      speech.includes('book') ||
+      speech.includes('make an appointment') ||
+      speech.includes('schedule an appointment') ||
+      speech.includes('need an appointment') ||
+      speech.includes('want an appointment') ||
+      speech.includes('get an appointment') ||
+      // "new patient" combined with action words
+      (speech.includes('new patient') && (speech.includes('book') || speech.includes('make') || speech.includes('schedule') || speech.includes('need'))) ||
+      // "I'm a new patient" implies wanting to book
+      (speech.includes('new patient') && !isQuestion) ||
+      // Direct requests
       speech.includes('book me in') ||
       speech.includes('book me') ||
-      // Standard booking phrases
-      hasBookWord ||
-      hasAppointmentWord ||
-      speech.includes('first') ||
-      speech.includes('make an') ||
-      speech.includes('need an') ||
-      speech.includes('want an') ||
-      speech.includes('like to') ||
-      speech.includes('see someone') ||
       speech.includes('see the doctor') ||
       speech.includes('see dr') ||
-      speech.includes('come in') ||
-      speech.includes('get in') ||
-      hasVisitWord ||
-      speech.includes('available') ||
-      speech.includes('opening') ||
-      speech.includes('slot') ||
-      (speech.includes('schedule') && !speech.includes('reschedule'));
-
-    const wantsToChange = speech.includes('reschedule') || speech.includes('change') ||
-                          speech.includes('move') || speech.includes('cancel') ||
-                          speech.includes('different time') || speech.includes('existing');
-
-    const hasQuestion = speech.includes('question') || speech.includes('ask') ||
-                       speech.includes('hours') || speech.includes('location') ||
-                       speech.includes('parking') || speech.includes('price') ||
-                       speech.includes('cost') || speech.includes('where') ||
-                       speech.includes('what') || speech.includes('how much');
+      speech.includes('come in for') ||
+      speech.includes('get in to see');
 
     console.log('[handlePatientTypeDetect] Speech:', speechRaw);
-    console.log('[handlePatientTypeDetect] wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange, 'hasQuestion:', hasQuestion);
+    console.log('[handlePatientTypeDetect] isQuestion:', isQuestion, 'isFAQTopic:', isFAQTopic, 'wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange);
 
-    if (wantsToBook) {
+    // === PRIORITIZE: Questions → Changes → Booking → Unclear ===
+
+    // FIRST: Handle questions/FAQ topics
+    if (isQuestion || isFAQTopic) {
+      console.log('[handlePatientTypeDetect] FAQ-first: Routing to FAQ flow');
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQ(speechRaw);
+    }
+    // SECOND: Handle appointment changes
+    else if (wantsToChange) {
+      console.log('[handlePatientTypeDetect] Transferring for appointment change');
+      saySafe(this.vr, "<speak>Let me transfer you to our reception team who can help with that.</speak>");
+      this.vr.hangup();
+    }
+    // THIRD: Handle explicit booking requests
+    else if (wantsToBook) {
       // Check if they already specified new patient
       const isNewPatient = speech.includes('new patient') || speech.includes('first time') || speech.includes('never been');
 
       if (isNewPatient) {
-        // They said new patient - go to day/time preference
         console.log('[handlePatientTypeDetect] New patient booking - asking for day/time preference');
+        this.ctx.isNewPatientBooking = true;
         await this.askDayTimePreference();
       } else if (this.ctx.patientId) {
-        // Known returning patient - ask for day/time preference directly
         console.log('[handlePatientTypeDetect] Returning patient booking - asking for day/time preference');
         await this.askDayTimePreference();
       } else {
-        // Ask new patient vs follow-up
         console.log('[handlePatientTypeDetect] Asking new patient vs follow-up');
         await this.askNewOrFollowup();
       }
-    } else if (wantsToChange) {
-      // Transfer to reception for appointment changes
-      console.log('[handlePatientTypeDetect] Transferring for appointment change');
-      saySafe(this.vr, "Let me transfer you to our reception team who can help with that.");
-      this.vr.hangup();
-    } else if (hasQuestion) {
-      // Route to FAQ flow
-      console.log('[handlePatientTypeDetect] Routing to FAQ flow');
-      this.transitionTo(CallState.FAQ_ANSWERING);
-      await this.handleFAQ(speechRaw);
-    } else {
-      // Unclear response - max 2 retries then assume booking (friendly fallback)
+    }
+    // LAST: Unclear response - ask for clarification (don't assume booking!)
+    else {
       this.ctx.retryCount++;
-      if (this.ctx.retryCount >= 2) {
-        // After 2 unclear attempts, default to booking flow
-        this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
-        saySafe(this.vr, "<speak>No worries, <break time='150ms'/> I'll help you book an appointment.</speak>");
-        await this.handleNewPatientPhoneConfirm();
+      if (this.ctx.retryCount >= 3) {
+        // After 3 unclear attempts, offer to transfer
+        saySafe(this.vr, "<speak>I'm having a bit of trouble understanding. <break time='200ms'/> Let me transfer you to our reception team.</speak>");
+        this.vr.hangup();
       } else {
         const g = this.vr.gather({
           input: ['speech', 'dtmf'],
-          timeout: 5,
+          timeout: 6,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'book, appointment, new patient, patient visit, book me in, make an appointment, schedule, change, reschedule, question, ask',
+          hints: 'book, appointment, question, ask, hours, cost, parking, location',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
           method: 'POST'
         });
 
-        // Single clear retry prompt with SSML
-        saySafe(g, "<speak>I didn't quite catch that. <break time='200ms'/> Would you like to book an appointment, change an existing one, or ask a question?</speak>");
+        // Neutral prompt that doesn't assume booking intent
+        saySafe(g, "<speak>I didn't quite catch that. <break time='200ms'/> How can I help you today? <break time='150ms'/> You can ask me about our services, hours, or prices, <break time='150ms'/> or I can help you book an appointment.</speak>");
       }
     }
 
@@ -1570,7 +1600,7 @@ export class CallFlowHandler {
     const { env } = await import('../utils/env');
 
     try {
-      // Determine if this is a new patient
+      // Determine if this is a new patient (no existing patient ID and has form data)
       const isNewPatient = !this.ctx.patientId && this.ctx.formData;
 
       // Use NEW_PATIENT appointment type for new patients
@@ -1578,17 +1608,18 @@ export class CallFlowHandler {
         ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID
         : env.CLINIKO_APPT_TYPE_ID;
 
-      // For new patients with form data, use the patient's phone from the form
-      // For returning patients, use the caller's phone
-      const phoneToUse = isNewPatient && this.ctx.formData?.phone
-        ? this.ctx.formData.phone
-        : this.ctx.callerPhone;
+      // ALWAYS prefer form phone when available - it's the user's explicit choice
+      // This ensures that if someone fills out the form with a different phone number,
+      // that number gets used in Cliniko, not the caller's phone
+      const phoneToUse = this.ctx.formData?.phone || this.ctx.callerPhone;
 
       console.log('[handleConfirmBooking] Creating appointment:');
       console.log('[handleConfirmBooking]   - Is new patient:', isNewPatient);
       console.log('[handleConfirmBooking]   - Appointment type ID:', appointmentTypeId);
       console.log('[handleConfirmBooking]   - Caller phone:', this.ctx.callerPhone);
+      console.log('[handleConfirmBooking]   - Form phone:', this.ctx.formData?.phone || '(none)');
       console.log('[handleConfirmBooking]   - Patient phone (for Cliniko):', phoneToUse);
+      console.log('[handleConfirmBooking]   - Using form phone?:', phoneToUse === this.ctx.formData?.phone);
       console.log('[handleConfirmBooking]   - Name:', this.ctx.formData?.firstName, this.ctx.formData?.lastName);
 
       // Prepare full name for Cliniko
