@@ -53,6 +53,7 @@ export interface CallContext {
   selectedSlotIndex?: number;
   retryCount: number;
   slotSelectionRetries?: number; // Separate retry counter for slot selection step
+  isNewPatientBooking?: boolean; // Whether this is a new patient booking
   conversationId?: string;
 }
 
@@ -241,34 +242,307 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle greeting (for unknown callers)
+   * Handle greeting with identity check
+   * If we recognize the caller, ask to confirm identity
+   * If not, ask who they are
    */
   async handleGreeting(): Promise<void> {
-    this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+    const clinicName = this.getClinicName();
+
+    // Try to look up caller by phone number
+    let knownPatient: { id: string; first_name: string; last_name: string } | null = null;
+    try {
+      knownPatient = await findPatientByPhoneRobust(this.ctx.callerPhone, this.tenantCtx);
+      if (knownPatient) {
+        console.log('[handleGreeting] Found known patient:', knownPatient.first_name);
+        this.ctx.patientId = knownPatient.id;
+        this.ctx.patientName = `${knownPatient.first_name} ${knownPatient.last_name}`;
+        this.ctx.patientFirstName = knownPatient.first_name;
+      }
+    } catch (err) {
+      console.warn('[handleGreeting] Patient lookup failed:', err);
+    }
+
+    if (knownPatient) {
+      // Recognized caller - ask to confirm identity
+      const g = this.vr.gather({
+        input: ['speech', 'dtmf'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        hints: 'yes, no, that is me, someone else, not me, different person',
+        numDigits: 1,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=identity_confirm`,
+        method: 'POST'
+      });
+
+      saySafe(g, `<speak>Hi, welcome to ${clinicName}. <break time="200ms"/> Am I speaking with ${knownPatient.first_name}, <break time="150ms"/> or someone else? <break time="100ms"/> Press 1 for yes, or 2 if you're someone else.</speak>`);
+    } else {
+      // Unknown caller - ask who they are
+      const g = this.vr.gather({
+        input: ['speech'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_name`,
+        method: 'POST'
+      });
+
+      saySafe(g, `<speak>Hi, welcome to ${clinicName}. <break time="200ms"/> Who am I speaking with today?</speak>`);
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Handle identity confirmation for known callers
+   */
+  async handleIdentityConfirm(speechRaw: string, digits: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+
+    const isConfirmed =
+      digits === '1' ||
+      speech.includes('yes') ||
+      speech.includes('yeah') ||
+      speech.includes('yep') ||
+      speech.includes('that\'s me') ||
+      speech.includes('thats me') ||
+      speech.includes('correct') ||
+      speech.includes('speaking');
+
+    const isSomeoneElse =
+      digits === '2' ||
+      speech.includes('no') ||
+      speech.includes('someone else') ||
+      speech.includes('not me') ||
+      speech.includes('different');
+
+    console.log('[handleIdentityConfirm] Speech:', speechRaw, 'Digits:', digits);
+    console.log('[handleIdentityConfirm] isConfirmed:', isConfirmed, 'isSomeoneElse:', isSomeoneElse);
+
+    if (isConfirmed) {
+      // Identity confirmed - proceed to main menu
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      await this.askHowCanIHelp();
+    } else if (isSomeoneElse) {
+      // Different person - clear patient info and ask for name
+      this.ctx.patientId = undefined;
+      this.ctx.patientName = undefined;
+      this.ctx.patientFirstName = undefined;
+
+      const g = this.vr.gather({
+        input: ['speech'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_name`,
+        method: 'POST'
+      });
+
+      saySafe(g, "<speak>No problem! <break time='200ms'/> Who am I speaking with today?</speak>");
+    } else {
+      // Unclear - assume confirmed and proceed
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      await this.askHowCanIHelp();
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Handle name collection for unknown callers
+   */
+  async handleCollectName(speechRaw: string): Promise<void> {
+    const speech = speechRaw.trim();
+    console.log('[handleCollectName] Speech:', speech);
+
+    if (speech && speech.length > 1) {
+      // Extract name from response (could be "My name is John" or just "John")
+      let name = speech;
+      const namePatterns = [
+        /my name is (.+)/i,
+        /i'm (.+)/i,
+        /this is (.+)/i,
+        /it's (.+)/i,
+        /(.+) speaking/i,
+        /(.+) here/i
+      ];
+
+      for (const pattern of namePatterns) {
+        const match = speech.match(pattern);
+        if (match) {
+          name = match[1].trim();
+          break;
+        }
+      }
+
+      // Store first name
+      const firstName = name.split(/\s+/)[0];
+      this.ctx.patientFirstName = firstName;
+      this.ctx.patientName = name;
+
+      console.log('[handleCollectName] Extracted name:', firstName);
+
+      // Proceed to main menu
+      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+      await this.askHowCanIHelp();
+    } else {
+      // No name provided - ask again
+      const g = this.vr.gather({
+        input: ['speech'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_name`,
+        method: 'POST'
+      });
+
+      saySafe(g, "<speak>Sorry, I didn't catch that. <break time='200ms'/> Could you tell me your name?</speak>");
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Ask "How can I help you today?" after identity established
+   */
+  async askHowCanIHelp(): Promise<void> {
+    const firstName = this.ctx.patientFirstName || '';
 
     const g = this.vr.gather({
       input: ['speech', 'dtmf'],
-      timeout: 5,
+      timeout: 6,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'book, appointment, new patient, patient visit, book me in, make an appointment, need an appointment, schedule, change, reschedule, cancel, question, ask, hours, location',
+      hints: 'book, appointment, new patient, patient visit, book me in, schedule, change, reschedule, cancel, question, cost, price, hours, location, parking',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
       method: 'POST'
     });
 
-    // Build a warm, natural greeting with SSML pacing
-    const clinicName = this.getClinicName();
-    let greetingMessage: string;
+    const greeting = firstName
+      ? `<speak>Thanks ${firstName}. <break time="200ms"/> How can I help you today?</speak>`
+      : `<speak>How can I help you today?</speak>`;
 
-    if (this.tenantCtx?.greeting && this.tenantCtx.greeting !== "Thanks for calling") {
-      // Use tenant's custom greeting with natural pacing
-      greetingMessage = `<speak>${this.tenantCtx.greeting} <break time="300ms"/> How can I help you today?</speak>`;
+    saySafe(g, greeting);
+    await this.saveContext();
+  }
+
+  /**
+   * Ask if new patient or follow-up
+   */
+  async askNewOrFollowup(): Promise<void> {
+    const g = this.vr.gather({
+      input: ['speech', 'dtmf'],
+      timeout: 6,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      hints: 'new patient, follow up, returning, first time, been before',
+      numDigits: 1,
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=new_or_followup`,
+      method: 'POST'
+    });
+
+    saySafe(g, "<speak>Great! <break time='150ms'/> Are you booking a new patient visit, or a follow-up? <break time='150ms'/> Press 1 for new patient, or 2 for follow-up.</speak>");
+    await this.saveContext();
+  }
+
+  /**
+   * Handle new patient vs follow-up response
+   */
+  async handleNewOrFollowup(speechRaw: string, digits: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+
+    const isNewPatient =
+      digits === '1' ||
+      speech.includes('new') ||
+      speech.includes('first') ||
+      speech.includes('never');
+
+    const isFollowUp =
+      digits === '2' ||
+      speech.includes('follow') ||
+      speech.includes('return') ||
+      speech.includes('been before') ||
+      speech.includes('existing');
+
+    console.log('[handleNewOrFollowup] Speech:', speechRaw, 'Digits:', digits);
+    console.log('[handleNewOrFollowup] isNewPatient:', isNewPatient, 'isFollowUp:', isFollowUp);
+
+    if (isNewPatient) {
+      // Mark as new patient booking
+      this.ctx.isNewPatientBooking = true;
+    } else if (isFollowUp) {
+      this.ctx.isNewPatientBooking = false;
     } else {
-      // Default greeting - warm, friendly, with natural pauses
-      greetingMessage = `<speak>Thanks for calling ${clinicName}! <break time="200ms"/> How can I help you today?</speak>`;
+      // Unclear - assume new patient
+      this.ctx.isNewPatientBooking = true;
     }
 
-    saySafe(g, greetingMessage);
+    // Now ask for day/time preference
+    await this.askDayTimePreference();
+    await this.saveContext();
+  }
+
+  /**
+   * Ask for preferred day and time
+   */
+  async askDayTimePreference(): Promise<void> {
+    const g = this.vr.gather({
+      input: ['speech'],
+      timeout: 8,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      hints: 'today, tomorrow, monday, tuesday, wednesday, thursday, friday, saturday, morning, afternoon, anytime, this week, next week',
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=day_time_preference`,
+      method: 'POST'
+    });
+
+    saySafe(g, "<speak>Do you have a particular day or time in mind? <break time='150ms'/> I'll try to find something close.</speak>");
+    await this.saveContext();
+  }
+
+  /**
+   * Handle day/time preference response
+   */
+  async handleDayTimePreference(speechRaw: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+    console.log('[handleDayTimePreference] Speech:', speechRaw);
+
+    // Extract day preference
+    const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    let foundDay = weekdays.find(d => speech.includes(d));
+
+    if (!foundDay) {
+      if (speech.includes('today')) foundDay = 'today';
+      else if (speech.includes('tomorrow')) foundDay = 'tomorrow';
+    }
+
+    if (foundDay) {
+      this.ctx.preferredDay = foundDay;
+      console.log('[handleDayTimePreference] Extracted day:', foundDay);
+    }
+
+    // Extract time preference
+    const timePreference = extractTimePreference(speechRaw);
+    if (timePreference) {
+      this.ctx.preferredTime = timePreference;
+      console.log('[handleDayTimePreference] Extracted time:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
+    }
+
+    // Check if we need to collect details (new patient) or go straight to search
+    const isNewPatientBooking = this.ctx.isNewPatientBooking !== false;
+
+    if (isNewPatientBooking && !this.ctx.patientId) {
+      // New patient - need to collect details
+      this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
+      await this.handleNewPatientPhoneConfirm();
+    } else {
+      // Returning patient or have details - go straight to appointment search
+      saySafe(this.vr, "<speak>Let me find the best available times for you.</speak>");
+      this.transitionTo(CallState.APPOINTMENT_SEARCH);
+      await this.handleAppointmentSearch();
+    }
+
     await this.saveContext();
   }
 
@@ -331,10 +605,22 @@ export class CallFlowHandler {
     console.log('[handlePatientTypeDetect] wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange, 'hasQuestion:', hasQuestion);
 
     if (wantsToBook) {
-      // Route to new patient booking flow
-      console.log('[handlePatientTypeDetect] Routing to new patient booking');
-      this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
-      await this.handleNewPatientPhoneConfirm();
+      // Check if they already specified new patient
+      const isNewPatient = speech.includes('new patient') || speech.includes('first time') || speech.includes('never been');
+
+      if (isNewPatient) {
+        // They said new patient - go to day/time preference
+        console.log('[handlePatientTypeDetect] New patient booking - asking for day/time preference');
+        await this.askDayTimePreference();
+      } else if (this.ctx.patientId) {
+        // Known returning patient - ask for day/time preference directly
+        console.log('[handlePatientTypeDetect] Returning patient booking - asking for day/time preference');
+        await this.askDayTimePreference();
+      } else {
+        // Ask new patient vs follow-up
+        console.log('[handlePatientTypeDetect] Asking new patient vs follow-up');
+        await this.askNewOrFollowup();
+      }
     } else if (wantsToChange) {
       // Transfer to reception for appointment changes
       console.log('[handlePatientTypeDetect] Transferring for appointment change');
