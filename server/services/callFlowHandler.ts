@@ -1,11 +1,11 @@
 import twilio from 'twilio';
 import { storage } from '../storage';
 import { findPatientByPhoneRobust, createAppointmentForPatient, getAvailability } from './cliniko';
-import { sendNewPatientForm } from './sms';
+import { sendNewPatientForm, sendInfoLink, sendMessageCaptureLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { AUST_TZ, labelForSpeech } from '../time';
 import { parseNaturalDate, formatDateRange, extractTimePreference } from '../utils/date-parser';
-import { classifyIntent } from './intent';
+import { classifyIntent as classifyIntentNLU, type IntentType, type IntentResult } from '../ai/intentRouter';
 import type { TenantContext } from './tenantResolver';
 import { CallState } from '../types/call-state';
 import dayjs from 'dayjs';
@@ -549,143 +549,247 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle patient type/intent detection - FAQ-FIRST approach
-   * Check for questions first, only go to booking when explicitly requested
+   * Handle patient type/intent detection - NLU-POWERED with FAQ-FIRST approach
+   * Uses OpenAI classifier to understand caller intent, routes accordingly
    */
   async handlePatientTypeDetect(speechRaw: string, digits: string): Promise<void> {
-    const speech = speechRaw.toLowerCase().trim();
-
-    // === 1. DETECT QUESTIONS FIRST (FAQ-first approach) ===
-    // Check for question words and FAQ topics BEFORE checking booking intent
-    const isQuestion =
-      // Explicit question patterns
-      speech.includes('?') ||
-      speech.startsWith('how') ||
-      speech.startsWith('what') ||
-      speech.startsWith('when') ||
-      speech.startsWith('where') ||
-      speech.startsWith('who') ||
-      speech.startsWith('why') ||
-      speech.startsWith('do you') ||
-      speech.startsWith('can you') ||
-      speech.startsWith('are you') ||
-      speech.includes('question') ||
-      speech.includes('wondering') ||
-      speech.includes('like to know') ||
-      speech.includes('tell me about');
-
-    // FAQ topic detection (specific information requests)
-    const isFAQTopic =
-      speech.includes('how much') ||
-      speech.includes('cost') ||
-      speech.includes('price') ||
-      speech.includes('fee') ||
-      speech.includes('charge') ||
-      speech.includes('hours') ||
-      speech.includes('open') ||
-      speech.includes('close') ||
-      speech.includes('location') ||
-      speech.includes('address') ||
-      speech.includes('directions') ||
-      speech.includes('parking') ||
-      speech.includes('what to expect') ||
-      speech.includes('first visit') ||
-      speech.includes('what happens') ||
-      speech.includes('what do you') ||
-      speech.includes('what services') ||
-      speech.includes('technique') ||
-      speech.includes('who is') ||
-      speech.includes('who will');
-
-    // === 2. DETECT APPOINTMENT CHANGES ===
-    const wantsToChange =
-      speech.includes('reschedule') ||
-      speech.includes('change my appointment') ||
-      speech.includes('move my appointment') ||
-      speech.includes('cancel') ||
-      speech.includes('different time') ||
-      (speech.includes('change') && speech.includes('appointment'));
-
-    // === 3. DETECT EXPLICIT BOOKING INTENT ===
-    // Only trigger booking when clearly stated - not just any mention of "visit" or "first"
-    const wantsToBook =
-      // Explicit booking requests
-      speech.includes('book') ||
-      speech.includes('make an appointment') ||
-      speech.includes('schedule an appointment') ||
-      speech.includes('need an appointment') ||
-      speech.includes('want an appointment') ||
-      speech.includes('get an appointment') ||
-      // "new patient" combined with action words
-      (speech.includes('new patient') && (speech.includes('book') || speech.includes('make') || speech.includes('schedule') || speech.includes('need'))) ||
-      // "I'm a new patient" implies wanting to book
-      (speech.includes('new patient') && !isQuestion) ||
-      // Direct requests
-      speech.includes('book me in') ||
-      speech.includes('book me') ||
-      speech.includes('see the doctor') ||
-      speech.includes('see dr') ||
-      speech.includes('come in for') ||
-      speech.includes('get in to see');
-
     console.log('[handlePatientTypeDetect] Speech:', speechRaw);
-    console.log('[handlePatientTypeDetect] isQuestion:', isQuestion, 'isFAQTopic:', isFAQTopic, 'wantsToBook:', wantsToBook, 'wantsToChange:', wantsToChange);
 
-    // === PRIORITIZE: Questions → Changes → Booking → Unclear ===
-
-    // FIRST: Handle questions/FAQ topics
-    if (isQuestion || isFAQTopic) {
-      console.log('[handlePatientTypeDetect] FAQ-first: Routing to FAQ flow');
-      this.transitionTo(CallState.FAQ_ANSWERING);
-      await this.handleFAQ(speechRaw);
+    // Use NLU classifier to determine intent
+    let intentResult: IntentResult;
+    try {
+      intentResult = await classifyIntentNLU(speechRaw);
+      console.log('[handlePatientTypeDetect] NLU Result:', {
+        intent: intentResult.intent,
+        confidence: intentResult.confidence,
+        details: intentResult.details
+      });
+    } catch (err) {
+      console.error('[handlePatientTypeDetect] NLU classification failed:', err);
+      // Fallback to asking for clarification
+      intentResult = { intent: 'unknown', details: {}, confidence: 0 };
     }
-    // SECOND: Handle appointment changes
-    else if (wantsToChange) {
-      console.log('[handlePatientTypeDetect] Transferring for appointment change');
-      saySafe(this.vr, "<speak>Let me transfer you to our reception team who can help with that.</speak>");
+
+    // Store extracted time preferences if present
+    if (intentResult.details.preferredDay) {
+      this.ctx.preferredDay = intentResult.details.preferredDay;
+    }
+    if (intentResult.details.preferredTime) {
+      const timePreference = extractTimePreference(intentResult.details.preferredTime);
+      if (timePreference) {
+        this.ctx.preferredTime = timePreference;
+      }
+    }
+
+    // Route based on intent type
+    await this.routeByIntent(intentResult);
+    await this.saveContext();
+  }
+
+  /**
+   * Route caller based on classified intent
+   */
+  private async routeByIntent(intentResult: IntentResult): Promise<void> {
+    const { intent, details, confidence } = intentResult;
+
+    // === EMERGENCY - Always handle first ===
+    if (intent === 'emergency') {
+      console.log('[routeByIntent] EMERGENCY detected - immediate transfer');
+      saySafe(this.vr, "<speak>I'm connecting you to emergency services right away. Please stay on the line.</speak>");
+      // In production, this would dial 000 or transfer to emergency line
       this.vr.hangup();
+      return;
     }
-    // THIRD: Handle explicit booking requests
-    else if (wantsToBook) {
-      // Check if they already specified new patient
-      const isNewPatient = speech.includes('new patient') || speech.includes('first time') || speech.includes('never been');
+
+    // === FAQ / QUESTION INTENTS - Handle first (FAQ-first approach) ===
+    if (intent.startsWith('faq_') || intent === 'ask_human') {
+      console.log('[routeByIntent] FAQ/Question intent detected:', intent);
+      this.transitionTo(CallState.FAQ_ANSWERING);
+      await this.handleFAQByIntent(intent, details);
+      return;
+    }
+
+    // === APPOINTMENT CHANGES ===
+    if (intent === 'change_appointment') {
+      console.log('[routeByIntent] Reschedule request detected');
+      saySafe(this.vr, "<speak>I can help you change your appointment. <break time='200ms'/> Let me transfer you to our reception team who can find a better time for you.</speak>");
+      this.vr.hangup();
+      return;
+    }
+
+    if (intent === 'cancel_appointment') {
+      console.log('[routeByIntent] Cancel request detected');
+      saySafe(this.vr, "<speak>I understand you'd like to cancel. <break time='200ms'/> Let me transfer you to reception to take care of that.</speak>");
+      this.vr.hangup();
+      return;
+    }
+
+    // === BOOKING INTENTS ===
+    if (intent === 'booking_new_patient' || intent === 'booking_standard') {
+      console.log('[routeByIntent] Booking intent detected:', intent);
+      const isNewPatient = intent === 'booking_new_patient' || details.existingPatient === false;
 
       if (isNewPatient) {
-        console.log('[handlePatientTypeDetect] New patient booking - asking for day/time preference');
         this.ctx.isNewPatientBooking = true;
+        console.log('[routeByIntent] New patient booking - asking for day/time preference');
         await this.askDayTimePreference();
       } else if (this.ctx.patientId) {
-        console.log('[handlePatientTypeDetect] Returning patient booking - asking for day/time preference');
+        console.log('[routeByIntent] Returning patient booking - asking for day/time preference');
         await this.askDayTimePreference();
       } else {
-        console.log('[handlePatientTypeDetect] Asking new patient vs follow-up');
+        console.log('[routeByIntent] Asking new patient vs follow-up');
         await this.askNewOrFollowup();
       }
+      return;
     }
-    // LAST: Unclear response - ask for clarification (don't assume booking!)
-    else {
-      this.ctx.retryCount++;
-      if (this.ctx.retryCount >= 3) {
-        // After 3 unclear attempts, offer to transfer
-        saySafe(this.vr, "<speak>I'm having a bit of trouble understanding. <break time='200ms'/> Let me transfer you to our reception team.</speak>");
-        this.vr.hangup();
-      } else {
-        const g = this.vr.gather({
-          input: ['speech', 'dtmf'],
-          timeout: 6,
-          speechTimeout: 'auto',
-          actionOnEmptyResult: true,
-          hints: 'book, appointment, question, ask, hours, cost, parking, location',
-          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
-          method: 'POST'
-        });
 
-        // Neutral prompt that doesn't assume booking intent
-        saySafe(g, "<speak>I didn't quite catch that. <break time='200ms'/> How can I help you today? <break time='150ms'/> You can ask me about our services, hours, or prices, <break time='150ms'/> or I can help you book an appointment.</speak>");
+    // === GREETING - Just acknowledge and ask how to help ===
+    if (intent === 'greeting') {
+      console.log('[routeByIntent] Greeting detected, asking how to help');
+      await this.askHowCanIHelp();
+      return;
+    }
+
+    // === CONFIRMATION / NEGATION - Context-dependent, ask for clarification ===
+    if (intent === 'confirmation' || intent === 'negation' || intent === 'clarification') {
+      console.log('[routeByIntent] Context-dependent response, asking for clarification');
+      await this.askForClarification();
+      return;
+    }
+
+    // === UNKNOWN / LOW CONFIDENCE - Ask for clarification ===
+    if (intent === 'unknown' || intent === 'irrelevant' || confidence < 0.5) {
+      console.log('[routeByIntent] Unknown/low confidence, asking for clarification');
+      await this.askForClarification();
+      return;
+    }
+
+    // Fallback - shouldn't reach here
+    console.log('[routeByIntent] Unhandled intent:', intent);
+    await this.askForClarification();
+  }
+
+  /**
+   * Handle FAQ by specific intent type
+   */
+  private async handleFAQByIntent(intent: IntentType, details: any): Promise<void> {
+    // Map intent to FAQ topic and answer
+    const faqResponses: Record<string, { answer: string; topic?: 'prices' | 'location' | 'hours' | 'first_visit' | 'services' | 'general' }> = {
+      'faq_prices': {
+        answer: "For new patients, the first visit is typically around $80 and takes about 45 minutes. Follow-up visits are around $50 and take about 15 minutes. We accept Medicare's Chronic Disease Management referrals and most health funds.",
+        topic: 'prices'
+      },
+      'faq_hours': {
+        answer: "We're open Monday to Friday from 8am to 6pm, and Saturday mornings from 8am to 12pm. We're closed on Sundays and public holidays.",
+        topic: 'hours'
+      },
+      'faq_location': {
+        answer: "We're located at the clinic address. There's plenty of parking available right out front, and we're easily accessible by public transport.",
+        topic: 'location'
+      },
+      'faq_first_visit': {
+        answer: "On your first visit, we'll do a thorough consultation to understand your health history and concerns. This usually takes about 45 minutes. Please bring any relevant scans or medical records if you have them.",
+        topic: 'first_visit'
+      },
+      'faq_services': {
+        answer: "We offer a range of chiropractic services including spinal adjustments, soft tissue therapy, and rehabilitation exercises. We treat back pain, neck pain, headaches, and many other conditions.",
+        topic: 'services'
+      },
+      'faq_insurance': {
+        answer: "We accept most major health funds and can process your claim on the spot with our HICAPS machine. We also accept Medicare referrals under the Chronic Disease Management program.",
+        topic: 'general'
+      },
+      'ask_human': {
+        answer: "No problem, I'll connect you with our reception team right away.",
+        topic: undefined
       }
+    };
+
+    const faqData = faqResponses[intent];
+
+    if (intent === 'ask_human') {
+      console.log('[handleFAQByIntent] Caller wants to speak to human - transferring');
+      saySafe(this.vr, "<speak>No problem, <break time='200ms'/> I'll connect you with our reception team right away.</speak>");
+      this.vr.hangup();
+      return;
     }
 
-    await this.saveContext();
+    if (!faqData) {
+      // Unknown FAQ type - offer to help differently
+      console.log('[handleFAQByIntent] Unknown FAQ intent:', intent);
+      const g = this.vr.gather({
+        input: ['speech', 'dtmf'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        numDigits: 1,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
+        method: 'POST'
+      });
+      saySafe(g, "<speak>That's a great question. I'm not able to answer that directly. <break time='200ms'/> Would you like me to pass your question to our reception team? <break time='200ms'/> Press 1 for yes, or ask me something else.</speak>");
+      return;
+    }
+
+    // Answer the question with natural pacing
+    const g = this.vr.gather({
+      input: ['speech', 'dtmf'],
+      timeout: 8,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      numDigits: 1,
+      hints: 'yes, no, book, appointment, another question, that helps, thanks',
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
+      method: 'POST'
+    });
+
+    // Build response with optional SMS offer
+    let response = `<speak>${faqData.answer} <break time="400ms"/> `;
+
+    // Offer SMS link for certain topics
+    if (faqData.topic && ['prices', 'location', 'hours', 'first_visit'].includes(faqData.topic)) {
+      response += `If you'd like, I can text you a link with all these details. <break time="300ms"/> `;
+    }
+
+    response += `Did that answer your question, <break time="200ms"/> or is there anything else I can help you with? <break time="200ms"/> Press 1 to book an appointment.</speak>`;
+
+    saySafe(g, response);
+
+    // Store the FAQ topic in case they want an SMS
+    (this.ctx as any).lastFAQTopic = faqData.topic;
+
+    // Fallback redirect
+    this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`);
+  }
+
+  /**
+   * Ask for clarification when intent is unclear
+   */
+  private async askForClarification(): Promise<void> {
+    this.ctx.retryCount++;
+
+    if (this.ctx.retryCount >= 3) {
+      // After 3 unclear attempts, offer to transfer
+      saySafe(this.vr, "<speak>I'm having a bit of trouble understanding. <break time='200ms'/> Let me transfer you to our reception team who can help.</speak>");
+      this.vr.hangup();
+      return;
+    }
+
+    const g = this.vr.gather({
+      input: ['speech', 'dtmf'],
+      timeout: 6,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      hints: 'book, appointment, question, ask, hours, cost, parking, location, cancel, change',
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
+      method: 'POST'
+    });
+
+    // Neutral prompt that doesn't assume booking intent
+    if (this.ctx.retryCount === 1) {
+      saySafe(g, "<speak>I didn't quite catch that. <break time='200ms'/> How can I help you today?</speak>");
+    } else {
+      saySafe(g, "<speak>Sorry, I'm still not understanding. <break time='200ms'/> You can ask me about our services, hours, or prices, <break time='150ms'/> or I can help you book an appointment. <break time='150ms'/> Just tell me what you need.</speak>");
+    }
   }
 
   /**
@@ -1106,16 +1210,16 @@ export class CallFlowHandler {
   async handleChiefComplaint(speechRaw: string): Promise<void> {
     this.ctx.complaint = speechRaw.toLowerCase().trim();
 
-    // Extract preferred day/time from the complaint using intent classification
+    // Extract preferred day/time from the complaint using NLU classification
     try {
-      const intent = await classifyIntent(this.ctx.complaint);
-      if (intent.day) {
-        this.ctx.preferredDay = intent.day;
-        console.log('[handleChiefComplaint] Extracted preferred day:', intent.day);
+      const intentResult = await classifyIntentNLU(this.ctx.complaint);
+      if (intentResult.details.preferredDay) {
+        this.ctx.preferredDay = intentResult.details.preferredDay;
+        console.log('[handleChiefComplaint] Extracted preferred day:', intentResult.details.preferredDay);
       }
-      if (intent.preferredTime) {
+      if (intentResult.details.preferredTime) {
         // Parse the time string into hour/minute object
-        const parsedTime = extractTimePreference(intent.preferredTime);
+        const parsedTime = extractTimePreference(intentResult.details.preferredTime);
         if (parsedTime) {
           this.ctx.preferredTime = parsedTime;
           console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
