@@ -1720,18 +1720,14 @@ export class CallFlowHandler {
           timeout: 8,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'hours, location, parking, cost, price, how long, what time, when',
+          hints: 'hours, location, parking, cost, price, how long, what time, when, insurance, medicare, techniques',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`,
           method: 'POST'
         });
-        saySafe(g, "Of course! What would you like to know?");
-        g.pause({ length: 2 });
+        saySafe(g, "<speak>Of course! <break time='200ms'/> What would you like to know?</speak>");
 
-        // If no response, ask again
-        saySafe(this.vr, "Go ahead, I'm listening.");
-        this.vr.redirect({
-          method: 'POST'
-        }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`);
+        // Fallback redirect
+        this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`);
         return;
       }
 
@@ -1743,62 +1739,67 @@ export class CallFlowHandler {
         const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
         console.log('[handleFAQ] Found FAQ answer:', faq.question);
 
-        // Answer the question and ask what else they need
+        // Answer the question with SSML pacing
         const g = this.vr.gather({
-          input: ['speech'],
-          timeout: 5,
+          input: ['speech', 'dtmf'],
+          timeout: 6,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'appointment, booking, book, new patient, returning',
+          numDigits: 1,
+          hints: 'appointment, booking, book, yes, no, another question',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
           method: 'POST'
         });
 
-        saySafe(g, formattedAnswer);
-        g.pause({ length: 1 });
-        saySafe(g, "Is there anything else I can help you with? I can book an appointment if you need one.");
+        // Natural pacing between answer and follow-up
+        saySafe(g, `<speak>${formattedAnswer} <break time="400ms"/> Would you like to book an appointment? <break time="200ms"/> Press 1 for yes, or ask me another question.</speak>`);
 
-        // Fallback if no response
-        saySafe(this.vr, "Feel free to call back anytime. Bye!");
+        // Fallback - assume they're done
+        saySafe(this.vr, "<speak>Feel free to call back anytime. <break time='200ms'/> Bye!</speak>");
         this.vr.hangup();
       } else {
-        // No FAQ found - ask if they'd like to rephrase or book instead
+        // No FAQ found - offer to help differently
         console.log('[handleFAQ] No FAQ match found for:', speechRaw);
         const g = this.vr.gather({
-          input: ['speech'],
-          timeout: 5,
+          input: ['speech', 'dtmf'],
+          timeout: 6,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'book, appointment, different question, repeat',
+          numDigits: 1,
+          hints: 'book, appointment, different question, yes, no',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
           method: 'POST'
         });
-        saySafe(g, "I'm not sure about that one. Would you like to ask something else, or shall I help you book an appointment?");
-        g.pause({ length: 1 });
+        saySafe(g, "<speak>I'm not sure about that one. <break time='200ms'/> Would you like to book an appointment and ask the team directly? <break time='200ms'/> Press 1 for yes, or try asking another way.</speak>");
 
-        // Default to booking if no response
-        saySafe(this.vr, "No worries. Let me help you book an appointment instead.");
-        this.transitionTo(CallState.PATIENT_TYPE_DETECT);
-        await this.handlePatientTypeDetect('', '');
+        // Default fallback
+        this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`);
       }
 
       await this.saveContext();
     } catch (err) {
       console.error('[handleFAQ] Error:', err);
-      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
-      saySafe(this.vr, "Let me help you book an appointment instead.");
-      await this.handlePatientTypeDetect('', '');
+      saySafe(this.vr, "<speak>I'm having trouble finding that information. <break time='200ms'/> Would you like to book an appointment instead?</speak>");
+      await this.askNewOrFollowup();
     }
   }
 
   /**
    * Handle FAQ followup (after answering a question)
    */
-  async handleFAQFollowup(speechRaw: string): Promise<void> {
+  async handleFAQFollowup(speechRaw: string, digits?: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
-    // Check if they want to book - use more specific patterns to avoid false positives
-    // "book an appointment" vs "how long is the appointment?"
+    // DTMF 1 = yes, want to book
+    if (digits === '1') {
+      console.log('[handleFAQFollowup] User pressed 1, going to booking');
+      saySafe(this.vr, "<speak>Great! <break time='200ms'/> Let's get you booked in.</speak>");
+      await this.askNewOrFollowup();
+      await this.saveContext();
+      return;
+    }
+
+    // Check if they want to book
     const bookingPhrases = [
       'book', 'schedule', 'make an appointment',
       'want an appointment', 'need an appointment',
@@ -1814,17 +1815,19 @@ export class CallFlowHandler {
                       speech.includes('?') || speech.includes('cost') ||
                       speech.includes('price') || speech.includes('long') ||
                       speech.includes('much') || speech.includes('location') ||
-                      speech.includes('hours') || speech.includes('parking');
+                      speech.includes('hours') || speech.includes('parking') ||
+                      speech.includes('insurance') || speech.includes('technique');
 
     // Check if they're done
     const isDone = speech.includes('no') || speech.includes('nothing') ||
                    speech.includes("that's all") || speech.includes("that's it") ||
-                   speech.includes('no thanks') || speech.includes("i'm good");
+                   speech.includes('no thanks') || speech.includes("i'm good") ||
+                   speech.includes('bye') || speech.includes('goodbye');
 
     if (isDone) {
       // They're done
       this.transitionTo(CallState.CLOSING);
-      saySafe(this.vr, "Perfect! Have a great day. Bye!");
+      saySafe(this.vr, "<speak>Perfect! <break time='200ms'/> Have a great day. Bye!</speak>");
       this.vr.hangup();
     } else if (isQuestion) {
       // They have another question - stay in FAQ mode
@@ -1834,9 +1837,8 @@ export class CallFlowHandler {
     } else if (wantsToBook) {
       // Continue to booking flow
       console.log('[handleFAQFollowup] Detected booking intent, transitioning to booking flow');
-      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
-      saySafe(this.vr, "Great! Let's get you booked in.");
-      await this.handlePatientTypeDetect('', '');
+      saySafe(this.vr, "<speak>Great! <break time='200ms'/> Let's get you booked in.</speak>");
+      await this.askNewOrFollowup();
     } else {
       // Unclear - try to answer as FAQ first
       this.transitionTo(CallState.FAQ_ANSWERING);

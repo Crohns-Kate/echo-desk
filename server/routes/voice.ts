@@ -5151,7 +5151,7 @@ export function registerVoice(app: Express) {
           break;
 
         case 'faq_followup':
-          await handler.handleFAQFollowup(speechRaw);
+          await handler.handleFAQFollowup(speechRaw, digits);
           break;
 
         case 'final_check':
