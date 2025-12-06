@@ -5122,6 +5122,10 @@ export function registerVoice(app: Express) {
           await handler.handleChooseSlot(speechRaw, digits);
           break;
 
+        case 'booking_confirmation':
+          await handler.handleBookingConfirmationResponse(speechRaw, digits);
+          break;
+
         case 'disambiguate_patient':
           await handler.handleDisambiguatePatient(speechRaw, digits);
           break;

@@ -250,21 +250,21 @@ export class CallFlowHandler {
       timeout: 5,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'book, appointment, new patient, make an appointment, need an appointment, schedule, change, reschedule, cancel, question, ask, hours, location',
+      hints: 'book, appointment, new patient, patient visit, book me in, make an appointment, need an appointment, schedule, change, reschedule, cancel, question, ask, hours, location',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
       method: 'POST'
     });
 
-    // New flow: Skip "first visit?" and go straight to intent detection
+    // Build a warm, natural greeting with SSML pacing
     const clinicName = this.getClinicName();
     let greetingMessage: string;
 
     if (this.tenantCtx?.greeting && this.tenantCtx.greeting !== "Thanks for calling") {
-      // Use tenant's custom greeting + simplified follow-up
-      greetingMessage = `${this.tenantCtx.greeting} Are you calling to book an appointment, change one, or ask a question?`;
+      // Use tenant's custom greeting with natural pacing
+      greetingMessage = `<speak>${this.tenantCtx.greeting} <break time="300ms"/> How can I help you today?</speak>`;
     } else {
-      // Default greeting - more conversational and fluent
-      greetingMessage = `Thanks for calling ${clinicName}! How can I help you today? Are you looking to book an appointment, change an existing one, or do you have a question?`;
+      // Default greeting - warm, friendly, with natural pauses
+      greetingMessage = `<speak>Thanks for calling ${clinicName}! <break time="200ms"/> How can I help you today?</speak>`;
     }
 
     saySafe(g, greetingMessage);
@@ -277,21 +277,44 @@ export class CallFlowHandler {
   async handlePatientTypeDetect(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
-    // Detect three main intents: book, change appointment, or ask question
-    // Enhanced with more natural speech patterns
-    const wantsToBook = speech.includes('book') ||
-                       speech.includes('appointment') ||
-                       speech.includes('new patient') ||
-                       speech.includes('first') ||
-                       speech.includes('make an') ||
-                       speech.includes('need an') ||
-                       speech.includes('want an') ||
-                       speech.includes('like to') ||
-                       speech.includes('see someone') ||
-                       speech.includes('come in') ||
-                       speech.includes('visit') ||
-                       speech.includes('available') ||
-                       (speech.includes('schedule') && !speech.includes('reschedule'));
+    // Very forgiving booking intent detection
+    // Treat any combination of booking-related words as booking intent
+    const hasBookWord = speech.includes('book');
+    const hasPatientWord = speech.includes('patient');
+    const hasAppointmentWord = speech.includes('appointment');
+    const hasVisitWord = speech.includes('visit');
+
+    // Primary booking patterns - very forgiving
+    const wantsToBook =
+      // "book" + "patient" anywhere (e.g., "I want to book a new patient appointment")
+      (hasBookWord && hasPatientWord) ||
+      // "new patient" anywhere
+      speech.includes('new patient') ||
+      // "patient visit" anywhere
+      (hasPatientWord && hasVisitWord) ||
+      // "book a visit" or "book visit"
+      (hasBookWord && hasVisitWord) ||
+      // "book me in"
+      speech.includes('book me in') ||
+      speech.includes('book me') ||
+      // Standard booking phrases
+      hasBookWord ||
+      hasAppointmentWord ||
+      speech.includes('first') ||
+      speech.includes('make an') ||
+      speech.includes('need an') ||
+      speech.includes('want an') ||
+      speech.includes('like to') ||
+      speech.includes('see someone') ||
+      speech.includes('see the doctor') ||
+      speech.includes('see dr') ||
+      speech.includes('come in') ||
+      speech.includes('get in') ||
+      hasVisitWord ||
+      speech.includes('available') ||
+      speech.includes('opening') ||
+      speech.includes('slot') ||
+      (speech.includes('schedule') && !speech.includes('reschedule'));
 
     const wantsToChange = speech.includes('reschedule') || speech.includes('change') ||
                           speech.includes('move') || speech.includes('cancel') ||
@@ -322,12 +345,12 @@ export class CallFlowHandler {
       this.transitionTo(CallState.FAQ_ANSWERING);
       await this.handleFAQ(speechRaw);
     } else {
-      // Unclear response - retry without "Sorry" or "Apologies"
+      // Unclear response - max 2 retries then assume booking (friendly fallback)
       this.ctx.retryCount++;
       if (this.ctx.retryCount >= 2) {
-        // Assume booking after 2 failed attempts
+        // After 2 unclear attempts, default to booking flow
         this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
-        saySafe(this.vr, "No worries, I'll help you book an appointment.");
+        saySafe(this.vr, "<speak>No worries, <break time='150ms'/> I'll help you book an appointment.</speak>");
         await this.handleNewPatientPhoneConfirm();
       } else {
         const g = this.vr.gather({
@@ -335,19 +358,13 @@ export class CallFlowHandler {
           timeout: 5,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          hints: 'book, appointment, new patient, make an appointment, need an appointment, schedule, change, reschedule, question, ask',
+          hints: 'book, appointment, new patient, patient visit, book me in, make an appointment, schedule, change, reschedule, question, ask',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=patient_type`,
           method: 'POST'
         });
 
-        // Retry prompt - clearer options
-        const retryPrompts = [
-          "I didn't catch that. Are you calling to book, change an appointment, or ask a question?",
-          "Sorry, I missed that. Would you like to book an appointment, change one, or ask a question?",
-          "I didn't quite hear you. Just say book, change, or question."
-        ];
-        const randomPrompt = retryPrompts[Math.floor(Math.random() * retryPrompts.length)];
-        saySafe(g, randomPrompt);
+        // Single clear retry prompt with SSML
+        saySafe(g, "<speak>I didn't quite catch that. <break time='200ms'/> Would you like to book an appointment, change an existing one, or ask a question?</speak>");
       }
     }
 
@@ -997,9 +1014,10 @@ export class CallFlowHandler {
       return;
     }
 
-    const optionsText = this.ctx.appointmentSlots
+    // Build SSML with natural pacing between options
+    const optionsSSML = this.ctx.appointmentSlots
       .map((slot, idx) => `Option ${idx + 1}: ${slot.speakable}`)
-      .join('. ');
+      .join(' <break time="400ms"/> ');
 
     const g = this.vr.gather({
       input: ['speech', 'dtmf'],
@@ -1007,46 +1025,205 @@ export class CallFlowHandler {
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
       numDigits: 1,
-      hints: 'one, two, three, option one, option two, option three',
+      hints: 'one, two, three, first, second, third, option one, option two, option three, the first, the second, the third, number one, number two, number three',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=choose_slot`,
       method: 'POST'
     });
 
-    saySafe(g, `I have ${this.ctx.appointmentSlots.length} options available. ${optionsText}. Which works best? Press ${this.ctx.appointmentSlots.map((_, i) => i + 1).join(', ')}.`);
+    // Natural pacing with SSML breaks
+    const numOptions = this.ctx.appointmentSlots.length;
+    const digitPrompt = numOptions === 1 ? 'press 1' : `press ${this.ctx.appointmentSlots.map((_, i) => i + 1).join(' or ')}`;
+
+    saySafe(g, `<speak>I have ${numOptions} ${numOptions === 1 ? 'opening' : 'openings'} available. <break time="300ms"/> ${optionsSSML}. <break time="400ms"/> Which works best for you? You can say the number, or ${digitPrompt}.</speak>`);
 
     await this.saveContext();
+  }
+
+  /**
+   * Parse option choice from speech or digits
+   * Returns 0-based index or -1 if not understood
+   */
+  private parseOptionChoice(speech: string, digits: string): number {
+    // DTMF digits take priority
+    if (digits === '1') return 0;
+    if (digits === '2') return 1;
+    if (digits === '3') return 2;
+
+    const s = speech.toLowerCase().trim();
+
+    // Option 1 patterns
+    const isOption1 =
+      s.includes('option 1') ||
+      s.includes('option one') ||
+      s.includes('the first') ||
+      s.includes('first one') ||
+      s.includes('first option') ||
+      s.includes('number 1') ||
+      s.includes('number one') ||
+      s === 'one' ||
+      s === '1' ||
+      s === 'first' ||
+      s.startsWith('one ') ||
+      s.endsWith(' one') ||
+      // Check for "one" as a standalone word
+      /\bone\b/.test(s);
+
+    // Option 2 patterns
+    const isOption2 =
+      s.includes('option 2') ||
+      s.includes('option two') ||
+      s.includes('the second') ||
+      s.includes('second one') ||
+      s.includes('second option') ||
+      s.includes('number 2') ||
+      s.includes('number two') ||
+      s === 'two' ||
+      s === '2' ||
+      s === 'second' ||
+      s.startsWith('two ') ||
+      s.endsWith(' two') ||
+      /\btwo\b/.test(s);
+
+    // Option 3 patterns
+    const isOption3 =
+      s.includes('option 3') ||
+      s.includes('option three') ||
+      s.includes('the third') ||
+      s.includes('third one') ||
+      s.includes('third option') ||
+      s.includes('number 3') ||
+      s.includes('number three') ||
+      s === 'three' ||
+      s === '3' ||
+      s === 'third' ||
+      s.startsWith('three ') ||
+      s.endsWith(' three') ||
+      /\bthree\b/.test(s);
+
+    if (isOption1) return 0;
+    if (isOption2) return 1;
+    if (isOption3) return 2;
+
+    return -1;
   }
 
   /**
    * Handle slot choice
    */
   async handleChooseSlot(speechRaw: string, digits: string): Promise<void> {
-    const speech = speechRaw.toLowerCase().trim();
+    console.log('[handleChooseSlot] Speech:', speechRaw, 'Digits:', digits);
 
-    // Parse choice
-    let choiceIndex = -1;
-    if (digits === '1' || speech.includes('one') || speech.includes('first')) {
-      choiceIndex = 0;
-    } else if (digits === '2' || speech.includes('two') || speech.includes('second')) {
-      choiceIndex = 1;
-    } else if (digits === '3' || speech.includes('three') || speech.includes('third')) {
-      choiceIndex = 2;
-    }
+    // Parse choice using flexible option detection
+    const choiceIndex = this.parseOptionChoice(speechRaw, digits);
+    console.log('[handleChooseSlot] Parsed choice index:', choiceIndex);
 
     if (choiceIndex >= 0 && this.ctx.appointmentSlots && choiceIndex < this.ctx.appointmentSlots.length) {
       this.ctx.selectedSlotIndex = choiceIndex;
-      this.transitionTo(CallState.CONFIRM_BOOKING);
-      await this.handleConfirmBooking();
+      // Ask for confirmation before booking
+      await this.askBookingConfirmation();
     } else {
-      // Invalid choice - retry
+      // Invalid choice - retry with clearer guidance
       this.ctx.retryCount++;
       if (this.ctx.retryCount >= 2) {
         this.transitionTo(CallState.ERROR_RECOVERY);
-        saySafe(this.vr, "I'm having trouble understanding your choice. Let me transfer you to our reception.");
+        saySafe(this.vr, "<speak>No worries, <break time='200ms'/> let me transfer you to our reception team who can help.</speak>");
         this.vr.hangup();
       } else {
-        saySafe(this.vr, "Sorry, I didn't catch that. ");
+        saySafe(this.vr, "<speak>I didn't quite catch that. <break time='200ms'/> Just say the number, like one, two, or three.</speak>");
         await this.handlePresentOptions();
+      }
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Ask for booking confirmation before creating appointment
+   */
+  async askBookingConfirmation(): Promise<void> {
+    if (this.ctx.selectedSlotIndex === undefined || !this.ctx.appointmentSlots) {
+      console.error('[askBookingConfirmation] No slot selected');
+      return;
+    }
+
+    const slot = this.ctx.appointmentSlots[this.ctx.selectedSlotIndex];
+    const patientName = this.ctx.formData?.firstName || this.ctx.patientFirstName || '';
+
+    const g = this.vr.gather({
+      input: ['speech', 'dtmf'],
+      timeout: 8,
+      speechTimeout: 'auto',
+      actionOnEmptyResult: true,
+      numDigits: 1,
+      hints: 'yes, no, correct, that is correct, yep, yeah, sure, nope, not right, wrong',
+      action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=booking_confirmation`,
+      method: 'POST'
+    });
+
+    // Confirm the booking details with SSML pacing
+    const confirmMessage = patientName
+      ? `<speak>Perfect ${patientName}! <break time="200ms"/> Just to confirm, <break time="150ms"/> I'm booking you for ${slot.speakable}. <break time="300ms"/> Is that correct? Press 1 for yes, or 2 to pick a different time.</speak>`
+      : `<speak>Just to confirm, <break time="150ms"/> I'm booking you for ${slot.speakable}. <break time="300ms"/> Is that correct? Press 1 for yes, or 2 to pick a different time.</speak>`;
+
+    saySafe(g, confirmMessage);
+    await this.saveContext();
+  }
+
+  /**
+   * Handle booking confirmation response
+   */
+  async handleBookingConfirmationResponse(speechRaw: string, digits: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+
+    // Check for affirmative response
+    const isYes =
+      digits === '1' ||
+      speech.includes('yes') ||
+      speech.includes('yeah') ||
+      speech.includes('yep') ||
+      speech.includes('correct') ||
+      speech.includes('sure') ||
+      speech.includes('ok') ||
+      speech.includes('okay') ||
+      speech.includes('that\'s right') ||
+      speech.includes('thats right') ||
+      speech.includes('sounds good') ||
+      speech.includes('perfect') ||
+      speech.includes('great');
+
+    // Check for negative response
+    const isNo =
+      digits === '2' ||
+      speech.includes('no') ||
+      speech.includes('nope') ||
+      speech.includes('wrong') ||
+      speech.includes('different') ||
+      speech.includes('change') ||
+      speech.includes('not right') ||
+      speech.includes('another');
+
+    console.log('[handleBookingConfirmationResponse] Speech:', speechRaw, 'Digits:', digits);
+    console.log('[handleBookingConfirmationResponse] isYes:', isYes, 'isNo:', isNo);
+
+    if (isYes) {
+      // Proceed with booking
+      this.transitionTo(CallState.CONFIRM_BOOKING);
+      await this.handleConfirmBooking();
+    } else if (isNo) {
+      // Go back to present options
+      saySafe(this.vr, "<speak>No problem! <break time='200ms'/> Let me read those options again.</speak>");
+      this.ctx.selectedSlotIndex = undefined;
+      await this.handlePresentOptions();
+    } else {
+      // Unclear - ask again
+      this.ctx.retryCount++;
+      if (this.ctx.retryCount >= 2) {
+        // Assume yes after 2 unclear attempts
+        saySafe(this.vr, "<speak>I'll go ahead and book that for you.</speak>");
+        this.transitionTo(CallState.CONFIRM_BOOKING);
+        await this.handleConfirmBooking();
+      } else {
+        await this.askBookingConfirmation();
       }
     }
 
