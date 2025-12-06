@@ -32,7 +32,9 @@ export interface CallContext {
   patientName?: string;
   patientFirstName?: string;
   patientEmail?: string;
+  patientPhone?: string;
   formToken?: string;
+  formWaitCount?: number;
   formData?: {
     firstName: string;
     lastName: string;
@@ -61,7 +63,8 @@ const VALID_TRANSITIONS: Record<CallState, CallState[]> = {
   [CallState.RETURNING_PATIENT_LOOKUP]: [CallState.CHIEF_COMPLAINT, CallState.NEW_PATIENT_PHONE_CONFIRM],
   [CallState.NEW_PATIENT_PHONE_CONFIRM]: [CallState.SEND_FORM_LINK],
   [CallState.SEND_FORM_LINK]: [CallState.WAITING_FOR_FORM],
-  [CallState.WAITING_FOR_FORM]: [CallState.FORM_RECEIVED, CallState.ERROR_RECOVERY],
+  [CallState.WAITING_FOR_FORM]: [CallState.FORM_RECEIVED, CallState.VERBAL_COLLECTION, CallState.ERROR_RECOVERY],
+  [CallState.VERBAL_COLLECTION]: [CallState.FORM_RECEIVED, CallState.ERROR_RECOVERY],
   [CallState.FORM_RECEIVED]: [CallState.CHIEF_COMPLAINT],
   [CallState.CHIEF_COMPLAINT]: [CallState.APPOINTMENT_SEARCH, CallState.FAQ_ANSWERING],
   [CallState.APPOINTMENT_SEARCH]: [CallState.PRESENT_OPTIONS, CallState.ERROR_RECOVERY],
@@ -106,6 +109,67 @@ export class CallFlowHandler {
    */
   getTimezone(): string {
     return this.ctx.timezone || this.tenantCtx?.timezone || AUST_TZ;
+  }
+
+  /**
+   * Get voice name for TTS
+   */
+  getVoice(): string {
+    return this.tenantCtx?.voiceName || 'Polly.Olivia-Neural';
+  }
+
+  /**
+   * Get caller phone from context
+   */
+  getCallerPhone(): string {
+    return this.ctx.callerPhone;
+  }
+
+  /**
+   * Set patient name
+   */
+  setPatientName(name: string): void {
+    this.ctx.patientName = name;
+    // Also extract first name
+    const parts = name.trim().split(/\s+/);
+    if (parts.length > 0) {
+      this.ctx.patientFirstName = parts[0];
+    }
+  }
+
+  /**
+   * Get patient name
+   */
+  getPatientName(): string | undefined {
+    return this.ctx.patientName;
+  }
+
+  /**
+   * Set patient phone
+   */
+  setPatientPhone(phone: string): void {
+    this.ctx.patientPhone = phone;
+  }
+
+  /**
+   * Get patient phone (or fall back to caller phone)
+   */
+  getPatientPhone(): string {
+    return this.ctx.patientPhone || this.ctx.callerPhone;
+  }
+
+  /**
+   * Set patient email
+   */
+  setPatientEmail(email: string): void {
+    this.ctx.patientEmail = email;
+  }
+
+  /**
+   * Set form data from verbal collection
+   */
+  setFormData(data: { firstName: string; lastName: string; phone: string; email: string }): void {
+    this.ctx.formData = data;
   }
 
   /**
@@ -502,11 +566,12 @@ export class CallFlowHandler {
       // Generate unique token
       const token = `form_${this.ctx.callSid}_${Date.now()}`;
       this.ctx.formToken = token;
+      this.ctx.formWaitCount = 0; // Track how many times we've checked
 
       // Store token in storage for later retrieval
       if (this.ctx.conversationId) {
         await storage.updateConversation(Number(this.ctx.conversationId), {
-          context: { ...this.ctx, formToken: token }
+          context: { ...this.ctx, formToken: token, formWaitCount: 0 }
         });
       }
 
@@ -517,19 +582,23 @@ export class CallFlowHandler {
         clinicName: this.getClinicName()
       });
 
-      saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out - takes about 30 seconds. Just say done when you've finished, or press 1.");
+      saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out. Takes about 30 seconds.");
 
       this.transitionTo(CallState.WAITING_FOR_FORM);
 
-      // Wait for form with speech/dtmf input
-      const g = this.vr.gather({
-        input: ['speech', 'dtmf'],
-        timeout: 20,
-        speechTimeout: 'auto',
+      // Use Gather to allow keypress while waiting
+      const gather = this.vr.gather({
+        input: ['dtmf'],
         numDigits: 1,
-        actionOnEmptyResult: true,
-        hints: 'done, finished, completed, I\'m done, all done, ready',
-        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`,
+        timeout: 10,
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_keypress`,
+        method: 'POST'
+      });
+      saySafe(gather, "Press 1 when you've completed the form. Or press 2 if you can't receive texts and I'll collect your details over the phone.");
+      gather.pause({ length: 8 });
+
+      // If no keypress, check form status
+      this.vr.redirect({
         method: 'POST'
       });
       // Play hold music during the gather
@@ -540,6 +609,53 @@ export class CallFlowHandler {
       this.transitionTo(CallState.ERROR_RECOVERY);
       saySafe(this.vr, "I'm sorry, I'm having trouble sending the text message. Let me transfer you to our reception.");
       this.vr.hangup();
+    }
+
+    await this.saveContext();
+  }
+
+  /**
+   * Handle keypress during form wait
+   */
+  async handleFormKeypress(digits: string): Promise<void> {
+    console.log('[handleFormKeypress] Digit pressed:', digits);
+
+    if (digits === '1') {
+      // User says they're done - check if form actually completed
+      const call = await storage.getCallByCallSid(this.ctx.callSid);
+      if (call?.conversationId) {
+        const conversation = await storage.getConversation(call.conversationId);
+        const context = conversation?.context as Partial<CallContext>;
+
+        if (context?.formData) {
+          // Form completed!
+          await this.loadContext();
+          this.transitionTo(CallState.FORM_RECEIVED);
+          await this.handleFormReceived();
+          return;
+        }
+      }
+
+      // Form not actually completed yet
+      saySafe(this.vr, "I don't see the form yet. Take your time - press 1 again when you're done.");
+      this.vr.redirect({
+        method: 'POST'
+      }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
+
+    } else if (digits === '2') {
+      // User can't receive texts - collect verbally
+      saySafe(this.vr, "No problem! I'll collect your details over the phone instead.");
+      this.transitionTo(CallState.VERBAL_COLLECTION);
+      this.vr.redirect({
+        method: 'POST'
+      }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_verbal_details`);
+
+    } else {
+      // Invalid digit
+      saySafe(this.vr, "Press 1 when you've completed the form, or press 2 to give details over the phone.");
+      this.vr.redirect({
+        method: 'POST'
+      }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
     }
 
     await this.saveContext();
@@ -577,36 +693,47 @@ export class CallFlowHandler {
 
       // Check how long we've been waiting
       const waitingTime = Date.now() - parseInt(this.ctx.formToken?.split('_')[2] || '0');
+      this.ctx.formWaitCount = (this.ctx.formWaitCount || 0) + 1;
 
-      if (waitingTime > 120000) {
-        // 2 minutes timeout
+      if (waitingTime > 90000) {
+        // 90 seconds timeout - offer alternatives
         this.transitionTo(CallState.ERROR_RECOVERY);
-        saySafe(this.vr, "I haven't received the form yet. No worries - you can call us back when you're ready.");
-        this.vr.hangup();
+        saySafe(this.vr, "I haven't received the form yet. No worries - would you like to give me your details over the phone instead? Press 1 for yes, or press 2 to hang up and try again later.");
+
+        const gather = this.vr.gather({
+          input: ['dtmf'],
+          numDigits: 1,
+          timeout: 10,
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=timeout_choice`,
+          method: 'POST'
+        });
+        gather.pause({ length: 8 });
+
+        // Default to verbal if no response
+        this.vr.redirect({
+          method: 'POST'
+        }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_verbal_details`);
         return;
       }
 
-      // User said something or pressed a key but form not complete yet
-      const speech = (speechRaw || '').toLowerCase();
-      const userTriggered = digits === '1' || speech.includes('done') || speech.includes('finish') || speech.includes('ready') || speech.includes('complet');
-
-      if (userTriggered) {
-        // User indicated they're done but form not received yet
-        saySafe(this.vr, "Still waiting for the form to come through. Give it a few more seconds and say done when you're finished.");
+      // Every 3rd check (about 30 seconds), remind them of options
+      if (this.ctx.formWaitCount % 3 === 0) {
+        const gather = this.vr.gather({
+          input: ['dtmf'],
+          numDigits: 1,
+          timeout: 8,
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_keypress`,
+          method: 'POST'
+        });
+        saySafe(gather, "Still waiting for the form. Press 1 when done, or press 2 to give details over the phone.");
+        gather.pause({ length: 6 });
       } else {
-        // Just a periodic check, give a gentle reminder
-        saySafe(this.vr, "Still waiting for the form. Just say done when you're finished.");
+        // Brief pause between checks
+        this.vr.pause({ length: 8 });
       }
 
-      // Continue waiting with speech/dtmf input
-      const g = this.vr.gather({
-        input: ['speech', 'dtmf'],
-        timeout: 20,
-        speechTimeout: 'auto',
-        numDigits: 1,
-        actionOnEmptyResult: true,
-        hints: 'done, finished, completed, I\'m done, all done, ready',
-        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`,
+      // Continue checking
+      this.vr.redirect({
         method: 'POST'
       });
       // Play hold music during the gather

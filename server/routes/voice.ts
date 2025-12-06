@@ -5014,6 +5014,106 @@ export function registerVoice(app: Express) {
           await handler.handleCheckFormStatus(speechRaw, digits);
           break;
 
+        case 'form_keypress':
+          await handler.handleFormKeypress(digits || '');
+          break;
+
+        case 'timeout_choice':
+          // Handle choice after form timeout
+          if (digits === '1') {
+            // User wants to give details verbally
+            saySafe(vr, "No problem! I'll collect your details over the phone.");
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_details`);
+          } else {
+            // User wants to hang up
+            saySafe(vr, "No worries! Feel free to call back when you're ready, or complete the form in the text message. Goodbye!");
+            vr.hangup();
+          }
+          break;
+
+        case 'collect_verbal_details':
+          // Redirect to verbal name collection
+          saySafe(vr, "Alright, let's do this over the phone. What's your full name?");
+          const verbGather = vr.gather({
+            input: ['speech'],
+            timeout: 5,
+            speechTimeout: 'auto',
+            action: `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_name`,
+            method: 'POST'
+          });
+          saySafe(verbGather, "Please say your first and last name.");
+          vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_details`);
+          break;
+
+        case 'collect_verbal_name':
+          // Store the name and continue
+          if (speechRaw) {
+            handler.setPatientName(speechRaw);
+            await handler.saveContext();
+            saySafe(vr, `Got it, ${speechRaw}. And what's your phone number in case we need to call you back?`);
+            const phoneGather = vr.gather({
+              input: ['speech', 'dtmf'],
+              timeout: 5,
+              speechTimeout: 'auto',
+              action: `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_phone`,
+              method: 'POST'
+            });
+            phoneGather.pause({ length: 5 });
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_name`);
+          } else {
+            saySafe(vr, "I didn't catch that. What's your full name?");
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_details`);
+          }
+          break;
+
+        case 'collect_verbal_phone':
+          // Store phone and continue to email
+          if (speechRaw || digits) {
+            handler.setPatientPhone(speechRaw || digits);
+            await handler.saveContext();
+            saySafe(vr, "Thanks! And your email address? You can spell it out letter by letter.");
+            const emailGather = vr.gather({
+              input: ['speech'],
+              timeout: 8,
+              speechTimeout: 'auto',
+              action: `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_email`,
+              method: 'POST'
+            });
+            emailGather.pause({ length: 6 });
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_phone`);
+          } else {
+            saySafe(vr, "What phone number can we reach you at?");
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_phone`);
+          }
+          break;
+
+        case 'collect_verbal_email':
+          // Store email and proceed to booking
+          if (speechRaw) {
+            // Parse spelled out email
+            const { parseSpelledEmail } = await import('../services/speech');
+            const email = parseSpelledEmail(speechRaw);
+            handler.setPatientEmail(email);
+
+            // Build form data from collected info
+            const patientName = handler.getPatientName() || '';
+            const nameParts = patientName.split(' ');
+            handler.setFormData({
+              firstName: nameParts[0] || '',
+              lastName: nameParts.slice(1).join(' ') || '',
+              phone: handler.getPatientPhone(),
+              email: email
+            });
+            await handler.saveContext();
+            saySafe(vr, `Great, I have your email as ${email.split('@').join(' at ')}. Let me confirm your appointment.`);
+            // Continue with booking confirmation
+            await handler.handleFormReceived();
+          } else {
+            saySafe(vr, "I didn't catch your email. Can you spell it out for me?");
+            vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_email`);
+          }
+          break;
+
         case 'chief_complaint':
           await handler.handleChiefComplaint(speechRaw);
           break;
