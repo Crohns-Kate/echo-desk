@@ -1153,21 +1153,21 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
           }
 
-          // Ask what they want to do (book, change appointment, or ask question)
+          // NEW FLOW: Redirect to NLU-powered "How can I help you?" hub
+          // This replaces the old "book/change/question" categories
           const firstName = extractFirstName(knownName);
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 6,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=existing-patient-intent&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            action: abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`),
             method: "POST",
-            hints: "book, appointment, change, reschedule, cancel, question, hours, location, parking"
+            hints: "book, appointment, question, ask, hours, cost, parking, location, cancel, change, reschedule"
           });
-          // New cleaner intent prompt matching user requirements
-          saySafe(g, `Great, ${firstName}. Are you calling to book an appointment, change an appointment, or ask a question?`);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // Natural open question - let them speak freely, NLU will classify
+          saySafe(g, `<speak>Thanks, ${firstName}. <break time="200ms"/> How can I help you today?</speak>`);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
           return res.type("text/xml").send(vr.toString());
         } else if (isNew) {
           // They said "no" or "new patient" - they're not the known patient
@@ -1214,20 +1214,20 @@ export function registerVoice(app: Express) {
             console.error("[CONFIRM-EXISTING-OR-NEW] Error storing context:", err);
           }
 
-          // NEW FLOW: Ask for intent first (book, change, or question)
+          // NEW FLOW: Redirect to NLU-powered "How can I help you?" hub
+          // This replaces the old "book/change/question" categories
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 6,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=new-patient-intent&callSid=${encodeURIComponent(callSid)}`),
+            action: abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`),
             method: "POST",
-            hints: "book, appointment, change, reschedule, cancel, question, hours, location, parking"
+            hints: "book, appointment, question, ask, hours, cost, parking, location, cancel, change, reschedule"
           });
-          // Clean intent question for non-recognized callers
-          saySafe(g, `No problem. Are you calling to book a new patient visit, change an appointment, or just ask a question?`);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // Natural open question - let them speak freely, NLU will classify
+          saySafe(g, `<speak>No problem. <break time="200ms"/> How can I help you today?</speak>`);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
           return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again with clearer yes/no prompt (NO "Just say Mary" language)
@@ -1343,25 +1343,25 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // Unclear - ask again (no apology unless it's a real ASR failure)
+          // Unclear - redirect to NLU-powered flow for classification
+          console.log("[EXISTING-PATIENT-INTENT] Unclear response, redirecting to NLU flow");
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 6,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=existing-patient-intent&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
+            action: abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`),
             method: "POST",
-            hints: "book, appointment, change, reschedule, cancel, question, hours, location"
+            hints: "book, appointment, question, ask, hours, cost, parking, location, cancel, change"
           });
-          // Only say "didn't catch" after an actual unclear response
-          saySafe(g, `I didn't catch that. You can say: book an appointment, change an appointment, or ask a question.`);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // Natural retry prompt
+          saySafe(g, `<speak>I didn't quite catch that. <break time="200ms"/> How can I help you today?</speak>`);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
           return res.type("text/xml").send(vr.toString());
         }
       }
 
-      // NEW-PATIENT-INTENT → Handle intent for new/unrecognized callers (book, change, or ask question)
+      // NEW-PATIENT-INTENT → Handle intent for new/unrecognized callers (now routes to NLU)
       if (route === "new-patient-intent") {
         const wantsToBook = speechRaw.includes("book") || speechRaw.includes("appointment") ||
                            speechRaw.includes("new patient") || speechRaw.includes("first") ||
@@ -1407,20 +1407,20 @@ export function registerVoice(app: Express) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
           return res.type("text/xml").send(vr.toString());
         } else {
-          // Unclear - ask again (no apology unless it's a real ASR failure)
+          // Unclear - redirect to NLU-powered flow for classification
+          console.log("[NEW-PATIENT-INTENT] Unclear response, redirecting to NLU flow");
           const g = vr.gather({
             input: ["speech"],
-            timeout: 5,
+            timeout: 6,
             speechTimeout: "auto",
             actionOnEmptyResult: true,
-            action: abs(`/api/voice/handle?route=new-patient-intent&callSid=${encodeURIComponent(callSid)}`),
+            action: abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`),
             method: "POST",
-            hints: "book, appointment, new patient, change, question, hours, location"
+            hints: "book, appointment, question, ask, hours, cost, parking, location, cancel, change"
           });
-          // Only say "didn't catch" after an actual unclear response
-          saySafe(g, `I didn't catch that. You can say: book a new patient visit, change an appointment, or ask a question.`);
-          g.pause({ length: 1 });
-          vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
+          // Natural retry prompt
+          saySafe(g, `<speak>I didn't quite catch that. <break time="200ms"/> How can I help you today?</speak>`);
+          vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
           return res.type("text/xml").send(vr.toString());
         }
       }
