@@ -5114,6 +5114,22 @@ export function registerVoice(app: Express) {
           }
           break;
 
+        case 'identity_confirm':
+          await handler.handleIdentityConfirm(speechRaw, digits);
+          break;
+
+        case 'collect_name':
+          await handler.handleCollectName(speechRaw);
+          break;
+
+        case 'new_or_followup':
+          await handler.handleNewOrFollowup(speechRaw, digits);
+          break;
+
+        case 'day_time_preference':
+          await handler.handleDayTimePreference(speechRaw);
+          break;
+
         case 'chief_complaint':
           await handler.handleChiefComplaint(speechRaw);
           break;
@@ -5135,7 +5151,7 @@ export function registerVoice(app: Express) {
           break;
 
         case 'faq_followup':
-          await handler.handleFAQFollowup(speechRaw);
+          await handler.handleFAQFollowup(speechRaw, digits);
           break;
 
         case 'final_check':
