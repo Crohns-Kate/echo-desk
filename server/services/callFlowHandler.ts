@@ -597,13 +597,6 @@ export class CallFlowHandler {
       saySafe(gather, "Press 1 when you've completed the form. Or press 2 if you can't receive texts and I'll collect your details over the phone.");
       gather.pause({ length: 8 });
 
-      // If no keypress, check form status
-      this.vr.redirect({
-        method: 'POST'
-      });
-      // Play hold music during the gather
-      g.play('http://com.twilio.sounds.music.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3');
-
     } catch (err) {
       console.error('[handleSendFormLink] Error:', err);
       this.transitionTo(CallState.ERROR_RECOVERY);
@@ -733,11 +726,7 @@ export class CallFlowHandler {
       }
 
       // Continue checking
-      this.vr.redirect({
-        method: 'POST'
-      });
-      // Play hold music during the gather
-      g.play('http://com.twilio.sounds.music.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3');
+      this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
 
     } catch (err) {
       console.error('[handleCheckFormStatus] Error:', err);
