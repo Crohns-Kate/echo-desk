@@ -5011,7 +5011,7 @@ export function registerVoice(app: Express) {
           break;
 
         case 'check_form_status':
-          await handler.handleCheckFormStatus();
+          await handler.handleCheckFormStatus(speechRaw, digits);
           break;
 
         case 'form_keypress':
