@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { findPatientByPhoneRobust, createAppointmentForPatient, getAvailability } from './cliniko';
 import { sendNewPatientForm } from './sms';
 import { saySafe } from '../utils/voice-constants';
-import { AUST_TZ } from '../time';
+import { AUST_TZ, labelForSpeech } from '../time';
 import { parseNaturalDate, formatDateRange, extractTimePreference } from '../utils/date-parser';
 import { classifyIntent } from './intent';
 import type { TenantContext } from './tenantResolver';
@@ -52,6 +52,7 @@ export interface CallContext {
   }>;
   selectedSlotIndex?: number;
   retryCount: number;
+  slotSelectionRetries?: number; // Separate retry counter for slot selection step
   conversationId?: string;
 }
 
@@ -979,30 +980,53 @@ export class CallFlowHandler {
   }
 
   /**
-   * Format time for speech
+   * Format time for speech - uses proper TTS-friendly format
+   * Example: "3:45 pm today" or "9 am Friday 13th December"
    */
   private formatSpeakableTime(isoString: string): string {
     try {
-      const date = dayjs(isoString).tz(AUST_TZ);
-      const today = dayjs().tz(AUST_TZ).startOf('day');
+      const tz = this.getTimezone();
+      const date = dayjs(isoString).tz(tz);
+      const today = dayjs().tz(tz).startOf('day');
       const tomorrow = today.add(1, 'day');
 
+      // Format time part - "3:45 pm" or "9 am" (no minutes if on the hour)
+      const hour = date.hour();
+      const minute = date.minute();
+      const h12 = hour % 12 || 12;
+      const ampm = hour < 12 ? 'a m' : 'p m';
+      const timePart = minute === 0
+        ? `${h12} ${ampm}`
+        : `${h12}:${String(minute).padStart(2, '0')} ${ampm}`;
+
+      // Format day part - "today", "tomorrow", or "Friday 13th December"
       let dayPart: string;
       if (date.isSame(today, 'day')) {
         dayPart = 'today';
       } else if (date.isSame(tomorrow, 'day')) {
         dayPart = 'tomorrow';
       } else {
-        dayPart = date.format('dddd, MMMM Do');
+        // Use ordinal suffix: 1st, 2nd, 3rd, etc.
+        const dayNum = date.date();
+        const ordinal = this.getOrdinalSuffix(dayNum);
+        dayPart = `${date.format('dddd')} ${dayNum}${ordinal} ${date.format('MMMM')}`;
       }
-
-      const timePart = date.format('h:mma');
 
       return `${timePart} ${dayPart}`;
     } catch (err) {
       console.error('[formatSpeakableTime] Error:', err);
-      return isoString;
+      // Fallback to labelForSpeech from time.ts
+      return labelForSpeech(isoString, this.getTimezone());
     }
+  }
+
+  /**
+   * Get ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)
+   */
+  private getOrdinalSuffix(n: number): string {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return s[(v - 20) % 10] || s[v] || s[0];
   }
 
   /**
@@ -1011,8 +1035,14 @@ export class CallFlowHandler {
   async handlePresentOptions(): Promise<void> {
     if (!this.ctx.appointmentSlots || this.ctx.appointmentSlots.length === 0) {
       console.error('[handlePresentOptions] No appointment slots available');
+      // No slots - redirect to error recovery
+      saySafe(this.vr, "<speak>I'm sorry, I couldn't find any available appointments. Let me transfer you to reception.</speak>");
+      this.vr.hangup();
       return;
     }
+
+    // Reset retry count for this step
+    this.ctx.slotSelectionRetries = (this.ctx.slotSelectionRetries || 0);
 
     // Build SSML with natural pacing between options
     const optionsSSML = this.ctx.appointmentSlots
@@ -1035,6 +1065,9 @@ export class CallFlowHandler {
     const digitPrompt = numOptions === 1 ? 'press 1' : `press ${this.ctx.appointmentSlots.map((_, i) => i + 1).join(' or ')}`;
 
     saySafe(g, `<speak>I have ${numOptions} ${numOptions === 1 ? 'opening' : 'openings'} available. <break time="300ms"/> ${optionsSSML}. <break time="400ms"/> Which works best for you? You can say the number, or ${digitPrompt}.</speak>`);
+
+    // Fallback redirect if gather fails completely
+    this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=choose_slot`);
 
     await this.saveContext();
   }
@@ -1112,24 +1145,32 @@ export class CallFlowHandler {
    */
   async handleChooseSlot(speechRaw: string, digits: string): Promise<void> {
     console.log('[handleChooseSlot] Speech:', speechRaw, 'Digits:', digits);
+    console.log('[handleChooseSlot] Available slots:', this.ctx.appointmentSlots?.length || 0);
+    console.log('[handleChooseSlot] Slot selection retries:', this.ctx.slotSelectionRetries || 0);
 
     // Parse choice using flexible option detection
     const choiceIndex = this.parseOptionChoice(speechRaw, digits);
     console.log('[handleChooseSlot] Parsed choice index:', choiceIndex);
 
     if (choiceIndex >= 0 && this.ctx.appointmentSlots && choiceIndex < this.ctx.appointmentSlots.length) {
+      // Valid choice - reset retries and proceed
+      this.ctx.slotSelectionRetries = 0;
       this.ctx.selectedSlotIndex = choiceIndex;
       // Ask for confirmation before booking
       await this.askBookingConfirmation();
     } else {
-      // Invalid choice - retry with clearer guidance
-      this.ctx.retryCount++;
-      if (this.ctx.retryCount >= 2) {
+      // Invalid choice - use separate retry counter for this step
+      this.ctx.slotSelectionRetries = (this.ctx.slotSelectionRetries || 0) + 1;
+      console.log('[handleChooseSlot] Slot selection retry #', this.ctx.slotSelectionRetries);
+
+      if (this.ctx.slotSelectionRetries >= 3) {
+        // After 3 tries at slot selection, transfer to reception
         this.transitionTo(CallState.ERROR_RECOVERY);
         saySafe(this.vr, "<speak>No worries, <break time='200ms'/> let me transfer you to our reception team who can help.</speak>");
         this.vr.hangup();
       } else {
-        saySafe(this.vr, "<speak>I didn't quite catch that. <break time='200ms'/> Just say the number, like one, two, or three.</speak>");
+        // Give clearer guidance and re-present options
+        saySafe(this.vr, "<speak>I didn't quite catch that. <break time='200ms'/> Just say the number, like one, two, or three. Or press the number on your keypad.</speak>");
         await this.handlePresentOptions();
       }
     }
