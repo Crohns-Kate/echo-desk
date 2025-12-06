@@ -223,3 +223,58 @@ export async function sendEmailUpdateError(params: {
     console.error('[SMS] Failed to send email update error', e);
   }
 }
+
+/**
+ * Send an info link with FAQ details
+ * Used when caller asks questions and we want to provide written info
+ */
+export async function sendInfoLink(params: {
+  to: string;
+  clinicName: string;
+  topic: 'general' | 'prices' | 'location' | 'hours' | 'first_visit' | 'services';
+  customMessage?: string;
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/info/${params.topic}`;
+
+    let message = params.customMessage || `Here's more info from ${params.clinicName}: ${link}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent info link to', params.to, 'topic:', params.topic);
+  } catch (e) {
+    console.error('[SMS] Failed to send info link', e);
+  }
+}
+
+/**
+ * Send a message capture link for reception follow-up
+ * Used when we can't answer a question and need reception to follow up
+ */
+export async function sendMessageCaptureLink(params: {
+  to: string;
+  clinicName: string;
+  callSid: string;
+}): Promise<void> {
+  try {
+    const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+    const link = `${publicUrl}/leave-message?callSid=${encodeURIComponent(params.callSid)}`;
+
+    const message = `Thanks for calling ${params.clinicName}! Click here to leave your question and we'll get back to you: ${link}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent message capture link to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send message capture link', e);
+  }
+}
