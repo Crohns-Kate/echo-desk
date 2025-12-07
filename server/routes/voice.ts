@@ -5014,19 +5014,36 @@ export function registerVoice(app: Express) {
           await handler.handleCheckFormStatus(speechRaw, digits);
           break;
 
+        case 'form_response':
+          // Handle natural speech response during form wait (replaces old form_keypress)
+          await handler.handleFormResponse(speechRaw || '');
+          break;
+
         case 'form_keypress':
-          await handler.handleFormKeypress(digits || '');
+          // DEPRECATED: Redirect to new speech-based handler
+          await handler.handleFormResponse(speechRaw || '');
           break;
 
         case 'timeout_choice':
-          // Handle choice after form timeout
-          if (digits === '1') {
-            // User wants to give details verbally
+          // Handle choice after form timeout (natural speech, no DTMF)
+          const wantsVerbal = speechRaw?.toLowerCase().includes('yes') ||
+                              speechRaw?.toLowerCase().includes('sure') ||
+                              speechRaw?.toLowerCase().includes('okay') ||
+                              speechRaw?.toLowerCase().includes('phone') ||
+                              speechRaw?.toLowerCase().includes('verbal');
+
+          const wantsToHangUp = speechRaw?.toLowerCase().includes('no') ||
+                                speechRaw?.toLowerCase().includes('hang up') ||
+                                speechRaw?.toLowerCase().includes('try again') ||
+                                speechRaw?.toLowerCase().includes('later');
+
+          if (wantsVerbal || (!wantsToHangUp && !speechRaw)) {
+            // Default to verbal collection
             saySafe(vr, "No problem! I'll collect your details over the phone.");
             vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${callSid}&step=collect_verbal_details`);
           } else {
             // User wants to hang up
-            saySafe(vr, "No worries! Feel free to call back when you're ready, or complete the form in the text message. Goodbye!");
+            saySafe(vr, "No worries! Feel free to call back when you're ready. Goodbye!");
             vr.hangup();
           }
           break;

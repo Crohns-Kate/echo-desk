@@ -266,19 +266,18 @@ export class CallFlowHandler {
     }
 
     if (knownPatient) {
-      // Recognized caller - ask to confirm identity
+      // Recognized caller - ask to confirm identity (speech-only, no DTMF menu)
       const g = this.vr.gather({
-        input: ['speech', 'dtmf'],
+        input: ['speech'],
         timeout: 6,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
         hints: 'yes, no, that is me, someone else, not me, different person',
-        numDigits: 1,
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=identity_confirm`,
         method: 'POST'
       });
 
-      saySafe(g, `<speak>Hi, welcome to ${clinicName}. <break time="200ms"/> Am I speaking with ${knownPatient.first_name}, <break time="150ms"/> or someone else? <break time="100ms"/> Press 1 for yes, or 2 if you're someone else.</speak>`);
+      saySafe(g, `<speak>Hi, welcome to ${clinicName}. <break time="200ms"/> Am I speaking with ${knownPatient.first_name}, <break time="150ms"/> or someone else?</speak>`);
     } else {
       // Unknown caller - ask who they are
       const g = this.vr.gather({
@@ -297,13 +296,12 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle identity confirmation for known callers
+   * Handle identity confirmation for known callers (speech-only, no DTMF)
    */
   async handleIdentityConfirm(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
     const isConfirmed =
-      digits === '1' ||
       speech.includes('yes') ||
       speech.includes('yeah') ||
       speech.includes('yep') ||
@@ -313,7 +311,6 @@ export class CallFlowHandler {
       speech.includes('speaking');
 
     const isSomeoneElse =
-      digits === '2' ||
       speech.includes('no') ||
       speech.includes('someone else') ||
       speech.includes('not me') ||
@@ -430,38 +427,35 @@ export class CallFlowHandler {
   }
 
   /**
-   * Ask if new patient or follow-up
+   * Ask if new patient or follow-up (speech-only, no DTMF menu)
    */
   async askNewOrFollowup(): Promise<void> {
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 6,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
       hints: 'new patient, follow up, returning, first time, been before',
-      numDigits: 1,
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=new_or_followup`,
       method: 'POST'
     });
 
-    saySafe(g, "<speak>Great! <break time='150ms'/> Are you booking a new patient visit, or a follow-up? <break time='150ms'/> Press 1 for new patient, or 2 for follow-up.</speak>");
+    saySafe(g, "<speak>Great, I can help with that. <break time='150ms'/> Are you booking a new patient visit, or a follow-up?</speak>");
     await this.saveContext();
   }
 
   /**
-   * Handle new patient vs follow-up response
+   * Handle new patient vs follow-up response (speech-only, no DTMF)
    */
   async handleNewOrFollowup(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
     const isNewPatient =
-      digits === '1' ||
       speech.includes('new') ||
       speech.includes('first') ||
       speech.includes('never');
 
     const isFollowUp =
-      digits === '2' ||
       speech.includes('follow') ||
       speech.includes('return') ||
       speech.includes('been before') ||
@@ -531,19 +525,11 @@ export class CallFlowHandler {
       console.log('[handleDayTimePreference] Extracted time:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
     }
 
-    // Check if we need to collect details (new patient) or go straight to search
-    const isNewPatientBooking = this.ctx.isNewPatientBooking !== false;
-
-    if (isNewPatientBooking && !this.ctx.patientId) {
-      // New patient - need to collect details
-      this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
-      await this.handleNewPatientPhoneConfirm();
-    } else {
-      // Returning patient or have details - go straight to appointment search
-      saySafe(this.vr, "<speak>Let me find the best available times for you.</speak>");
-      this.transitionTo(CallState.APPOINTMENT_SEARCH);
-      await this.handleAppointmentSearch();
-    }
+    // CRITICAL FIX: Always check availability FIRST, before collecting form details
+    // This allows caller to see available times BEFORE filling out intake form
+    saySafe(this.vr, "<speak>Let me find the best available times for you.</speak>");
+    this.transitionTo(CallState.APPOINTMENT_SEARCH);
+    await this.handleAppointmentSearch();
 
     await this.saveContext();
   }
@@ -1024,15 +1010,17 @@ export class CallFlowHandler {
 
       this.transitionTo(CallState.WAITING_FOR_FORM);
 
-      // Use Gather to allow keypress while waiting
+      // Use natural speech confirmation (no DTMF menu)
       const gather = this.vr.gather({
-        input: ['dtmf'],
-        numDigits: 1,
+        input: ['speech'],
         timeout: 10,
-        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_keypress`,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        hints: 'done, filled it in, completed, all set, finished, cant receive texts, no text, cant get sms',
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_response`,
         method: 'POST'
       });
-      saySafe(gather, "Press 1 when you've completed the form. Or press 2 if you can't receive texts and I'll collect your details over the phone.");
+      saySafe(gather, "<speak>Just say 'done' or 'I filled it in' when you're ready. <break time='200ms'/> Or if you can't receive texts, just let me know and I'll collect your details over the phone.</speak>");
       gather.pause({ length: 8 });
 
       // If gather times out without input, redirect to check form status
@@ -1049,12 +1037,38 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle keypress during form wait
+   * Handle natural speech response during form wait (no DTMF)
    */
-  async handleFormKeypress(digits: string): Promise<void> {
-    console.log('[handleFormKeypress] Digit pressed:', digits);
+  async handleFormResponse(speechRaw: string): Promise<void> {
+    const speech = speechRaw.toLowerCase().trim();
+    console.log('[handleFormResponse] Speech:', speechRaw);
 
-    if (digits === '1') {
+    // Check if they're done with the form
+    const isDone =
+      speech.includes('done') ||
+      speech.includes('filled it in') ||
+      speech.includes('filled it out') ||
+      speech.includes('completed') ||
+      speech.includes('all set') ||
+      speech.includes('finished') ||
+      speech.includes('sent it') ||
+      speech.includes('submitted');
+
+    // Check if they can't receive texts
+    const cantReceive =
+      speech.includes('cant receive') ||
+      speech.includes("can't receive") ||
+      speech.includes('no text') ||
+      speech.includes('cant get') ||
+      speech.includes("can't get") ||
+      speech.includes('didnt get') ||
+      speech.includes("didn't get") ||
+      speech.includes('no sms') ||
+      speech.includes('collect over phone') ||
+      speech.includes('give details') ||
+      speech.includes('tell you');
+
+    if (isDone) {
       // User says they're done - check if form actually completed
       const call = await storage.getCallByCallSid(this.ctx.callSid);
       if (call?.conversationId) {
@@ -1071,12 +1085,12 @@ export class CallFlowHandler {
       }
 
       // Form not actually completed yet
-      saySafe(this.vr, "I don't see the form yet. Take your time - press 1 again when you're done.");
+      saySafe(this.vr, "<speak>I don't see the form yet. <break time='200ms'/> Take your time - just say 'done' when you're ready.</speak>");
       this.vr.redirect({
         method: 'POST'
       }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
 
-    } else if (digits === '2') {
+    } else if (cantReceive) {
       // User can't receive texts - collect verbally
       saySafe(this.vr, "No problem! I'll collect your details over the phone instead.");
       this.transitionTo(CallState.VERBAL_COLLECTION);
@@ -1085,8 +1099,8 @@ export class CallFlowHandler {
       }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_verbal_details`);
 
     } else {
-      // Invalid digit
-      saySafe(this.vr, "Press 1 when you've completed the form, or press 2 to give details over the phone.");
+      // Unclear - continue waiting
+      saySafe(this.vr, "<speak>Just say 'done' when you've filled it in, or let me know if you'd like to give details over the phone.</speak>");
       this.vr.redirect({
         method: 'POST'
       }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=check_form_status`);
@@ -1130,36 +1144,40 @@ export class CallFlowHandler {
       this.ctx.formWaitCount = (this.ctx.formWaitCount || 0) + 1;
 
       if (waitingTime > 90000) {
-        // 90 seconds timeout - offer alternatives
+        // 90 seconds timeout - offer alternatives (natural speech, no DTMF)
         this.transitionTo(CallState.ERROR_RECOVERY);
-        saySafe(this.vr, "I haven't received the form yet. No worries - would you like to give me your details over the phone instead? Press 1 for yes, or press 2 to hang up and try again later.");
 
         const gather = this.vr.gather({
-          input: ['dtmf'],
-          numDigits: 1,
+          input: ['speech'],
           timeout: 10,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          hints: 'yes, sure, okay, phone, verbal, no, hang up, try again',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=timeout_choice`,
           method: 'POST'
         });
-        gather.pause({ length: 8 });
+        saySafe(gather, "<speak>I haven't received the form yet. <break time='200ms'/> No worries - would you like to give me your details over the phone instead?</speak>");
 
         // Default to verbal if no response
+        saySafe(this.vr, "Okay, let me collect your details over the phone.");
         this.vr.redirect({
           method: 'POST'
         }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_verbal_details`);
         return;
       }
 
-      // Every 3rd check (about 30 seconds), remind them of options
+      // Every 3rd check (about 30 seconds), gentle reminder (no "still waiting" message)
       if (this.ctx.formWaitCount % 3 === 0) {
         const gather = this.vr.gather({
-          input: ['dtmf'],
-          numDigits: 1,
+          input: ['speech'],
           timeout: 8,
-          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_keypress`,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          hints: 'done, filled it in, completed, cant receive',
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_response`,
           method: 'POST'
         });
-        saySafe(gather, "Still waiting for the form. Press 1 when done, or press 2 to give details over the phone.");
+        saySafe(gather, "<speak>Just say 'done' when you're ready.</speak>");
         gather.pause({ length: 6 });
       } else {
         // Brief pause between checks
@@ -1611,34 +1629,30 @@ export class CallFlowHandler {
     const patientName = this.ctx.formData?.firstName || this.ctx.patientFirstName || '';
 
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 8,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      numDigits: 1,
-      hints: 'yes, no, correct, that is correct, yep, yeah, sure, nope, not right, wrong',
+      hints: 'yes, no, correct, that is correct, yep, yeah, sure, nope, not right, wrong, different',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=booking_confirmation`,
       method: 'POST'
     });
 
-    // Confirm the booking details with SSML pacing
-    const confirmMessage = patientName
-      ? `<speak>Perfect ${patientName}! <break time="200ms"/> Just to confirm, <break time="150ms"/> I'm booking you for ${slot.speakable}. <break time="300ms"/> Is that correct? Press 1 for yes, or 2 to pick a different time.</speak>`
-      : `<speak>Just to confirm, <break time="150ms"/> I'm booking you for ${slot.speakable}. <break time="300ms"/> Is that correct? Press 1 for yes, or 2 to pick a different time.</speak>`;
+    // Confirm the booking details (speech-only, no DTMF menu)
+    const confirmMessage = `<speak>Just to confirm, <break time="150ms"/> I'm booking you for ${slot.speakable}. <break time="300ms"/> Is that right?</speak>`;
 
     saySafe(g, confirmMessage);
     await this.saveContext();
   }
 
   /**
-   * Handle booking confirmation response
+   * Handle booking confirmation response (speech-only, no DTMF)
    */
   async handleBookingConfirmationResponse(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
 
     // Check for affirmative response
     const isYes =
-      digits === '1' ||
       speech.includes('yes') ||
       speech.includes('yeah') ||
       speech.includes('yep') ||
@@ -1654,7 +1668,6 @@ export class CallFlowHandler {
 
     // Check for negative response
     const isNo =
-      digits === '2' ||
       speech.includes('no') ||
       speech.includes('nope') ||
       speech.includes('wrong') ||
@@ -1667,9 +1680,20 @@ export class CallFlowHandler {
     console.log('[handleBookingConfirmationResponse] isYes:', isYes, 'isNo:', isNo);
 
     if (isYes) {
-      // Proceed with booking
-      this.transitionTo(CallState.CONFIRM_BOOKING);
-      await this.handleConfirmBooking();
+      // Check if we need to collect new patient details before creating booking
+      const isNewPatient = !this.ctx.patientId;
+      const needsDetails = isNewPatient && !this.ctx.formData;
+
+      if (needsDetails) {
+        // New patient without details - need to collect them AFTER confirming slot
+        console.log('[handleBookingConfirmationResponse] New patient needs details, transitioning to form collection');
+        this.transitionTo(CallState.NEW_PATIENT_PHONE_CONFIRM);
+        await this.handleNewPatientPhoneConfirm();
+      } else {
+        // Have all details needed - proceed with booking
+        this.transitionTo(CallState.CONFIRM_BOOKING);
+        await this.handleConfirmBooking();
+      }
     } else if (isNo) {
       // Go back to present options
       saySafe(this.vr, "<speak>No problem! <break time='200ms'/> Let me read those options again.</speak>");
@@ -1874,41 +1898,42 @@ export class CallFlowHandler {
         const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
         console.log('[handleFAQ] Found FAQ answer:', faq.question);
 
-        // Answer the question with SSML pacing
+        // Answer the question with universal loop question (per master prompt)
         const g = this.vr.gather({
-          input: ['speech', 'dtmf'],
+          input: ['speech'],
           timeout: 6,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          numDigits: 1,
-          hints: 'appointment, booking, book, yes, no, another question',
+          hints: 'appointment, booking, book, yes, no, another question, nothing else',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
           method: 'POST'
         });
 
-        // Natural pacing between answer and follow-up
-        saySafe(g, `<speak>${formattedAnswer} <break time="400ms"/> Would you like to book an appointment? <break time="200ms"/> Press 1 for yes, or ask me another question.</speak>`);
+        // Use universal loop question after answering FAQ
+        saySafe(g, `<speak>${formattedAnswer} <break time="400ms"/> Did that answer your question, or is there anything else I can help you with today?</speak>`);
 
         // Fallback - assume they're done
-        saySafe(this.vr, "<speak>Feel free to call back anytime. <break time='200ms'/> Bye!</speak>");
+        saySafe(this.vr, "<speak>Have a great day. Bye!</speak>");
         this.vr.hangup();
       } else {
-        // No FAQ found - offer to help differently
+        // No FAQ found - reception handover mode
         console.log('[handleFAQ] No FAQ match found for:', speechRaw);
+
+        // Use reception handover script (per master prompt)
         const g = this.vr.gather({
-          input: ['speech', 'dtmf'],
+          input: ['speech'],
           timeout: 6,
           speechTimeout: 'auto',
           actionOnEmptyResult: true,
-          numDigits: 1,
-          hints: 'book, appointment, different question, yes, no',
+          hints: 'yes, no, book, appointment, different question, nothing else',
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
           method: 'POST'
         });
-        saySafe(g, "<speak>I'm not sure about that one. <break time='200ms'/> Would you like to book an appointment and ask the team directly? <break time='200ms'/> Press 1 for yes, or try asking another way.</speak>");
+        saySafe(g, "<speak>That's a good question. <break time='200ms'/> I'm not able to answer that directly. <break time='300ms'/> If you like, I can pass your question and contact details to our reception team so they can follow up. <break time='300ms'/> Is there anything else I can help you with today?</speak>");
 
-        // Default fallback
-        this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`);
+        // Default - close call politely
+        saySafe(this.vr, "<speak>Have a great day. Bye!</speak>");
+        this.vr.hangup();
       }
 
       await this.saveContext();
@@ -1920,19 +1945,10 @@ export class CallFlowHandler {
   }
 
   /**
-   * Handle FAQ followup (after answering a question)
+   * Handle FAQ followup (after answering a question) - speech-only, no DTMF
    */
   async handleFAQFollowup(speechRaw: string, digits?: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
-
-    // DTMF 1 = yes, want to book
-    if (digits === '1') {
-      console.log('[handleFAQFollowup] User pressed 1, going to booking');
-      saySafe(this.vr, "<speak>Great! <break time='200ms'/> Let's get you booked in.</speak>");
-      await this.askNewOrFollowup();
-      await this.saveContext();
-      return;
-    }
 
     // Check if they want to book
     const bookingPhrases = [
