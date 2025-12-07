@@ -668,13 +668,24 @@ export class CallFlowHandler {
 
   /**
    * Handle FAQ by specific intent type
+   * Uses database FAQs first, falls back to hardcoded defaults
    */
   private async handleFAQByIntent(intent: IntentType, details: any): Promise<void> {
-    // Map intent to FAQ topic and answer
-    const faqResponses: Record<string, { answer: string; topic?: 'prices' | 'location' | 'hours' | 'first_visit' | 'services' | 'general' }> = {
+    // Map intent to FAQ category for database lookup
+    const intentToCategoryMap: Record<string, string> = {
+      'faq_prices': 'billing',
+      'faq_hours': 'hours',
+      'faq_location': 'location',
+      'faq_first_visit': 'first-visit',
+      'faq_services': 'services',
+      'faq_insurance': 'billing'
+    };
+
+    // Fallback answers if database has no FAQs
+    const DEFAULT_FAQ_FALLBACKS: Record<string, { answer: string; topic?: string }> = {
       'faq_prices': {
         answer: "For new patients, the first visit is typically around $80 and takes about 45 minutes. Follow-up visits are around $50 and take about 15 minutes. We accept Medicare's Chronic Disease Management referrals and most health funds.",
-        topic: 'prices'
+        topic: 'billing'
       },
       'faq_hours': {
         answer: "We're open Monday to Friday from 8am to 6pm, and Saturday mornings from 8am to 12pm. We're closed on Sundays and public holidays.",
@@ -686,7 +697,7 @@ export class CallFlowHandler {
       },
       'faq_first_visit': {
         answer: "On your first visit, we'll do a thorough consultation to understand your health history and concerns. This usually takes about 45 minutes. Please bring any relevant scans or medical records if you have them.",
-        topic: 'first_visit'
+        topic: 'first-visit'
       },
       'faq_services': {
         answer: "We offer a range of chiropractic services including spinal adjustments, soft tissue therapy, and rehabilitation exercises. We treat back pain, neck pain, headaches, and many other conditions.",
@@ -694,7 +705,7 @@ export class CallFlowHandler {
       },
       'faq_insurance': {
         answer: "We accept most major health funds and can process your claim on the spot with our HICAPS machine. We also accept Medicare referrals under the Chronic Disease Management program.",
-        topic: 'general'
+        topic: 'billing'
       },
       'ask_human': {
         answer: "No problem, I'll connect you with our reception team right away.",
@@ -702,7 +713,8 @@ export class CallFlowHandler {
       }
     };
 
-    const faqData = faqResponses[intent];
+    let faqAnswer: string | null = null;
+    let faqTopic: string | undefined = undefined;
 
     if (intent === 'ask_human') {
       console.log('[handleFAQByIntent] Caller wants to speak to human - transferring');
@@ -711,7 +723,37 @@ export class CallFlowHandler {
       return;
     }
 
-    if (!faqData) {
+    // Try to get answer from database first
+    const category = intentToCategoryMap[intent];
+    if (category) {
+      try {
+        const { storage } = await import('../storage');
+        const { formatFaqAnswerForSpeech } = await import('./faq');
+
+        // Get all FAQs for this category and tenant
+        const allFaqs = await storage.listFaqs(this.ctx.tenantId, true);
+        const categoryFaqs = allFaqs.filter(f => f.category === category);
+
+        if (categoryFaqs.length > 0) {
+          // Use the highest priority FAQ for this category (handle null priorities)
+          const faq = categoryFaqs.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0];
+          faqAnswer = formatFaqAnswerForSpeech(faq.answer);
+          faqTopic = faq.category;
+          console.log('[handleFAQByIntent] Using database FAQ:', faq.question);
+        }
+      } catch (err) {
+        console.warn('[handleFAQByIntent] Database FAQ lookup failed:', err);
+      }
+    }
+
+    // Fall back to hardcoded answer if database had nothing
+    if (!faqAnswer && DEFAULT_FAQ_FALLBACKS[intent]) {
+      faqAnswer = DEFAULT_FAQ_FALLBACKS[intent].answer;
+      faqTopic = DEFAULT_FAQ_FALLBACKS[intent].topic;
+      console.log('[handleFAQByIntent] Using fallback FAQ for intent:', intent);
+    }
+
+    if (!faqAnswer) {
       // Unknown FAQ type - offer to help differently
       console.log('[handleFAQByIntent] Unknown FAQ intent:', intent);
       const g = this.vr.gather({
@@ -740,10 +782,10 @@ export class CallFlowHandler {
     });
 
     // Build response with optional SMS offer
-    let response = `<speak>${faqData.answer} <break time="400ms"/> `;
+    let response = `<speak>${faqAnswer} <break time="400ms"/> `;
 
     // Offer SMS link for certain topics
-    if (faqData.topic && ['prices', 'location', 'hours', 'first_visit'].includes(faqData.topic)) {
+    if (faqTopic && ['billing', 'location', 'hours', 'first-visit'].includes(faqTopic)) {
       response += `If you'd like, I can text you a link with all these details. <break time="300ms"/> `;
     }
 
@@ -752,7 +794,7 @@ export class CallFlowHandler {
     saySafe(g, response);
 
     // Store the FAQ topic in case they want an SMS
-    (this.ctx as any).lastFAQTopic = faqData.topic;
+    (this.ctx as any).lastFAQTopic = faqTopic;
 
     // Fallback redirect
     this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`);
@@ -953,26 +995,27 @@ export class CallFlowHandler {
     const lastThree = this.ctx.callerPhone.slice(-3);
 
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 5,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'yes, no',
-      numDigits: 1,
+      hints: 'yes, yeah, yep, sure, no, nope, different number',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=phone_confirm`,
       method: 'POST'
     });
 
-    saySafe(g, `Is the number ending in ${lastThree} the best one to text you at? Press 1 for yes, 2 for no.`);
+    saySafe(g, `<speak>Is the number ending in ${lastThree} the best one to text you at?</speak>`);
     await this.saveContext();
   }
 
   /**
-   * Handle phone confirmation response
+   * Handle phone confirmation response (speech-only, no DTMF)
    */
   async handlePhoneConfirm(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
-    const confirmed = digits === '1' || speech.includes('yes');
+    const confirmed = speech.includes('yes') || speech.includes('yeah') ||
+                     speech.includes('yep') || speech.includes('sure') ||
+                     speech.includes('correct') || speech.includes('right');
 
     if (confirmed) {
       this.transitionTo(CallState.SEND_FORM_LINK);
@@ -1027,7 +1070,7 @@ export class CallFlowHandler {
         timeout: 10,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
-        hints: 'done, filled it in, completed, all set, finished, cant receive texts, no text, cant get sms',
+        hints: 'done, all done, filled it in, completed, all set, finished, ready, good to go, cant receive texts, no text, cant get sms, collect over phone',
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=form_response`,
         method: 'POST'
       });
@@ -1063,7 +1106,15 @@ export class CallFlowHandler {
       speech.includes('all set') ||
       speech.includes('finished') ||
       speech.includes('sent it') ||
-      speech.includes('submitted');
+      speech.includes('submitted') ||
+      speech.includes('ready') ||
+      speech.includes('good to go') ||
+      speech.includes("i'm ready") ||
+      speech.includes("that's it") ||
+      speech.includes('yep done') ||
+      speech.includes('yeah done') ||
+      speech.includes('okay done') ||
+      speech.includes('all done');
 
     // Check if they can't receive texts
     const cantReceive =
@@ -1239,39 +1290,59 @@ export class CallFlowHandler {
   async handleChiefComplaint(speechRaw: string): Promise<void> {
     this.ctx.complaint = speechRaw.toLowerCase().trim();
 
-    // Extract preferred day/time from the complaint using NLU classification
-    try {
-      const intentResult = await classifyIntentNLU(this.ctx.complaint);
-      if (intentResult.details.preferredDay) {
-        this.ctx.preferredDay = intentResult.details.preferredDay;
-        console.log('[handleChiefComplaint] Extracted preferred day:', intentResult.details.preferredDay);
+    // CRITICAL FIX: Check if we already have a confirmed slot from BEFORE form collection
+    // If yes, skip appointment search and create booking directly
+    const hasConfirmedSlot = this.ctx.selectedSlotIndex !== undefined &&
+                            this.ctx.appointmentSlots &&
+                            this.ctx.appointmentSlots.length > 0;
+
+    if (hasConfirmedSlot) {
+      // We already searched and confirmed a slot - go straight to booking
+      console.log('[handleChiefComplaint] Slot already confirmed, creating booking directly');
+      console.log('[handleChiefComplaint] Selected slot:', this.ctx.selectedSlotIndex);
+      console.log('[handleChiefComplaint] Complaint:', this.ctx.complaint);
+
+      this.transitionTo(CallState.CONFIRM_BOOKING);
+      await this.handleConfirmBooking();
+    } else {
+      // No slot selected yet (shouldn't happen in new flow, but handle gracefully)
+      console.log('[handleChiefComplaint] No confirmed slot, searching for appointments');
+
+      // Extract preferred day/time from the complaint using NLU classification
+      try {
+        const intentResult = await classifyIntentNLU(this.ctx.complaint);
+        if (intentResult.details.preferredDay) {
+          this.ctx.preferredDay = intentResult.details.preferredDay;
+          console.log('[handleChiefComplaint] Extracted preferred day:', intentResult.details.preferredDay);
+        }
+        if (intentResult.details.preferredTime) {
+          // Parse the time string into hour/minute object
+          const parsedTime = extractTimePreference(intentResult.details.preferredTime);
+          if (parsedTime) {
+            this.ctx.preferredTime = parsedTime;
+            console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+          }
+        }
+      } catch (err) {
+        console.warn('[handleChiefComplaint] Failed to classify intent:', err);
+        // Continue without preferred day/time
       }
-      if (intentResult.details.preferredTime) {
-        // Parse the time string into hour/minute object
-        const parsedTime = extractTimePreference(intentResult.details.preferredTime);
-        if (parsedTime) {
-          this.ctx.preferredTime = parsedTime;
-          console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+
+      // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
+      if (!this.ctx.preferredTime) {
+        const timePreference = extractTimePreference(speechRaw);
+        if (timePreference) {
+          this.ctx.preferredTime = timePreference;
+          console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
         }
       }
-    } catch (err) {
-      console.warn('[handleChiefComplaint] Failed to classify intent:', err);
-      // Continue without preferred day/time
+
+      saySafe(this.vr, `Let me find the next available appointment.`);
+
+      this.transitionTo(CallState.APPOINTMENT_SEARCH);
+      await this.handleAppointmentSearch();
     }
 
-    // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
-    if (!this.ctx.preferredTime) {
-      const timePreference = extractTimePreference(speechRaw);
-      if (timePreference) {
-        this.ctx.preferredTime = timePreference;
-        console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
-      }
-    }
-
-    saySafe(this.vr, `Let me find the next available appointment.`);
-
-    this.transitionTo(CallState.APPOINTMENT_SEARCH);
-    await this.handleAppointmentSearch();
     await this.saveContext();
   }
 
