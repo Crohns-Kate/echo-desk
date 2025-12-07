@@ -735,8 +735,8 @@ export class CallFlowHandler {
         const categoryFaqs = allFaqs.filter(f => f.category === category);
 
         if (categoryFaqs.length > 0) {
-          // Use the highest priority FAQ for this category
-          const faq = categoryFaqs.sort((a, b) => b.priority - a.priority)[0];
+          // Use the highest priority FAQ for this category (handle null priorities)
+          const faq = categoryFaqs.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0];
           faqAnswer = formatFaqAnswerForSpeech(faq.answer);
           faqTopic = faq.category;
           console.log('[handleFAQByIntent] Using database FAQ:', faq.question);
