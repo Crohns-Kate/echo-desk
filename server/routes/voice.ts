@@ -768,59 +768,10 @@ export function registerVoice(app: Express) {
       clinicName = tenantCtx.clinicName;
     }
 
-    if (knownPatientName) {
-      // Known patient found - store in context and ask if they are that patient or new
-      const firstName = extractFirstName(knownPatientName);
-
-      // Store existing patient info in context
-      try {
-        const call = await storage.getCallByCallSid(callSid);
-        if (call?.conversationId) {
-          await storage.updateConversation(call.conversationId, {
-            context: {
-              existingPatientId: knownPatientId,
-              existingPatientName: knownPatientName
-            }
-          });
-          console.log("[VOICE] Stored existing patient in context:", { existingPatientId: knownPatientId, existingPatientName: knownPatientName });
-        }
-      } catch (err) {
-        console.error("[VOICE] Error storing existing patient context:", err);
-      }
-
-      const handleUrl = abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownPatientName)}`);
-      const timeoutUrl = abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`);
-
-      const g = vr.gather({
-        input: ["speech"],
-        timeout: 8,
-        speechTimeout: "auto",
-        speechModel: "experimental_conversations",
-        enhanced: true,
-        actionOnEmptyResult: true,
-        action: handleUrl,
-        method: "POST",
-        hints: `${firstName}, yes, yeah, yep, new patient, new, first time, first visit, I'm ${firstName}`
-      });
-
-      // Ask if they are the existing patient using caller-ID recognition
-      // New cleaner approach: Just confirm their name, don't ask "or new patient" yet
-      let greetingMessage: string;
-      if (tenantCtx?.greeting && tenantCtx.greeting !== "Thanks for calling") {
-        // Use tenant's custom greeting followed by name confirmation
-        greetingMessage = `${tenantCtx.greeting} I think I recognise this number. Are you ${firstName}?`;
-      } else {
-        // Use clean greeting with name confirmation only
-        greetingMessage = `Thanks for calling ${clinicName}. I think I recognise this number. Are you ${firstName}?`;
-      }
-      saySafeSSML(g, greetingMessage);
-      g.pause({ length: 1 });
-      vr.redirect({ method: "POST" }, timeoutUrl);
-    } else {
-      // Unknown number - use NEW FSM handler
-      console.log("[VOICE][INCOMING] Using new FSM-based call flow");
-      vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=greeting`));
-    }
+    // ALWAYS use new FSM-based call flow for ALL callers (both known and unknown)
+    // This ensures consistent behavior per master prompt (claude.md)
+    console.log("[VOICE][INCOMING] Using new FSM-based call flow");
+    vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=greeting`));
 
     return res.type("text/xml").send(vr.toString());
   });
