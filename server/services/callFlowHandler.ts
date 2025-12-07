@@ -953,26 +953,27 @@ export class CallFlowHandler {
     const lastThree = this.ctx.callerPhone.slice(-3);
 
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 5,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      hints: 'yes, no',
-      numDigits: 1,
+      hints: 'yes, yeah, yep, sure, no, nope, different number',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=phone_confirm`,
       method: 'POST'
     });
 
-    saySafe(g, `Is the number ending in ${lastThree} the best one to text you at? Press 1 for yes, 2 for no.`);
+    saySafe(g, `<speak>Is the number ending in ${lastThree} the best one to text you at?</speak>`);
     await this.saveContext();
   }
 
   /**
-   * Handle phone confirmation response
+   * Handle phone confirmation response (speech-only, no DTMF)
    */
   async handlePhoneConfirm(speechRaw: string, digits: string): Promise<void> {
     const speech = speechRaw.toLowerCase().trim();
-    const confirmed = digits === '1' || speech.includes('yes');
+    const confirmed = speech.includes('yes') || speech.includes('yeah') ||
+                     speech.includes('yep') || speech.includes('sure') ||
+                     speech.includes('correct') || speech.includes('right');
 
     if (confirmed) {
       this.transitionTo(CallState.SEND_FORM_LINK);
@@ -1239,39 +1240,59 @@ export class CallFlowHandler {
   async handleChiefComplaint(speechRaw: string): Promise<void> {
     this.ctx.complaint = speechRaw.toLowerCase().trim();
 
-    // Extract preferred day/time from the complaint using NLU classification
-    try {
-      const intentResult = await classifyIntentNLU(this.ctx.complaint);
-      if (intentResult.details.preferredDay) {
-        this.ctx.preferredDay = intentResult.details.preferredDay;
-        console.log('[handleChiefComplaint] Extracted preferred day:', intentResult.details.preferredDay);
+    // CRITICAL FIX: Check if we already have a confirmed slot from BEFORE form collection
+    // If yes, skip appointment search and create booking directly
+    const hasConfirmedSlot = this.ctx.selectedSlotIndex !== undefined &&
+                            this.ctx.appointmentSlots &&
+                            this.ctx.appointmentSlots.length > 0;
+
+    if (hasConfirmedSlot) {
+      // We already searched and confirmed a slot - go straight to booking
+      console.log('[handleChiefComplaint] Slot already confirmed, creating booking directly');
+      console.log('[handleChiefComplaint] Selected slot:', this.ctx.selectedSlotIndex);
+      console.log('[handleChiefComplaint] Complaint:', this.ctx.complaint);
+
+      this.transitionTo(CallState.CONFIRM_BOOKING);
+      await this.handleConfirmBooking();
+    } else {
+      // No slot selected yet (shouldn't happen in new flow, but handle gracefully)
+      console.log('[handleChiefComplaint] No confirmed slot, searching for appointments');
+
+      // Extract preferred day/time from the complaint using NLU classification
+      try {
+        const intentResult = await classifyIntentNLU(this.ctx.complaint);
+        if (intentResult.details.preferredDay) {
+          this.ctx.preferredDay = intentResult.details.preferredDay;
+          console.log('[handleChiefComplaint] Extracted preferred day:', intentResult.details.preferredDay);
+        }
+        if (intentResult.details.preferredTime) {
+          // Parse the time string into hour/minute object
+          const parsedTime = extractTimePreference(intentResult.details.preferredTime);
+          if (parsedTime) {
+            this.ctx.preferredTime = parsedTime;
+            console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+          }
+        }
+      } catch (err) {
+        console.warn('[handleChiefComplaint] Failed to classify intent:', err);
+        // Continue without preferred day/time
       }
-      if (intentResult.details.preferredTime) {
-        // Parse the time string into hour/minute object
-        const parsedTime = extractTimePreference(intentResult.details.preferredTime);
-        if (parsedTime) {
-          this.ctx.preferredTime = parsedTime;
-          console.log('[handleChiefComplaint] Extracted preferred time from intent:', `${parsedTime.hour}:${String(parsedTime.minute).padStart(2, '0')}`);
+
+      // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
+      if (!this.ctx.preferredTime) {
+        const timePreference = extractTimePreference(speechRaw);
+        if (timePreference) {
+          this.ctx.preferredTime = timePreference;
+          console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
         }
       }
-    } catch (err) {
-      console.warn('[handleChiefComplaint] Failed to classify intent:', err);
-      // Continue without preferred day/time
+
+      saySafe(this.vr, `Let me find the next available appointment.`);
+
+      this.transitionTo(CallState.APPOINTMENT_SEARCH);
+      await this.handleAppointmentSearch();
     }
 
-    // Extract specific time preference (e.g., "2pm", "2:00pm") from raw speech if not already set
-    if (!this.ctx.preferredTime) {
-      const timePreference = extractTimePreference(speechRaw);
-      if (timePreference) {
-        this.ctx.preferredTime = timePreference;
-        console.log('[handleChiefComplaint] Extracted preferred time from speech:', `${timePreference.hour}:${String(timePreference.minute).padStart(2, '0')}`);
-      }
-    }
-
-    saySafe(this.vr, `Let me find the next available appointment.`);
-
-    this.transitionTo(CallState.APPOINTMENT_SEARCH);
-    await this.handleAppointmentSearch();
     await this.saveContext();
   }
 
