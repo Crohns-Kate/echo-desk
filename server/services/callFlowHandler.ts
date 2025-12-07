@@ -340,9 +340,20 @@ export class CallFlowHandler {
 
       saySafe(g, "<speak>No problem! <break time='200ms'/> Who am I speaking with today?</speak>");
     } else {
-      // Unclear - assume confirmed and proceed
-      this.transitionTo(CallState.PATIENT_TYPE_DETECT);
-      await this.askHowCanIHelp();
+      // Unclear - ask again with clearer yes/no prompt (don't assume confirmed)
+      const firstName = this.ctx.patientFirstName || 'there';
+
+      const g = this.vr.gather({
+        input: ['speech'],
+        timeout: 6,
+        speechTimeout: 'auto',
+        actionOnEmptyResult: true,
+        hints: 'yes, yeah, yep, no, someone else, not me, different person',
+        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=identity_confirm`,
+        method: 'POST'
+      });
+
+      saySafe(g, `<speak>Sorry, I didn't catch that. <break time='200ms'/> Are you ${firstName}? <break time='200ms'/> You can say yes or no.</speak>`);
     }
 
     await this.saveContext();
