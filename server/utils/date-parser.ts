@@ -25,11 +25,13 @@ export interface DateRange {
  *
  * @param dayExpression - Natural language day (e.g., "saturday", "today", "tomorrow")
  * @param timezone - Timezone for date calculation (default: Australia/Brisbane)
+ * @param preferredTime - Optional specific time preference to validate against current time
  * @returns Date range covering the requested day
  */
 export function parseNaturalDate(
   dayExpression: string | undefined,
-  timezone: string = AUST_TZ
+  timezone: string = AUST_TZ,
+  preferredTime?: { hour: number; minute: number }
 ): DateRange {
   const now = dayjs().tz(timezone);
   const today = now.startOf('day');
@@ -45,8 +47,24 @@ export function parseNaturalDate(
 
   const expr = dayExpression.toLowerCase().trim();
 
-  // Handle "today"
+  // Handle "today" - with special logic for past times
   if (expr === 'today') {
+    // Check if the preferred time is in the past
+    if (preferredTime) {
+      const requestedTime = today.hour(preferredTime.hour).minute(preferredTime.minute);
+
+      if (requestedTime.isBefore(now)) {
+        // The requested time is in the past - switch to tomorrow
+        console.log(`[DateParser] Requested time ${preferredTime.hour}:${String(preferredTime.minute).padStart(2, '0')} is in the past, switching from "today" to "tomorrow"`);
+        const tomorrow = today.add(1, 'day');
+        return {
+          from: tomorrow.startOf('day'),
+          to: tomorrow.endOf('day'),
+          description: 'tomorrow (requested time was in the past)'
+        };
+      }
+    }
+
     return {
       from: now, // Start from current time
       to: today.endOf('day'),
