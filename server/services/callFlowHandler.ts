@@ -1631,11 +1631,10 @@ export class CallFlowHandler {
       method: 'POST'
     });
 
-    // Natural pacing with SSML breaks
+    // Natural pacing with SSML breaks (speech-only, no DTMF prompts)
     const numOptions = this.ctx.appointmentSlots.length;
-    const digitPrompt = numOptions === 1 ? 'press 1' : `press ${this.ctx.appointmentSlots.map((_, i) => i + 1).join(' or ')}`;
 
-    saySafe(g, `<speak>I have ${numOptions} ${numOptions === 1 ? 'opening' : 'openings'} available. <break time="300ms"/> ${optionsSSML}. <break time="400ms"/> Which works best for you? You can say the number, or ${digitPrompt}.</speak>`);
+    saySafe(g, `<speak>I have ${numOptions} ${numOptions === 1 ? 'opening' : 'openings'} available. <break time="300ms"/> ${optionsSSML}. <break time="400ms"/> Which works best for you? You can say the number or say 'option one', 'option two', or 'option three'.</speak>`);
 
     // Fallback redirect if gather fails completely
     this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=choose_slot`);
@@ -2016,7 +2015,13 @@ export class CallFlowHandler {
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`,
           method: 'POST'
         });
-        saySafe(g, "<speak>Of course! <break time='200ms'/> What would you like to know?</speak>");
+        // Vary the prompt (natural variation)
+        const prompts = [
+          "Sure! <break time='200ms'/> What would you like to know?",
+          "Of course! <break time='200ms'/> What can I help you with?",
+          "Absolutely! <break time='200ms'/> What's your question?"
+        ];
+        saySafe(g, `<speak>${prompts[Math.floor(Math.random() * prompts.length)]}</speak>`);
 
         // Fallback redirect
         this.vr.redirect({ method: 'POST' }, `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq`);
@@ -2025,7 +2030,7 @@ export class CallFlowHandler {
 
       // Use NLU intent classification (same as main flow) for consistent FAQ handling
       console.log('[handleFAQ] Classifying intent for:', speechRaw);
-      const intentResult = await classifyIntentNLU(speechRaw, undefined);
+      const intentResult = await classifyIntentNLU(speechRaw);
       console.log('[handleFAQ] Classified as:', intentResult.intent);
 
       // Check if it's an FAQ intent
@@ -2046,7 +2051,13 @@ export class CallFlowHandler {
           action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
           method: 'POST'
         });
-        saySafe(g, "<speak>That's a good question. <break time='200ms'/> I'm not able to answer that directly. <break time='300ms'/> If you like, I can pass your question and contact details to our reception team so they can follow up. <break time='300ms'/> Is there anything else I can help you with today?</speak>");
+        // Use varied language for out-of-scope questions
+        const fallbackVariations = [
+          "That's something the chiropractor will need to assess during your visit. Would you like to book an appointment?",
+          "That's a bit outside what I can answer over the phone. Would you like to book a time so we can address that properly?",
+          "That's a great question for the practitioner. Would you like to schedule a consultation?"
+        ];
+        saySafe(g, `<speak>${fallbackVariations[Math.floor(Math.random() * fallbackVariations.length)]}</speak>`);
 
         // Default - close call politely
         saySafe(this.vr, "<speak>Have a great day. Bye!</speak>");
@@ -2086,11 +2097,21 @@ export class CallFlowHandler {
                       speech.includes('hours') || speech.includes('parking') ||
                       speech.includes('insurance') || speech.includes('technique');
 
-    // Check if they're done
-    const isDone = speech.includes('no') || speech.includes('nothing') ||
-                   speech.includes("that's all") || speech.includes("that's it") ||
-                   speech.includes('no thanks') || speech.includes("i'm good") ||
-                   speech.includes('bye') || speech.includes('goodbye');
+    // Check if they're done (improved detection)
+    const isDone =
+      speech === 'no' ||
+      speech === 'nope' ||
+      speech.includes('no thanks') ||
+      speech.includes("no, that's") ||
+      speech.includes("that's all") ||
+      speech.includes("that's it") ||
+      speech.includes('nothing else') ||
+      speech.includes('nothing') ||
+      speech.includes("i'm good") ||
+      speech.includes("i'm done") ||
+      speech.includes('all good') ||
+      speech.includes('bye') ||
+      speech.includes('goodbye');
 
     if (isDone) {
       // They're done
