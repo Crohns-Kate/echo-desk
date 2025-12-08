@@ -1017,7 +1017,7 @@ export class CallFlowHandler {
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=disambiguate_patient`,
         method: 'POST'
       });
-      saySafe(g, `Sorry, I didn't catch that. Are you ${names}? Or press 3 if you're someone new.`);
+      saySafe(g, `Sorry, I didn't catch that. Are you ${names}? Or say 'new' if you're someone new.`);
     }
 
     await this.saveContext();
@@ -1081,7 +1081,7 @@ export class CallFlowHandler {
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=alternate_phone`,
         method: 'POST'
       });
-      saySafe(g, "Please enter the 10-digit mobile number we should text, followed by pound.");
+      saySafe(g, "Please enter the 10-digit mobile number we should text.");
     }
 
     await this.saveContext();
@@ -1740,7 +1740,7 @@ export class CallFlowHandler {
         this.vr.hangup();
       } else {
         // Give clearer guidance and re-present options
-        saySafe(this.vr, "<speak>I didn't quite catch that. <break time='200ms'/> Just say the number, like one, two, or three. Or press the number on your keypad.</speak>");
+        saySafe(this.vr, "<speak>I didn't quite catch that. <break time='200ms'/> Just say the number, like one, two, or three.</speak>");
         await this.handlePresentOptions();
       }
     }
