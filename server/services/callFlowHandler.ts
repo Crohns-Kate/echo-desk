@@ -732,11 +732,11 @@ export class CallFlowHandler {
         topic: 'location'
       },
       'faq_first_visit': {
-        answer: "On your first visit, we'll do a thorough consultation to understand your health history and concerns. This usually takes about 45 minutes. Please bring any relevant scans or medical records if you have them.",
+        answer: "The first visit usually takes about 45 minutes, so we can go through your history and do a careful assessment. Follow-up visits are usually around 15 minutes.",
         topic: 'first-visit'
       },
       'faq_services': {
-        answer: "We offer a range of chiropractic services including spinal adjustments, soft tissue therapy, and rehabilitation exercises. We use gentle, evidence-based techniques suitable for all ages. We treat back pain, neck pain, headaches, and many other conditions. Most treatments are gentle and well-tolerated.",
+        answer: "That's a great question. We use a range of gentle chiropractic techniques, and the chiropractor will choose what suits you best after your assessment. Everything is explained first, and we always work within your comfort level. If you'd like more detail, they can go through it with you at your first visit. We treat kids, teens, adults, and older patients, and most people find treatment very comfortable.",
         topic: 'services'
       },
       'faq_insurance': {
@@ -790,42 +790,57 @@ export class CallFlowHandler {
     }
 
     if (!faqAnswer) {
-      // Unknown FAQ type - offer to help differently
+      // Unknown FAQ type - offer booking or reception (vary language to avoid repetition)
       console.log('[handleFAQByIntent] Unknown FAQ intent:', intent);
+
+      // Vary the fallback language (choose randomly for natural variation)
+      const fallbackVariations = [
+        "That's something the chiropractor will need to assess during your visit. Would you like to book an appointment?",
+        "That's a bit outside what I can answer over the phone. Would you like to book a time so we can address that properly?",
+        "That's a great question for the practitioner. Would you like to schedule a consultation?"
+      ];
+      const fallback = fallbackVariations[Math.floor(Math.random() * fallbackVariations.length)];
+
       const g = this.vr.gather({
-        input: ['speech', 'dtmf'],
+        input: ['speech'],
         timeout: 6,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
-        numDigits: 1,
+        hints: 'yes, book, appointment, no thanks, another question',
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
         method: 'POST'
       });
-      saySafe(g, "<speak>That's a great question. I'm not able to answer that directly. <break time='200ms'/> Would you like me to pass your question to our reception team? <break time='200ms'/> Press 1 for yes, or ask me something else.</speak>");
+      saySafe(g, `<speak>${fallback}</speak>`);
       return;
     }
 
     // Answer the question with natural pacing
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 8,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      numDigits: 1,
       hints: 'yes, no, book, appointment, another question, that helps, thanks',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
       method: 'POST'
     });
 
-    // Build response with optional SMS offer
+    // Build response with natural variation
     let response = `<speak>${faqAnswer} <break time="400ms"/> `;
 
     // Offer SMS link for certain topics
     if (faqTopic && ['billing', 'location', 'hours', 'first-visit'].includes(faqTopic)) {
-      response += `If you'd like, I can text you a link with all these details. <break time="300ms"/> `;
+      response += `If you'd like, I can text you those details. <break time="300ms"/> `;
     }
 
-    response += `Did that answer your question, <break time="200ms"/> or is there anything else I can help you with? <break time="200ms"/> Press 1 to book an appointment.</speak>`;
+    // Vary the closing question (choose randomly for natural variation)
+    const closingVariations = [
+      "Did that answer your question, or is there anything else I can help you with?",
+      "Does that help? What else can I help you with today?",
+      "Did that answer it? Is there anything else you'd like to know?",
+      "I hope that helps. Do you have any other questions?"
+    ];
+    response += closingVariations[Math.floor(Math.random() * closingVariations.length)] + "</speak>";
 
     saySafe(g, response);
 
