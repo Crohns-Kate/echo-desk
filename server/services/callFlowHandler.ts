@@ -1402,8 +1402,8 @@ export class CallFlowHandler {
    */
   async handleAppointmentSearch(): Promise<void> {
     try {
-      // Parse the preferred day into a date range
-      const dateRange = parseNaturalDate(this.ctx.preferredDay, AUST_TZ);
+      // Parse the preferred day into a date range, passing preferredTime to handle past times
+      const dateRange = parseNaturalDate(this.ctx.preferredDay, AUST_TZ, this.ctx.preferredTime);
 
       console.log('[handleAppointmentSearch] Searching for appointments:');
       console.log('[handleAppointmentSearch]   - Preferred day:', this.ctx.preferredDay || 'none specified');

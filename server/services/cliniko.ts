@@ -319,14 +319,19 @@ export async function getAvailability(opts?: {
 
         // Continue with fallback type instead of throwing error
         // IMPORTANT: Cliniko API expects date-only format (YYYY-MM-DD), not full ISO timestamps
+        // We must convert from UTC ISO timestamps to timezone-aware dates before extracting the date part
         const fromDate = opts?.fromISO
-          ? opts.fromISO.includes('T') ? opts.fromISO.split('T')[0] : opts.fromISO
-          : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+          ? opts.fromISO.includes('T')
+            ? dayjs(opts.fromISO).tz(tz).format('YYYY-MM-DD')  // Convert to timezone, then extract date
+            : opts.fromISO
+          : dayjs().tz(tz).add(1, 'day').format('YYYY-MM-DD');
         const toDate = opts?.toISO
-          ? opts.toISO.includes('T') ? opts.toISO.split('T')[0] : opts.toISO
+          ? opts.toISO.includes('T')
+            ? dayjs(opts.toISO).tz(tz).format('YYYY-MM-DD')  // Convert to timezone, then extract date
+            : opts.toISO
           : fromDate;
 
-        console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'} with fallback type`);
+        console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'} with fallback type (timezone: ${tz})`);
 
         const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
           `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${fallbackType.id}/available_times?from=${fromDate}&to=${toDate}&per_page=50`,
@@ -390,14 +395,19 @@ export async function getAvailability(opts?: {
 
     // Use provided date range or default to tomorrow
     // IMPORTANT: Cliniko API expects date-only format (YYYY-MM-DD), not full ISO timestamps
+    // We must convert from UTC ISO timestamps to timezone-aware dates before extracting the date part
     const fromDate = opts?.fromISO
-      ? opts.fromISO.includes('T') ? opts.fromISO.split('T')[0] : opts.fromISO
-      : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+      ? opts.fromISO.includes('T')
+        ? dayjs(opts.fromISO).tz(tz).format('YYYY-MM-DD')  // Convert to timezone, then extract date
+        : opts.fromISO
+      : dayjs().tz(tz).add(1, 'day').format('YYYY-MM-DD');
     const toDate = opts?.toISO
-      ? opts.toISO.includes('T') ? opts.toISO.split('T')[0] : opts.toISO
+      ? opts.toISO.includes('T')
+        ? dayjs(opts.toISO).tz(tz).format('YYYY-MM-DD')  // Convert to timezone, then extract date
+        : opts.toISO
       : fromDate;  // Same day query by default
 
-    console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'}`);
+    console.log(`[Cliniko] Fetching availability from=${fromDate} to=${toDate} part=${opts?.part || 'any'} (timezone: ${tz})`);
 
     const data = await clinikoGet<{ available_times: ClinikoAvailableTime[] }>(
       `/businesses/${businessId}/practitioners/${practitionerId}/appointment_types/${appointmentTypeId}/available_times?from=${fromDate}&to=${toDate}&per_page=50`,
