@@ -58,12 +58,12 @@ INTENT TYPES (choose exactly one):
 - booking_new_patient: First-time patient wants to book
 - change_appointment: Wants to reschedule an existing appointment
 - cancel_appointment: Wants to cancel an existing appointment
-- faq_prices: Asking about costs, fees, prices
-- faq_hours: Asking about opening hours, when open/closed
-- faq_location: Asking about address, directions, parking
-- faq_first_visit: Asking what to expect on first visit
-- faq_services: Asking about treatments/services offered
-- faq_insurance: Asking about insurance, payment methods
+- faq_prices: Asking about costs, fees, prices, how much
+- faq_hours: Asking about opening hours, when open/closed, business hours
+- faq_location: Asking about address, directions, parking, where located
+- faq_first_visit: Asking what to expect on first visit, consultation duration, appointment length
+- faq_services: Asking about treatments/services offered, techniques used, methods, if treat kids/children/pediatric, does treatment hurt/painful, age ranges, what conditions treated
+- faq_insurance: Asking about insurance, payment methods, Medicare, health funds
 - ask_human: Wants to speak to a real person/receptionist
 - greeting: Just saying hello/hi
 - confirmation: Saying yes, okay, sure, that works
