@@ -2030,7 +2030,7 @@ export class CallFlowHandler {
 
       // Use NLU intent classification (same as main flow) for consistent FAQ handling
       console.log('[handleFAQ] Classifying intent for:', speechRaw);
-      const intentResult = await classifyIntentNLU(speechRaw, undefined);
+      const intentResult = await classifyIntentNLU(speechRaw);
       console.log('[handleFAQ] Classified as:', intentResult.intent);
 
       // Check if it's an FAQ intent
