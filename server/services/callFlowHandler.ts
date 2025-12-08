@@ -324,21 +324,57 @@ export class CallFlowHandler {
       this.transitionTo(CallState.PATIENT_TYPE_DETECT);
       await this.askHowCanIHelp();
     } else if (isSomeoneElse) {
-      // Different person - clear patient info and ask for name
+      // Different person - clear patient info
       this.ctx.patientId = undefined;
       this.ctx.patientName = undefined;
       this.ctx.patientFirstName = undefined;
 
-      const g = this.vr.gather({
-        input: ['speech'],
-        timeout: 6,
-        speechTimeout: 'auto',
-        actionOnEmptyResult: true,
-        action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_name`,
-        method: 'POST'
-      });
+      // Check if they already provided their name in the same response
+      // e.g., "Someone else. My name's Bob" or "No, this is John"
+      const namePatterns = [
+        /my name['']?s (.+)/i,
+        /my name is (.+)/i,
+        /i'?m (.+)/i,
+        /this is (.+)/i,
+        /it'?s (.+)/i,
+        /call me (.+)/i,
+        /name'?s (.+)/i,
+      ];
 
-      saySafe(g, "<speak>No problem! <break time='200ms'/> Who am I speaking with today?</speak>");
+      let nameProvided = false;
+      for (const pattern of namePatterns) {
+        const match = speechRaw.match(pattern);
+        if (match) {
+          const extractedName = match[1].trim();
+          // Filter out common false positives like "not Mary" or "someone else"
+          if (!extractedName.match(/not |someone|else|nobody|no one/i)) {
+            const firstName = extractedName.split(/\s+/)[0];
+            this.ctx.patientFirstName = firstName;
+            this.ctx.patientName = extractedName;
+            console.log('[handleIdentityConfirm] Extracted name from same response:', firstName);
+            nameProvided = true;
+            break;
+          }
+        }
+      }
+
+      if (nameProvided) {
+        // They already gave their name - proceed directly
+        this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+        await this.askHowCanIHelp();
+      } else {
+        // Need to ask for name
+        const g = this.vr.gather({
+          input: ['speech'],
+          timeout: 6,
+          speechTimeout: 'auto',
+          actionOnEmptyResult: true,
+          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=collect_name`,
+          method: 'POST'
+        });
+
+        saySafe(g, "<speak>No problem! <break time='200ms'/> Who am I speaking with today?</speak>");
+      }
     } else {
       // Unclear - ask again with clearer yes/no prompt (don't assume confirmed)
       const firstName = this.ctx.patientFirstName || 'there';
@@ -696,11 +732,11 @@ export class CallFlowHandler {
         topic: 'location'
       },
       'faq_first_visit': {
-        answer: "On your first visit, we'll do a thorough consultation to understand your health history and concerns. This usually takes about 45 minutes. Please bring any relevant scans or medical records if you have them.",
+        answer: "The first visit usually takes about 45 minutes, so we can go through your history and do a careful assessment. Follow-up visits are usually around 15 minutes.",
         topic: 'first-visit'
       },
       'faq_services': {
-        answer: "We offer a range of chiropractic services including spinal adjustments, soft tissue therapy, and rehabilitation exercises. We treat back pain, neck pain, headaches, and many other conditions.",
+        answer: "That's a great question. We use a range of gentle chiropractic techniques, and the chiropractor will choose what suits you best after your assessment. Everything is explained first, and we always work within your comfort level. If you'd like more detail, they can go through it with you at your first visit. We treat kids, teens, adults, and older patients, and most people find treatment very comfortable.",
         topic: 'services'
       },
       'faq_insurance': {
@@ -754,42 +790,57 @@ export class CallFlowHandler {
     }
 
     if (!faqAnswer) {
-      // Unknown FAQ type - offer to help differently
+      // Unknown FAQ type - offer booking or reception (vary language to avoid repetition)
       console.log('[handleFAQByIntent] Unknown FAQ intent:', intent);
+
+      // Vary the fallback language (choose randomly for natural variation)
+      const fallbackVariations = [
+        "That's something the chiropractor will need to assess during your visit. Would you like to book an appointment?",
+        "That's a bit outside what I can answer over the phone. Would you like to book a time so we can address that properly?",
+        "That's a great question for the practitioner. Would you like to schedule a consultation?"
+      ];
+      const fallback = fallbackVariations[Math.floor(Math.random() * fallbackVariations.length)];
+
       const g = this.vr.gather({
-        input: ['speech', 'dtmf'],
+        input: ['speech'],
         timeout: 6,
         speechTimeout: 'auto',
         actionOnEmptyResult: true,
-        numDigits: 1,
+        hints: 'yes, book, appointment, no thanks, another question',
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
         method: 'POST'
       });
-      saySafe(g, "<speak>That's a great question. I'm not able to answer that directly. <break time='200ms'/> Would you like me to pass your question to our reception team? <break time='200ms'/> Press 1 for yes, or ask me something else.</speak>");
+      saySafe(g, `<speak>${fallback}</speak>`);
       return;
     }
 
     // Answer the question with natural pacing
     const g = this.vr.gather({
-      input: ['speech', 'dtmf'],
+      input: ['speech'],
       timeout: 8,
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
-      numDigits: 1,
       hints: 'yes, no, book, appointment, another question, that helps, thanks',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
       method: 'POST'
     });
 
-    // Build response with optional SMS offer
+    // Build response with natural variation
     let response = `<speak>${faqAnswer} <break time="400ms"/> `;
 
     // Offer SMS link for certain topics
     if (faqTopic && ['billing', 'location', 'hours', 'first-visit'].includes(faqTopic)) {
-      response += `If you'd like, I can text you a link with all these details. <break time="300ms"/> `;
+      response += `If you'd like, I can text you those details. <break time="300ms"/> `;
     }
 
-    response += `Did that answer your question, <break time="200ms"/> or is there anything else I can help you with? <break time="200ms"/> Press 1 to book an appointment.</speak>`;
+    // Vary the closing question (choose randomly for natural variation)
+    const closingVariations = [
+      "Did that answer your question, or is there anything else I can help you with?",
+      "Does that help? What else can I help you with today?",
+      "Did that answer it? Is there anything else you'd like to know?",
+      "I hope that helps. Do you have any other questions?"
+    ];
+    response += closingVariations[Math.floor(Math.random() * closingVariations.length)] + "</speak>";
 
     saySafe(g, response);
 
@@ -1972,34 +2023,18 @@ export class CallFlowHandler {
         return;
       }
 
-      // Search for matching FAQ
-      const faq = await searchFaqByQuery(speechRaw);
+      // Use NLU intent classification (same as main flow) for consistent FAQ handling
+      console.log('[handleFAQ] Classifying intent for:', speechRaw);
+      const intentResult = await classifyIntentNLU(speechRaw, undefined);
+      console.log('[handleFAQ] Classified as:', intentResult.intent);
 
-      if (faq) {
-        // Found an answer
-        const formattedAnswer = formatFaqAnswerForSpeech(faq.answer);
-        console.log('[handleFAQ] Found FAQ answer:', faq.question);
-
-        // Answer the question with universal loop question (per master prompt)
-        const g = this.vr.gather({
-          input: ['speech'],
-          timeout: 6,
-          speechTimeout: 'auto',
-          actionOnEmptyResult: true,
-          hints: 'appointment, booking, book, yes, no, another question, nothing else',
-          action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=faq_followup`,
-          method: 'POST'
-        });
-
-        // Use universal loop question after answering FAQ
-        saySafe(g, `<speak>${formattedAnswer} <break time="400ms"/> Did that answer your question, or is there anything else I can help you with today?</speak>`);
-
-        // Fallback - assume they're done
-        saySafe(this.vr, "<speak>Have a great day. Bye!</speak>");
-        this.vr.hangup();
+      // Check if it's an FAQ intent
+      if (intentResult.intent.startsWith('faq_')) {
+        // Route through handleFAQByIntent which has database + fallback support
+        await this.handleFAQByIntent(intentResult.intent, intentResult.details);
       } else {
-        // No FAQ found - reception handover mode
-        console.log('[handleFAQ] No FAQ match found for:', speechRaw);
+        // Not an FAQ - reception handover mode
+        console.log('[handleFAQ] Not an FAQ intent, routing to reception');
 
         // Use reception handover script (per master prompt)
         const g = this.vr.gather({
