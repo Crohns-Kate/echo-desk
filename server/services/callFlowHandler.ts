@@ -819,10 +819,11 @@ export class CallFlowHandler {
       console.log('[handleFAQByIntent] Unknown FAQ intent:', intent);
 
       // Vary the fallback language (choose randomly for natural variation)
+      // Don't push booking - just acknowledge and ask what else they need
       const fallbackVariations = [
-        "That's something the chiropractor will need to assess during your visit. Would you like to book an appointment?",
-        "That's a bit outside what I can answer over the phone. Would you like to book a time so we can address that properly?",
-        "That's a great question for the practitioner. Would you like to schedule a consultation?"
+        "I'm not sure about that specific detail. Is there anything else I can help you with?",
+        "That's outside what I can answer over the phone. What else can I help you with today?",
+        "That's something to discuss during your visit. Anything else I can help with?"
       ];
       const fallback = fallbackVariations[Math.floor(Math.random() * fallbackVariations.length)];
 
