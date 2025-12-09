@@ -112,9 +112,9 @@ async function getOrCreateContext(
     try {
       const patient = await findPatientByPhoneRobust(callerPhone);
       if (patient) {
-        const fullName = `${patient.firstName || ''} ${patient.lastName || ''}`.trim();
+        const fullName = `${patient.first_name || ''} ${patient.last_name || ''}`.trim();
         knownPatient = {
-          firstName: patient.firstName || '',
+          firstName: patient.first_name || '',
           fullName: fullName || 'Unknown',
           id: patient.id.toString()
         };
@@ -234,31 +234,31 @@ async function fetchAvailableSlots(
 
   try {
     const isNewPatient = state.np === true;  // np = is_new_patient
-    const availability = await getAvailability(
-      timeRange.start.toISOString(),
-      timeRange.end.toISOString(),
-      isNewPatient
-    );
+    const availability = await getAvailability({
+      fromISO: timeRange.start.toISOString(),
+      toISO: timeRange.end.toISOString(),
+      timezone
+    });
 
-    if (!availability || availability.length === 0) {
+    if (!availability || !availability.slots || availability.slots.length === 0) {
       console.log('[OpenAICallHandler] No available slots found');
       return [];
     }
 
     // Format slots for human speech
-    const slots = availability.slice(0, 3).map(slot => {
-      const slotTime = dayjs(slot.start).tz(timezone);
+    const slots = availability.slots.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
+      const slotTime = dayjs(slot.startISO).tz(timezone);
       const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
 
       return {
-        startISO: slot.start,
+        startISO: slot.startISO,
         speakable,
         practitionerId: slot.practitionerId,
         appointmentTypeId: slot.appointmentTypeId
       };
     });
 
-    console.log('[OpenAICallHandler] Found', slots.length, 'slots:', slots.map(s => s.speakable).join(', '));
+    console.log('[OpenAICallHandler] Found', slots.length, 'slots:', slots.map((s: { speakable: string }) => s.speakable).join(', '));
     return slots;
 
   } catch (error) {
