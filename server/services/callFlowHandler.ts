@@ -1626,7 +1626,9 @@ export class CallFlowHandler {
       speechTimeout: 'auto',
       actionOnEmptyResult: true,
       numDigits: 1,
-      hints: 'one, two, three, first, second, third, option one, option two, option three, the first, the second, the third, number one, number two, number three',
+      speechModel: 'numbers_and_commands',  // Use specialized model for better number recognition
+      enhanced: true,  // Enable enhanced speech recognition
+      hints: '1, 2, 3, one, two, three, first, second, third, option 1, option 2, option 3, option one, option two, option three',
       action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=choose_slot`,
       method: 'POST'
     });
@@ -1687,7 +1689,7 @@ export class CallFlowHandler {
       s.endsWith(' two') ||
       /\btwo\b/.test(s);
 
-    // Option 3 patterns
+    // Option 3 patterns (with common mis-transcriptions)
     const isOption3 =
       s.includes('option 3') ||
       s.includes('option three') ||
@@ -1699,9 +1701,14 @@ export class CallFlowHandler {
       s === 'three' ||
       s === '3' ||
       s === 'third' ||
+      s === 'tree' ||  // Common mis-transcription
+      s === 'free' ||  // Common mis-transcription
       s.startsWith('three ') ||
       s.endsWith(' three') ||
-      /\bthree\b/.test(s);
+      s.includes(' three ') ||
+      /\bthree\b/.test(s) ||
+      /\btree\b/.test(s) ||  // Handle "tree" mis-transcription
+      /\bfree\b/.test(s);    // Handle "free" mis-transcription
 
     if (isOption1) return 0;
     if (isOption2) return 1;
