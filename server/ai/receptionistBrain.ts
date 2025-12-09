@@ -462,8 +462,11 @@ export function addTurnToHistory(
   role: 'user' | 'assistant',
   content: string
 ): ConversationContext {
+  // DEFENSIVE: Ensure history is an array (might be undefined/null from corrupted state)
+  const existingHistory = Array.isArray(context.history) ? context.history : [];
+
   const newHistory = [
-    ...context.history,
+    ...existingHistory,
     { role, content, timestamp: new Date() }
   ];
 
