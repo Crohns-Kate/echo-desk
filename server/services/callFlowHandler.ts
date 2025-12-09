@@ -376,7 +376,20 @@ export class CallFlowHandler {
         saySafe(g, "<speak>No problem! <break time='200ms'/> Who am I speaking with today?</speak>");
       }
     } else {
-      // Unclear - ask again with clearer yes/no prompt (don't assume confirmed)
+      // Unclear - check if they provided their name instead of yes/no
+      // e.g., "Michael Bishop" when asked "Are you Jo?"
+      if (speechRaw && speechRaw.length > 2 && !speechRaw.match(/\b(yes|yeah|yep|no|nope|maybe|not sure|huh|what)\b/i)) {
+        // Looks like they gave their name instead of confirming
+        console.log('[handleIdentityConfirm] Response looks like a name, not yes/no:', speechRaw);
+        this.ctx.patientId = undefined;
+        this.ctx.patientName = speechRaw.trim();
+        this.ctx.patientFirstName = speechRaw.trim().split(/\s+/)[0];
+        this.transitionTo(CallState.PATIENT_TYPE_DETECT);
+        await this.askHowCanIHelp();
+        return;
+      }
+
+      // Otherwise unclear - ask again with clearer yes/no prompt
       const firstName = this.ctx.patientFirstName || 'there';
 
       const g = this.vr.gather({
