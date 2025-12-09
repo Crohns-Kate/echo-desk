@@ -16,7 +16,12 @@ export type IntentType =
   | 'faq_hours'            // Operating hours
   | 'faq_location'         // Directions, parking
   | 'faq_first_visit'      // What to expect
-  | 'faq_services'         // What services offered
+  | 'faq_techniques'       // Treatment techniques/methods
+  | 'faq_kids'             // Children/pediatric treatment
+  | 'faq_pain'             // Pain/comfort during treatment
+  | 'faq_practitioner'     // Who will see them
+  | 'faq_conditions'       // Specific conditions treated
+  | 'faq_services'         // General services offered
   | 'faq_insurance'        // Insurance/payment
   | 'ask_human'            // Transfer to operator
   | 'greeting'             // Hello, hi, etc.
@@ -62,7 +67,12 @@ INTENT TYPES (choose exactly one):
 - faq_hours: Asking about opening hours, when open/closed, business hours
 - faq_location: Asking about address, directions, parking, where located
 - faq_first_visit: Asking what to expect on first visit, consultation duration, appointment length
-- faq_services: Asking about treatments/services offered, techniques used, methods, if treat kids/children/pediatric, does treatment hurt/painful, age ranges, what conditions treated
+- faq_techniques: Asking about techniques used, methods, treatment approach
+- faq_kids: Asking if treat kids/children/pediatric, age ranges, family treatment
+- faq_pain: Asking if treatment hurts/painful, what to expect pain-wise, is it comfortable
+- faq_practitioner: Asking who they will see, which doctor/chiropractor, staff names
+- faq_conditions: Asking about specific conditions (back pain, neck pain, headaches, etc.), what conditions treated
+- faq_services: General treatment/services questions not covered above
 - faq_insurance: Asking about insurance, payment methods, Medicare, health funds
 - ask_human: Wants to speak to a real person/receptionist
 - greeting: Just saying hello/hi

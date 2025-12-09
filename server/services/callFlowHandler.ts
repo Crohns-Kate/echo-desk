@@ -713,6 +713,11 @@ export class CallFlowHandler {
       'faq_hours': 'hours',
       'faq_location': 'location',
       'faq_first_visit': 'first-visit',
+      'faq_techniques': 'services',
+      'faq_kids': 'services',
+      'faq_pain': 'services',
+      'faq_practitioner': 'services',
+      'faq_conditions': 'services',
       'faq_services': 'services',
       'faq_insurance': 'billing'
     };
@@ -736,7 +741,27 @@ export class CallFlowHandler {
         topic: 'first-visit'
       },
       'faq_services': {
-        answer: "That's a great question. We use a range of gentle chiropractic techniques, and the chiropractor will choose what suits you best after your assessment. Everything is explained first, and we always work within your comfort level. If you'd like more detail, they can go through it with you at your first visit. We treat kids, teens, adults, and older patients, and most people find treatment very comfortable.",
+        answer: "We use a range of gentle chiropractic techniques, and the chiropractor will choose what suits you best after your assessment. Everything is explained first, and we always work within your comfort level.",
+        topic: 'services'
+      },
+      'faq_techniques': {
+        answer: "We use a range of gentle techniques tailored to what suits you best. The chiropractor will explain everything before they start, and we always work within your comfort level.",
+        topic: 'services'
+      },
+      'faq_kids': {
+        answer: "Yes, absolutely. We treat kids, teens, adults, and older patients. We always adjust the techniques to suit the person's age and comfort level.",
+        topic: 'services'
+      },
+      'faq_pain': {
+        answer: "Most people find treatment very comfortable, and some even find it relaxing. We always let you know what we're doing, check in as we go, and if anything doesn't feel right, we can adjust straight away.",
+        topic: 'services'
+      },
+      'faq_practitioner': {
+        answer: "For your appointment, you'll be seeing Dr. Michael, our chiropractor. If anything changes, we'll let you know in advance.",
+        topic: 'services'
+      },
+      'faq_conditions': {
+        answer: "We help with a wide range of conditions including neck pain, back pain, headaches, and general musculoskeletal issues. The chiropractor will assess your specific situation during your visit.",
         topic: 'services'
       },
       'faq_insurance': {
