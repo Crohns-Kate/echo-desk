@@ -80,8 +80,16 @@ async function loadConversationContext(
       return null;
     }
 
-    // Return stored context
-    return conversation.context as any as ConversationContext;
+    // Return stored context with history validation
+    const loadedContext = conversation.context as any as ConversationContext;
+
+    // CRITICAL: Ensure history is a proper array (might be undefined/null from DB)
+    if (!Array.isArray(loadedContext.history)) {
+      console.warn('[OpenAICallHandler] Invalid history in stored context, initializing as empty array');
+      loadedContext.history = [];
+    }
+
+    return loadedContext;
   } catch (error) {
     console.error('[OpenAICallHandler] Error loading conversation context:', error);
     return null;
