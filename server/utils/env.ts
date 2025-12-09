@@ -29,6 +29,7 @@ export const env = {
   IDENTITY_CAPTURE: (process.env.IDENTITY_CAPTURE ?? 'true') !== 'false',
   INTENT_ENGINE: (process.env.INTENT_ENGINE ?? 'true') !== 'false',
   FORCE_TWILIO_SAY: process.env.FORCE_TWILIO_SAY === 'true',
+  OPENAI_CONVERSATION_MODE: process.env.OPENAI_CONVERSATION_MODE === 'true',
   PRIMARY_VOICE: process.env.PRIMARY_VOICE || 'Polly.Olivia-Neural',
   CALL_RECORDING_ENABLED: (process.env.CALL_RECORDING_ENABLED ?? 'true') === 'true',
   TRANSCRIPTION_ENABLED: (process.env.TRANSCRIPTION_ENABLED ?? 'true') === 'true',
