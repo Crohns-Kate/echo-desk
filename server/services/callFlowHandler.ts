@@ -1098,16 +1098,19 @@ export class CallFlowHandler {
       this.transitionTo(CallState.SEND_FORM_LINK);
       await this.handleSendFormLink();
     } else {
-      // Ask for alternate phone number
+      // Ask for alternate phone number (accept both speech and DTMF)
       const g = this.vr.gather({
-        input: ['dtmf'],
+        input: ['speech', 'dtmf'],
         timeout: 10,
+        speechTimeout: 'auto',
         actionOnEmptyResult: true,
         numDigits: 10,
+        enhanced: true,
+        hints: '0, 1, 2, 3, 4, 5, 6, 7, 8, 9, phone number, mobile number',
         action: `/api/voice/handle-flow?callSid=${this.ctx.callSid}&step=alternate_phone`,
         method: 'POST'
       });
-      saySafe(g, "Please enter the 10-digit mobile number we should text.");
+      saySafe(g, "No problem. What's the best mobile number to text you at? You can say the digits out loud.");
     }
 
     await this.saveContext();

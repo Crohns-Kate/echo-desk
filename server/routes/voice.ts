@@ -4944,15 +4944,39 @@ export function registerVoice(app: Express) {
           break;
 
         case 'alternate_phone':
-          // Handle alternate phone number
-          if (digits && digits.length === 10) {
+          // Handle alternate phone number (speech or DTMF)
+          let phoneDigits = digits;
+
+          // If no DTMF digits, try to parse from speech
+          if (!phoneDigits && speechRaw) {
+            console.log('[alternate_phone] Parsing phone from speech:', speechRaw);
+            // Extract digits from speech (e.g., "zero four one seven six seven four four five five")
+            phoneDigits = speechRaw
+              .toLowerCase()
+              .replace(/zero/g, '0')
+              .replace(/one/g, '1')
+              .replace(/two/g, '2')
+              .replace(/three/g, '3')
+              .replace(/four/g, '4')
+              .replace(/five/g, '5')
+              .replace(/six/g, '6')
+              .replace(/seven/g, '7')
+              .replace(/eight/g, '8')
+              .replace(/nine/g, '9')
+              .replace(/\D/g, ''); // Remove non-digits
+            console.log('[alternate_phone] Extracted digits:', phoneDigits);
+          }
+
+          if (phoneDigits && phoneDigits.length === 10) {
             // Update caller phone and proceed
-            const newPhone = '+1' + digits; // Assuming US numbers
+            const newPhone = '+1' + phoneDigits; // Assuming US numbers (Australia uses +61, adjust if needed)
+            console.log('[alternate_phone] Valid phone number:', newPhone);
             vr.redirect({
               method: 'POST'
             }, `/api/voice/handle-flow?callSid=${callSid}&step=send_form`);
           } else {
-            saySafe(vr, "I didn't get a valid number. Let me transfer you to our reception.");
+            console.warn('[alternate_phone] Invalid phone number. Digits:', phoneDigits, 'Speech:', speechRaw);
+            saySafe(vr, "I didn't quite catch that number. Let me transfer you to our reception who can help.");
             vr.hangup();
           }
           break;
