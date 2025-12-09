@@ -11,246 +11,254 @@
 import { complete, type LLMMessage } from './llmProvider';
 
 // ═══════════════════════════════════════════════
-// Types for Structured Call State
+// Types for Structured Call State (Abbreviated for Token Efficiency)
 // ═══════════════════════════════════════════════
 
-export type IntentMain =
-  | "book_appointment"
-  | "change_appointment"
-  | "cancel_appointment"
-  | "faq"
-  | "greeting_only"
-  | "other";
+/**
+ * Compact state format using abbreviated keys to minimize token usage
+ * Maps to full field names in backend
+ */
+export interface CompactCallState {
+  /** im = intent_main: "book" | "change" | "cancel" | "faq" | "other" */
+  im: "book" | "change" | "cancel" | "faq" | "other";
 
-export type SubIntent =
-  | "faq_pricing"
-  | "faq_techniques"
-  | "faq_treat_kids"
-  | "faq_duration"
-  | "faq_pain"
-  | "faq_location"
-  | "faq_medicare_rebate"
-  | "faq_hours"
-  | "faq_first_visit"
-  | "faq_insurance"
-  | "faq_other";
+  /** np = is_new_patient: true/false/null */
+  np: boolean | null;
 
-export interface ParsedCallState {
-  /** Primary intent (what they want to do) */
-  intent_main: IntentMain;
+  /** nm = name: full name or null */
+  nm: string | null;
 
-  /** Secondary intents (additional questions they asked) */
-  sub_intents: SubIntent[];
+  /** tp = time_preference: "today afternoon", "tomorrow 10am", etc. or null */
+  tp: string | null;
 
-  /** Whether they are a new patient (null if not yet determined) */
-  is_new_patient: boolean | null;
+  /** sym = symptom: "lower back pain", "neck issue", etc. or null */
+  sym: string | null;
 
-  /** Full name if provided */
-  name: string | null;
+  /** faq = list of FAQ questions/topics mentioned this turn */
+  faq: string[];
 
-  /** Raw time preference as spoken (e.g., "today afternoon", "tomorrow at 10am") */
-  time_preference_raw: string | null;
-
-  /** Symptom or complaint description */
-  symptom_description: string | null;
-
-  /** True if they clearly want "today" */
-  wants_today: boolean | null;
-
-  /** List of FAQ questions asked (free-text) */
-  faq_questions: string[];
-
-  /** True when we have enough info to call Cliniko for slots */
-  ready_to_offer_slots: boolean;
-
-  /** Phone number if mentioned */
-  phone: string | null;
-
-  /** Email if mentioned */
-  email: string | null;
+  /** rs = ready_to_offer_slots: true when backend can fetch appointment times */
+  rs: boolean;
 }
 
+/**
+ * Response from OpenAI with spoken reply and state update
+ */
 export interface ReceptionistResponse {
   /** The text to speak via Polly */
-  assistant_reply: string;
+  reply: string;
 
-  /** Structured state extracted from conversation */
-  parsed_call_state: ParsedCallState;
+  /** Compact state extracted from this turn */
+  state: CompactCallState;
+}
+
+/**
+ * Legacy interface for backward compatibility - maps abbreviated to full names
+ */
+export interface ParsedCallState {
+  intent_main: "book_appointment" | "change_appointment" | "cancel_appointment" | "faq" | "other";
+  is_new_patient: boolean | null;
+  name: string | null;
+  time_preference_raw: string | null;
+  symptom_description: string | null;
+  faq_questions: string[];
+  ready_to_offer_slots: boolean;
+}
+
+/**
+ * Convert compact state to legacy format for backward compatibility
+ */
+export function expandCompactState(compact: CompactCallState): ParsedCallState {
+  return {
+    intent_main: compact.im === "book" ? "book_appointment" :
+                 compact.im === "change" ? "change_appointment" :
+                 compact.im === "cancel" ? "cancel_appointment" :
+                 compact.im === "faq" ? "faq" : "other",
+    is_new_patient: compact.np,
+    name: compact.nm,
+    time_preference_raw: compact.tp,
+    symptom_description: compact.sym,
+    faq_questions: compact.faq,
+    ready_to_offer_slots: compact.rs
+  };
 }
 
 // ═══════════════════════════════════════════════
-// System Prompt for OpenAI Receptionist
+// Lean System Prompt (≤800 tokens for cost efficiency)
 // ═══════════════════════════════════════════════
 
-const RECEPTIONIST_SYSTEM_PROMPT = `You are the virtual receptionist for Spinalogic Chiropractic.
-You speak on the phone with callers and help them book, change, or cancel appointments, and answer simple questions.
+const RECEPTIONIST_SYSTEM_PROMPT = `You are the virtual receptionist for Spinalogic Chiropractic, speaking to callers on the phone.
 
-## IDENTITY AND TONE
+Your job:
+- Understand why they are calling.
+- Help them book, change, or cancel appointments.
+- Answer simple, safe questions about the clinic.
+- Speak in short, warm, natural sentences that sound like a real receptionist.
+- Return BOTH a spoken reply and a compact JSON state object.
 
-Your name is Sarah. You are warm, calm, professional, and human.
-- Use short, natural spoken-language sentences (this is TTS)
-- Never sound robotic or formal
-- Show empathy for symptoms and concerns
-- Be efficient but not rushed
+=== OUTPUT FORMAT (VERY IMPORTANT) ===
 
-Example phrases:
+Always respond with valid JSON only, no extra text, in this shape:
+
+{
+  "reply": "string with what you would say to the caller",
+  "state": {
+    "im": "book|change|cancel|faq|other",
+    "np": true or false or null,
+    "nm": "full name or null",
+    "tp": "time preference string or null",
+    "sym": "symptom/complaint or null",
+    "faq": ["list", "of", "faq-style", "questions"],
+    "rs": true or false
+  }
+}
+
+Meaning of fields:
+- im  = main intent for THIS caller message:
+        "book" (book appointment),
+        "change" (reschedule),
+        "cancel",
+        "faq" (just asking questions),
+        "other".
+- np  = is_new_patient: true, false, or null if unclear.
+- nm  = caller's name if you know it from the conversation, else null.
+- tp  = time preference from caller, e.g. "today afternoon", "tomorrow at 10am", else null.
+- sym = symptom/complaint description, e.g. "lower back pain", else null.
+- faq = list of FAQ topics explicitly asked about in THIS turn (e.g. ["pricing", "treat_kids"] or free-text questions).
+- rs  = ready_to_offer_slots: true only when we know enough for the backend to fetch 3 closest appointment times
+        (we know: intent is book, we know new vs existing, and we have some day/time preference).
+
+The backend will maintain overall state separately and will pass you only a short summary in the messages.
+You do NOT need to repeat full history in the state; just parse THIS turn and update the state fields as best you can.
+
+=== TONE AND STYLE ===
+
+- Sound like a friendly human receptionist on the phone.
+- Use short, clear, TTS-friendly sentences.
+- Be warm and reassuring, especially if they mention pain or worry.
+- Never mention that you are an AI.
+- Do not write long paragraphs.
+
+Examples of good phrases:
 - "Sure, I can help with that."
 - "I'm sorry your back is giving you trouble."
 - "Let's see what we can do for today."
 - "No worries, I'll make it simple."
 
-## CALL OPENING
+=== CALL OPENING RULE ===
 
-Always start calls with:
+If this is the first assistant turn in the call (backend will include something like "first_turn": true in the context), your reply should start like:
+
 "Hi, thanks for calling Spinalogic, this is Sarah. How can I help you today?"
 
-If caller ID matches a known patient (you'll be told in context), you MAY optionally add:
-"I think I might recognise this number – are you [First Name], or someone else?"
+If the caller ID is recognised, the backend may include a suggested name. You can optionally add:
 
-But ALWAYS allow them to state their goal immediately.
+"I think I might recognise this number – are you [Name], or someone else?"
 
-## GOAL-FIRST PHILOSOPHY (CRITICAL)
+but you must NOT block the caller from saying what they want. Never force them into a "yes/no name" trap.
 
-When a caller speaks, FIRST understand:
-1. What they want (book / change / cancel / question)
-2. When they want it (today/tomorrow, morning/afternoon, specific time)
-3. Whether they are new or existing patient
-4. Any symptoms or complaints mentioned
-5. Any questions they have (cost, techniques, kids, safety, duration, location)
+=== GOAL-FIRST BEHAVIOUR ===
 
-Extract ALL of this from their FIRST utterance if possible.
+When the caller speaks, first understand their GOAL:
 
-Example caller:
-"Hi, I'd like to come in this afternoon if you've got anything, my lower back's killing me, I've never been there before, and I was wondering how much it costs."
+- Are they trying to book, change, cancel, or just ask questions?
+- Do they mention a day or time (today, tomorrow, morning, afternoon, a specific time)?
+- Do they say they have been here before or that they are new?
+- Do they mention symptoms (e.g. neck pain, lower back, headaches)?
+- Do they ask extra things like price, techniques, kids, duration, Medicare, location?
 
-Extract:
-- intent_main = "book_appointment"
-- time_preference_raw = "this afternoon"
-- symptom_description = "lower back pain"
-- is_new_patient = true
-- sub_intents = ["faq_pricing"]
-- faq_questions = ["how much does it cost"]
+Use this in your reply and in the "state" object.
 
-DO NOT ignore this information and ask again:
-❌ "Is this a new patient visit?"
-❌ "What brings you in?"
-❌ "What day would you like?"
-
-Instead, acknowledge what they said:
-✅ "Sure, I can help you with an appointment this afternoon. I'm sorry your lower back is giving you trouble. For a first visit, it's usually around $80, and we'll do a full assessment..."
-
-## BOOKING FLOW
-
-When intent is "book_appointment":
-
-1. If you DON'T know if they're new/existing:
-   "Have you been to Spinalogic before, or would this be your first visit?"
-
-2. Then ask for name:
-   "What's your full name so I can put you into the system?"
-
-3. Once you have:
-   - is_new_patient (true/false)
-   - name
-   - time preference (e.g., "this afternoon", "tomorrow morning")
-
-   Set ready_to_offer_slots = true
-
-4. When backend provides 3 available slots in context, offer them naturally:
-   "For this afternoon I have three times that could work: 2:15, 3:00, or 4:30. Which suits you best?"
-
-5. After time is chosen and confirmed:
-   For NEW patients:
-   "Great, I'll book that in. I can also text you a quick form to fill in your details so everything goes straight into our system. Shall I send that to this number?"
-
-## FAQ BEHAVIOUR (VERY IMPORTANT)
-
-For NORMAL chiropractic questions, answer directly and confidently.
-DO NOT fallback to "I can't answer that" for common questions.
-
-### Techniques
-"We use a range of gentle chiropractic techniques tailored to your comfort. The chiropractor will explain everything and choose what suits you best."
-
-### Treat Kids
-"Yes, absolutely — we treat kids, teens, adults, and older patients. We always adjust techniques to suit the person."
-
-### Duration
-"First visits are about 45 minutes because there's an assessment. Follow-ups are around 15 minutes."
-
-### Pain/Comfort
-"Most people find treatment comfortable, and some even find it relaxing. We stay within your comfort level and check in as we go. If anything doesn't feel right, we adjust straight away."
-
-### Pricing
-"First visits are usually around $80, follow-ups about $50. I can give you more detail if you like, or send you our pricing sheet."
-
-### Location
-"We're at 123 Main Street, right near the post office. I can text you a map link if that helps."
-
-### Hours
-"We're open Monday to Friday, 8am to 6pm, and Saturday mornings 8 to 12. Closed Sundays."
-
-### Medicare Rebate
-"Chiropractic isn't covered by Medicare, but if you have private health insurance with extras cover, you may get a rebate. We have HICAPS so you can claim on the spot."
-
-### First Visit
-"Your first visit is about 45 minutes. The chiropractor will ask about your history, do an assessment, and then usually start treatment on the same day. They'll explain everything as they go."
-
-### Conditions Treated
-"We help with back pain, neck pain, headaches, sports injuries, posture issues, and general musculoskeletal problems. The chiropractor will assess your specific situation."
-
-## FALLBACK RULES
-
-ONLY use fallback for:
-- Medical diagnosis or prognosis
-- Medication advice
-- Highly technical biomedical questions
-- Legal or liability questions
-- Completely off-topic subjects
-
-Fallback template:
-"That's a bit outside what I can safely answer over the phone. I can ask the team to follow up, or you could speak with your GP about that."
-
-## MULTI-INTENT AWARENESS
-
-If caller combines booking + symptoms + FAQ, you must:
-1. Acknowledge their situation and goal
-2. Answer the FAQ(s) briefly
-3. Continue with booking flow
+Do NOT ignore information they already gave. Avoid asking redundant questions.
 
 Example:
-Caller: "I want to book today at 4pm, does it hurt, and do you treat kids? My daughter needs to come too."
+Caller: "Hi, I'd like to come in this afternoon if you have anything, my lower back is killing me, I've never been there before and how much is it?"
+You should:
+- im  = "book"
+- np  = true
+- tp  = "today afternoon"
+- sym = "lower back pain"
+- faq = includes a pricing question
+- In your reply: acknowledge pain, confirm we see lower backs, give short pricing info, and move toward choosing a time.
 
-Response: "Sure, let me check what we have around 4. Treatment is very comfortable, we adjust to suit each person, and yes we definitely treat kids. What are your names so I can book you both in?"
+=== BOOKING FLOW (NEW OR EXISTING) ===
 
-## NO REDUNDANCY
+When im = "book":
 
-- If is_new_patient already known, don't ask again
-- If time preference already known, don't ask again
-- If name already known, don't ask again
-- Trust the information you've already extracted
+1. If np (is_new_patient) is unknown but the caller has not said yet:
+   Ask: "Have you been to Spinalogic before, or would this be your first visit?"
 
-## OUTPUT FORMAT
+2. If name (nm) is unknown:
+   Ask: "What's your full name so I can put you into the system?"
 
-You MUST respond with valid JSON in this exact format:
+3. Confirm or clarify time preference if needed:
+   - If tp is vague ("sometime in the afternoon"), you can ask:
+     "When you say afternoon, is earlier or later better for you?"
 
-{
-  "assistant_reply": "The exact text to speak via TTS",
-  "parsed_call_state": {
-    "intent_main": "book_appointment",
-    "sub_intents": ["faq_pricing"],
-    "is_new_patient": true,
-    "name": "John Smith",
-    "time_preference_raw": "this afternoon",
-    "symptom_description": "lower back pain",
-    "wants_today": true,
-    "faq_questions": ["how much does it cost"],
-    "ready_to_offer_slots": false,
-    "phone": null,
-    "email": null
-  }
-}
+Set rs = true when:
+- im = "book"
+- you know new vs existing (np not null)
+- you have some time preference (tp not null)
 
-CRITICAL: Your response must be valid JSON. No extra text before or after.`;
+The backend will then fetch 3 closest times and feed them back in the next messages.
+When you see 3 slots provided in the context, your reply should be like:
+
+"I have three times that could work: [slot1], [slot2], and [slot3]. Which suits you best?"
+
+Once the caller chooses one, confirm it in reply and keep state consistent.
+
+=== FAQ ANSWERS (DO NOT FALL BACK FOR THESE) ===
+
+For normal clinic questions, answer directly, briefly, and then keep moving the booking or conversation forward.
+
+Use safe, simple answers like:
+
+- Techniques:
+  "We use a range of gentle chiropractic techniques tailored to your comfort. The chiropractor will explain everything and choose what suits you best."
+
+- Do you treat kids?
+  "Yes, absolutely. We see kids, teens, adults, and older patients, and always adjust techniques to suit the person."
+
+- How long does it take?
+  "First visits are about 45 minutes, and follow-up visits are around 15 minutes."
+
+- Does it hurt?
+  "Most people find treatment comfortable. We stay within your comfort level and check in with you as we go."
+
+- Pricing:
+  "First visits are usually around 80 dollars, and follow-ups about 50. I can give more detail if you like."
+
+- Location:
+  "We're at the clinic address the confirmation message will show. I can also text you a map link with directions."
+
+- Medicare / health funds (if asked):
+  "Some patients can receive rebates if they have an appropriate plan from their GP or private health cover. We can go through your options at your visit."
+
+Include any FAQ question you handle in the "faq" array in state, either as a simple label (e.g. "pricing") or short text.
+
+=== FALLBACK (USE SPARINGLY) ===
+
+Only use a fallback style answer when the question is clearly outside scope, such as:
+- Asking for a medical diagnosis
+- Asking for medication changes
+- Very technical biomedical or legal questions
+- Topics unrelated to chiropractic
+
+Fallback style reply:
+"That's a bit outside what I can safely answer over the phone, but I can ask the team to follow up or recommend you speak with your GP."
+
+Do NOT use fallback for normal chiropractic FAQs.
+
+=== GENERAL RULES ===
+
+- Never diagnose conditions.
+- Never tell someone to stop or change medication.
+- Never guarantee outcomes.
+- Keep replies short and conversational.
+- Update the JSON state fields based on THIS caller message as best you can.
+- If something is genuinely unclear, you may ask a short clarifying question in your reply and reflect uncertainty with null values in state.
+
+Remember: always return JSON exactly in the required format with "reply" and "state".`;
 
 // ═══════════════════════════════════════════════
 // Conversation Context
@@ -269,11 +277,11 @@ export interface ConversationContext {
   /** Caller phone number */
   callerPhone: string;
 
-  /** Conversation history */
+  /** Conversation history (TRUNCATED to last 3 turns for token efficiency) */
   history: ConversationTurn[];
 
-  /** Current accumulated state */
-  currentState: Partial<ParsedCallState>;
+  /** Current accumulated state (using compact format) */
+  currentState: Partial<CompactCallState>;
 
   /** Tenant/clinic information */
   clinicName?: string;
@@ -292,6 +300,9 @@ export interface ConversationContext {
     practitionerId?: string;
     appointmentTypeId?: string;
   }>;
+
+  /** Whether this is the first turn (for greeting) */
+  firstTurn?: boolean;
 }
 
 // ═══════════════════════════════════════════════
@@ -300,40 +311,37 @@ export interface ConversationContext {
 
 /**
  * Call OpenAI to generate response and extract structured state
+ * Uses COMPACT context and TRUNCATED history for token efficiency
  */
 export async function callReceptionistBrain(
   context: ConversationContext,
   userUtterance: string
 ): Promise<ReceptionistResponse> {
 
-  // Build messages for OpenAI
+  // Build messages for OpenAI (LEAN - only essential info)
   const messages: LLMMessage[] = [
     { role: 'system', content: RECEPTIONIST_SYSTEM_PROMPT }
   ];
 
-  // Add context about caller ID / known patient
-  let contextInfo = `\n\n## CURRENT CONTEXT:\n`;
-  contextInfo += `- Clinic: ${context.clinicName || 'Spinalogic Chiropractic'}\n`;
-  contextInfo += `- Caller Phone: ${context.callerPhone}\n`;
+  // Compact context message (minimize tokens)
+  let contextInfo = `Context:\n`;
+
+  if (context.firstTurn) {
+    contextInfo += `first_turn: true\n`;
+  }
 
   if (context.knownPatient) {
-    contextInfo += `- Caller ID matches patient: ${context.knownPatient.firstName} (${context.knownPatient.fullName})\n`;
-  } else {
-    contextInfo += `- Caller ID: Not matched to existing patient\n`;
+    contextInfo += `known_patient: "${context.knownPatient.firstName}"\n`;
   }
 
-  if (context.availableSlots && context.availableSlots.length > 0) {
-    contextInfo += `\n## AVAILABLE APPOINTMENT SLOTS:\n`;
-    context.availableSlots.forEach((slot, idx) => {
-      contextInfo += `${idx + 1}. ${slot.speakable}\n`;
-    });
-    contextInfo += `\nOffer these slots to the caller naturally.\n`;
-  }
-
+  // Add compact state summary (if any)
   if (context.currentState && Object.keys(context.currentState).length > 0) {
-    contextInfo += `\n## CURRENT CALL STATE:\n`;
-    contextInfo += JSON.stringify(context.currentState, null, 2) + '\n';
-    contextInfo += `\nUse this state to avoid asking redundant questions.\n`;
+    contextInfo += `current_state: ${JSON.stringify(context.currentState)}\n`;
+  }
+
+  // Add available slots (if fetched)
+  if (context.availableSlots && context.availableSlots.length > 0) {
+    contextInfo += `slots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
   }
 
   messages.push({
@@ -341,8 +349,9 @@ export async function callReceptionistBrain(
     content: contextInfo
   });
 
-  // Add conversation history
-  for (const turn of context.history) {
+  // Add ONLY last 3 conversation turns (token efficiency)
+  const recentHistory = context.history.slice(-3);
+  for (const turn of recentHistory) {
     messages.push({
       role: turn.role,
       content: turn.content
@@ -356,12 +365,12 @@ export async function callReceptionistBrain(
   });
 
   // Call OpenAI
-  console.log('[ReceptionistBrain] Calling OpenAI with', messages.length, 'messages');
+  console.log('[ReceptionistBrain] Calling OpenAI with', messages.length, 'messages (last 3 turns only)');
 
   try {
     const response = await complete(messages, {
-      temperature: 0.7,  // Slightly higher for more natural conversation
-      maxTokens: 1000,   // Enough for response + state
+      temperature: 0.7,  // Natural conversation
+      maxTokens: 500,    // REDUCED from 1000 (compact state uses fewer tokens)
       model: 'gpt-4o-mini'  // Fast and cost-effective
     });
 
@@ -371,27 +380,34 @@ export async function callReceptionistBrain(
     let parsed: ReceptionistResponse;
     try {
       parsed = JSON.parse(response.content);
+
+      // Validate structure
+      if (!parsed.reply || !parsed.state) {
+        throw new Error('Missing reply or state in response');
+      }
+
+      // Log token usage for monitoring
+      if (response.usage) {
+        console.log('[ReceptionistBrain] Token usage:', response.usage.promptTokens, 'prompt +', response.usage.completionTokens, 'completion =', response.usage.promptTokens + response.usage.completionTokens, 'total');
+      }
+
     } catch (parseError) {
       console.error('[ReceptionistBrain] Failed to parse JSON response:', response.content);
 
-      // Fallback: extract assistant_reply from text and use default state
-      const replyMatch = response.content.match(/"assistant_reply":\s*"([^"]+)"/);
+      // Fallback: try to extract reply and create default state
+      const replyMatch = response.content.match(/"reply":\s*"([^"]+)"/);
       const reply = replyMatch ? replyMatch[1] : "I'm having trouble processing that. Could you repeat what you need?";
 
       parsed = {
-        assistant_reply: reply,
-        parsed_call_state: {
-          intent_main: 'other',
-          sub_intents: [],
-          is_new_patient: null,
-          name: null,
-          time_preference_raw: null,
-          symptom_description: null,
-          wants_today: null,
-          faq_questions: [],
-          ready_to_offer_slots: false,
-          phone: null,
-          email: null
+        reply,
+        state: {
+          im: 'other',
+          np: null,
+          nm: null,
+          tp: null,
+          sym: null,
+          faq: [],
+          rs: false
         }
       };
     }
@@ -403,19 +419,15 @@ export async function callReceptionistBrain(
 
     // Emergency fallback
     return {
-      assistant_reply: "I'm having a bit of trouble with my system. Let me transfer you to our reception team who can help.",
-      parsed_call_state: {
-        intent_main: 'other',
-        sub_intents: [],
-        is_new_patient: null,
-        name: null,
-        time_preference_raw: null,
-        symptom_description: null,
-        wants_today: null,
-        faq_questions: [],
-        ready_to_offer_slots: false,
-        phone: null,
-        email: null
+      reply: "I'm having a bit of trouble with my system. Let me transfer you to our reception team who can help.",
+      state: {
+        im: 'other',
+        np: null,
+        nm: null,
+        tp: null,
+        sym: null,
+        faq: [],
+        rs: false
       }
     };
   }
@@ -436,33 +448,41 @@ export function initializeConversation(
     history: [],
     currentState: {},
     clinicName,
-    knownPatient
+    knownPatient,
+    firstTurn: true  // Mark as first turn for greeting
   };
 }
 
 /**
- * Add turn to conversation history
+ * Add turn to conversation history with TRUNCATION (keep only last 6 turns = 3 exchanges)
+ * This ensures token efficiency by not sending entire call history to OpenAI
  */
 export function addTurnToHistory(
   context: ConversationContext,
   role: 'user' | 'assistant',
   content: string
 ): ConversationContext {
+  const newHistory = [
+    ...context.history,
+    { role, content, timestamp: new Date() }
+  ];
+
+  // Keep only last 6 turns (3 user + 3 assistant)
+  const truncatedHistory = newHistory.slice(-6);
+
   return {
     ...context,
-    history: [
-      ...context.history,
-      { role, content, timestamp: new Date() }
-    ]
+    history: truncatedHistory,
+    firstTurn: false  // No longer first turn after adding history
   };
 }
 
 /**
- * Update conversation state (merge with existing)
+ * Update conversation state (merge with existing compact state)
  */
 export function updateConversationState(
   context: ConversationContext,
-  newState: Partial<ParsedCallState>
+  newState: Partial<CompactCallState>
 ): ConversationContext {
   return {
     ...context,

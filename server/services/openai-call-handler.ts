@@ -16,7 +16,9 @@ import {
   initializeConversation,
   addTurnToHistory,
   updateConversationState,
+  expandCompactState,
   type ConversationContext,
+  type CompactCallState,
   type ParsedCallState
 } from '../ai/receptionistBrain';
 import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient } from './cliniko';
@@ -110,9 +112,9 @@ async function getOrCreateContext(
     try {
       const patient = await findPatientByPhoneRobust(callerPhone);
       if (patient) {
-        const fullName = `${patient.firstName || ''} ${patient.lastName || ''}`.trim();
+        const fullName = `${patient.first_name || ''} ${patient.last_name || ''}`.trim();
         knownPatient = {
-          firstName: patient.firstName || '',
+          firstName: patient.first_name || '',
           fullName: fullName || 'Unknown',
           id: patient.id.toString()
         };
@@ -210,52 +212,53 @@ function parseTimePreference(
 
 /**
  * Fetch available appointment slots from Cliniko
+ * Uses compact state format (tp = time_preference, np = is_new_patient)
  */
 async function fetchAvailableSlots(
-  state: Partial<ParsedCallState>,
+  state: Partial<CompactCallState>,
   tenantId?: number,
   timezone: string = 'Australia/Brisbane'
 ): Promise<Array<{ startISO: string; speakable: string; practitionerId?: string; appointmentTypeId?: string }>> {
-  if (!state.time_preference_raw) {
+  if (!state.tp) {  // tp = time preference
     console.log('[OpenAICallHandler] No time preference, cannot fetch slots');
     return [];
   }
 
-  const timeRange = parseTimePreference(state.time_preference_raw, timezone);
+  const timeRange = parseTimePreference(state.tp, timezone);
   if (!timeRange) {
-    console.warn('[OpenAICallHandler] Could not parse time preference:', state.time_preference_raw);
+    console.warn('[OpenAICallHandler] Could not parse time preference:', state.tp);
     return [];
   }
 
   console.log('[OpenAICallHandler] Fetching slots from', timeRange.start, 'to', timeRange.end);
 
   try {
-    const isNewPatient = state.is_new_patient === true;
-    const availability = await getAvailability(
-      timeRange.start.toISOString(),
-      timeRange.end.toISOString(),
-      isNewPatient
-    );
+    const isNewPatient = state.np === true;  // np = is_new_patient
+    const availability = await getAvailability({
+      fromISO: timeRange.start.toISOString(),
+      toISO: timeRange.end.toISOString(),
+      timezone
+    });
 
-    if (!availability || availability.length === 0) {
+    if (!availability || !availability.slots || availability.slots.length === 0) {
       console.log('[OpenAICallHandler] No available slots found');
       return [];
     }
 
     // Format slots for human speech
-    const slots = availability.slice(0, 3).map(slot => {
-      const slotTime = dayjs(slot.start).tz(timezone);
+    const slots = availability.slots.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
+      const slotTime = dayjs(slot.startISO).tz(timezone);
       const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
 
       return {
-        startISO: slot.start,
+        startISO: slot.startISO,
         speakable,
         practitionerId: slot.practitionerId,
         appointmentTypeId: slot.appointmentTypeId
       };
     });
 
-    console.log('[OpenAICallHandler] Found', slots.length, 'slots:', slots.map(s => s.speakable).join(', '));
+    console.log('[OpenAICallHandler] Found', slots.length, 'slots:', slots.map((s: { speakable: string }) => s.speakable).join(', '));
     return slots;
 
   } catch (error) {
@@ -295,8 +298,8 @@ export async function handleOpenAIConversation(
     // 1. Load or create conversation context
     let context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
 
-    // 2. Check if we need to fetch appointment slots
-    if (context.currentState.ready_to_offer_slots && !context.availableSlots) {
+    // 2. Check if we need to fetch appointment slots (rs = ready_to_offer_slots)
+    if (context.currentState.rs && !context.availableSlots) {
       console.log('[OpenAICallHandler] Fetching appointment slots...');
       const slots = await fetchAvailableSlots(context.currentState, tenantId, timezone);
       context.availableSlots = slots;
@@ -305,19 +308,19 @@ export async function handleOpenAIConversation(
     // 3. Call OpenAI receptionist brain
     const response = await callReceptionistBrain(context, userUtterance);
 
-    console.log('[OpenAICallHandler] Assistant reply:', response.assistant_reply);
-    console.log('[OpenAICallHandler] Parsed state:', JSON.stringify(response.parsed_call_state, null, 2));
+    console.log('[OpenAICallHandler] Reply:', response.reply);
+    console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
     // 4. Update conversation history
     context = addTurnToHistory(context, 'user', userUtterance);
-    context = addTurnToHistory(context, 'assistant', response.assistant_reply);
-    context = updateConversationState(context, response.parsed_call_state);
+    context = addTurnToHistory(context, 'assistant', response.reply);
+    context = updateConversationState(context, response.state);
 
     // 5. Save context to database
     await saveConversationContext(callSid, context);
 
     // 6. Generate TwiML response
-    saySafe(vr, response.assistant_reply);
+    saySafe(vr, response.reply);
 
     // 7. Gather next user input
     const gather = vr.gather({
