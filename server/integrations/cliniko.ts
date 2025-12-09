@@ -490,18 +490,12 @@ export async function getOrCreatePatient({
           return p;
         }
       } else {
-        // No name provided to check, assume it's the same person
-        console.log('[Cliniko] Found existing patient by phone (no name to verify):', p.id);
-
-        // Still try to update if we have new information
-        const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
-        if (needsUpdate && phone) {
-          // Refetch the updated patient
-          const updated = await findPatientByPhone(phone);
-          console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
-          return updated || p;
-        }
-        return p;
+        // No name provided - CANNOT verify if same person
+        // To prevent data corruption, create a NEW patient instead of updating existing
+        console.log('[Cliniko] Found patient by phone but NO NAME to verify identity');
+        console.log('[Cliniko]   → Creating NEW patient to avoid overwriting existing data');
+        console.warn('[Cliniko] ⚠️  WARNING: Multiple people may be using phone:', phone);
+        // Don't return p - fall through to create new patient
       }
     }
   }
