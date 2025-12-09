@@ -5176,4 +5176,156 @@ export function registerVoice(app: Express) {
       return res.type("text/xml").send(fallback.toString());
     }
   });
+
+  // ═══════════════════════════════════════════════
+  // OpenAI-Powered Conversation Routes (NEW)
+  // ═══════════════════════════════════════════════
+
+  /**
+   * OpenAI Incoming Call - Start conversation with OpenAI receptionist brain
+   * Use this route instead of /api/voice/incoming when OPENAI_CONVERSATION_MODE=true
+   */
+  app.post("/api/voice/openai-incoming", async (req: Request, res: Response) => {
+    const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
+    const from = (req.body?.From as string) || "";
+    const to = (req.body?.To as string) || (req.body?.Called as string) || "";
+
+    console.log('[VOICE][OPENAI] Incoming call:', callSid, 'from:', from);
+
+    // Resolve tenant from called number
+    const { resolveTenantWithFallback } = await import("../services/tenantResolver");
+    const tenantCtx = await resolveTenantWithFallback(to);
+
+    // Log call start
+    try {
+      if (tenantCtx) {
+        const conversation = await storage.createConversation(tenantCtx.id, undefined, true);
+        const call = await storage.logCall({
+          tenantId: tenantCtx.id,
+          conversationId: conversation.id,
+          callSid,
+          fromNumber: from,
+          toNumber: to,
+          intent: "incoming",
+          summary: "OpenAI conversation started",
+        });
+        emitCallStarted(call);
+        console.log(`[VOICE][OPENAI][TENANT] Resolved tenant: ${tenantCtx.slug} (${tenantCtx.clinicName})`);
+      }
+    } catch (e) {
+      console.error("[VOICE][OPENAI][LOG ERROR]", e);
+    }
+
+    // Start recording (same as existing flow)
+    const { env } = await import("../utils/env");
+    if (env.CALL_RECORDING_ENABLED && callSid) {
+      console.log("[VOICE][OPENAI][RECORDING] Starting recording for call:", callSid);
+
+      const startRecordingWhenReady = async (attemptNumber = 1, maxAttempts = 5) => {
+        try {
+          const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+          const call = await client.calls(callSid).fetch();
+
+          if (call.status === 'in-progress') {
+            const recordingParams: any = {
+              recordingStatusCallback: abs("/api/voice/recording-status"),
+              recordingStatusCallbackMethod: "POST",
+            };
+            await client.calls(callSid).recordings.create(recordingParams);
+            console.log("[VOICE][OPENAI][RECORDING] Recording started");
+          } else if (attemptNumber < maxAttempts) {
+            setTimeout(() => startRecordingWhenReady(attemptNumber + 1, maxAttempts), 1000);
+          }
+        } catch (err) {
+          console.error("[VOICE][OPENAI][RECORDING] Error:", err);
+        }
+      };
+
+      startRecordingWhenReady();
+    }
+
+    // Generate OpenAI greeting
+    try {
+      const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
+      const vr = await handleOpenAIGreeting(
+        callSid,
+        from,
+        tenantCtx?.id,
+        tenantCtx?.clinicName,
+        tenantCtx?.timezone || 'Australia/Brisbane'
+      );
+
+      return res.type("text/xml").send(vr.toString());
+    } catch (error) {
+      console.error("[VOICE][OPENAI][GREETING ERROR]", error);
+      const fallbackVr = new twilio.twiml.VoiceResponse();
+      saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
+      fallbackVr.hangup();
+      return res.type("text/xml").send(fallbackVr.toString());
+    }
+  });
+
+  /**
+   * OpenAI Continue - Process user utterance in ongoing conversation
+   */
+  app.post("/api/voice/openai-continue", async (req: Request, res: Response) => {
+    const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
+    const speechResult = req.body?.SpeechResult || "";
+    const from = req.body?.From || "";
+
+    console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
+    console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
+
+    // If no speech, prompt again
+    if (!speechResult || speechResult.trim() === "") {
+      const vr = new twilio.twiml.VoiceResponse();
+      const gather = vr.gather({
+        input: ['speech'],
+        timeout: 5,
+        speechTimeout: 'auto',
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+        method: 'POST',
+        enhanced: true
+      });
+      saySafe(gather, "I didn't catch that. What can I help you with?");
+      saySafe(vr, "Are you still there?");
+      return res.type("text/xml").send(vr.toString());
+    }
+
+    // Get tenant context
+    const call = await storage.getCallByCallSid(callSid);
+    let tenantCtx = null;
+    if (call?.tenantId) {
+      const tenant = await storage.getTenantById(call.tenantId);
+      if (tenant) {
+        tenantCtx = {
+          id: tenant.id,
+          slug: tenant.slug,
+          clinicName: tenant.clinicName,
+          timezone: tenant.timezone || 'Australia/Brisbane'
+        };
+      }
+    }
+
+    // Process conversation with OpenAI
+    try {
+      const { handleOpenAIConversation } = await import("../services/openai-call-handler");
+      const vr = await handleOpenAIConversation({
+        callSid,
+        callerPhone: from,
+        userUtterance: speechResult,
+        tenantId: tenantCtx?.id,
+        clinicName: tenantCtx?.clinicName,
+        timezone: tenantCtx?.timezone || 'Australia/Brisbane'
+      });
+
+      return res.type("text/xml").send(vr.toString());
+    } catch (error) {
+      console.error("[VOICE][OPENAI][CONTINUE ERROR]", error);
+      const fallbackVr = new twilio.twiml.VoiceResponse();
+      saySafe(fallbackVr, "I'm having trouble processing that. Let me transfer you to our reception team.");
+      fallbackVr.hangup();
+      return res.type("text/xml").send(fallbackVr.toString());
+    }
+  });
 }
