@@ -598,7 +598,19 @@ export function registerVoice(app: Express) {
     const { resolveTenantWithFallback, getTenantContext } = await import("../services/tenantResolver");
     const tenantCtx = await resolveTenantWithFallback(to);
 
-    // Log call start and load conversation memory
+    const vr = new twilio.twiml.VoiceResponse();
+    const { env } = await import("../utils/env");
+
+    // Check if OpenAI conversation mode is enabled BEFORE logging
+    // to avoid duplicate logs when redirecting
+    if (env.OPENAI_CONVERSATION_MODE) {
+      console.log("[VOICE][INCOMING] 🤖 OpenAI Conversation Mode ENABLED - redirecting to OpenAI handler");
+      // Redirect to OpenAI handler (which will do its own logging)
+      vr.redirect({ method: "POST" }, abs(`/api/voice/openai-incoming`));
+      return res.type("text/xml").send(vr.toString());
+    }
+
+    // FSM mode: Log call start and load conversation memory
     try {
       if (tenantCtx) {
         let conversation = await storage.createConversation(tenantCtx.id, undefined, true);
@@ -618,10 +630,7 @@ export function registerVoice(app: Express) {
       console.error("[VOICE][LOG ERROR]", e);
     }
 
-    const vr = new twilio.twiml.VoiceResponse();
-
     // Start recording after verifying call is in-progress
-    const { env } = await import("../utils/env");
     if (env.CALL_RECORDING_ENABLED && callSid) {
       console.log("[VOICE][RECORDING] 🎙️  Recording is ENABLED for call:", callSid);
 
@@ -768,9 +777,8 @@ export function registerVoice(app: Express) {
       clinicName = tenantCtx.clinicName;
     }
 
-    // ALWAYS use new FSM-based call flow for ALL callers (both known and unknown)
-    // This ensures consistent behavior per master prompt (claude.md)
-    console.log("[VOICE][INCOMING] Using new FSM-based call flow");
+    // Use FSM-based call flow (OpenAI mode checked at top of function)
+    console.log("[VOICE][INCOMING] Using FSM-based call flow");
     vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=greeting`));
 
     return res.type("text/xml").send(vr.toString());
