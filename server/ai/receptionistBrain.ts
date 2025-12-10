@@ -247,19 +247,23 @@ This is the MOST IMPORTANT question - you cannot proceed without it!
 STEP 2: Only AFTER you know np, ask for name (if nm is null)
 - Ask: "What's your full name so I can put you into the system?"
 
-STEP 3: Signal ready for slots
-You may ONLY set rs=true when BOTH of these are true:
-✓ np is NOT null (you KNOW if they are new or existing)
-✓ tp is NOT null (you have a time preference)
+STEP 3: Check for slots or signal ready
+⚠️ IMPORTANT: FIRST check if "slots:" already exists in the context!
 
-When you set rs=true, say: "Let me check what times we have available."
-The backend will fetch real slots and provide them in the next turn.
+IF slots ARE in context (e.g., "slots: [12:15 PM, 12:30 PM, 1:00 PM]"):
+- Do NOT say "Let me check..." - slots are already available!
+- IMMEDIATELY offer the slots: "I have times at [slot1], [slot2], and [slot3]. Which works best for you?"
+- Set rs=true (slots are ready)
 
-STEP 4: Wait for and offer REAL slots
-⚠️ CRITICAL: You CANNOT confirm a booking until you see REAL slots in the context!
-- Look for "slots:" in the context - this contains actual available times
-- When you see slots, offer them: "I have three times: [slot1], [slot2], and [slot3]. Which works best?"
-- If no slots appear, say: "Let me check on that for you" and wait
+IF slots are NOT in context AND you have np AND tp:
+- Say: "Let me check what times we have available."
+- Set rs=true
+- The backend will fetch slots and show them next turn
+
+STEP 4: Offer REAL slots (if not already offered in Step 3)
+⚠️ CRITICAL: You CANNOT confirm a booking until you see REAL slots!
+- When you see "slots:" in context, offer them immediately
+- If no slots appear after you asked to check, say: "I'm still checking on that for you"
 
 STEP 5: Caller picks a slot
 When caller chooses (e.g., "the first one", "10:30"):
@@ -459,9 +463,9 @@ export async function callReceptionistBrain(
     contextInfo += `current_state: ${JSON.stringify(context.currentState)}\n`;
   }
 
-  // Add available slots (if fetched)
+  // Add available slots (if fetched) - PROMINENTLY so AI sees them
   if (context.availableSlots && context.availableSlots.length > 0) {
-    contextInfo += `slots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
+    contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
   }
 
   // Combine system prompt with context into ONE system message

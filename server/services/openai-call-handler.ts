@@ -398,9 +398,12 @@ export async function handleOpenAIConversation(
       const selectedSlot = context.availableSlots[finalResponse.state.si];
       if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
         try {
-          // Get Cliniko config from env
+          // Get Cliniko config from env - use correct appointment type based on new vs existing patient
           const practitionerId = env.CLINIKO_PRACTITIONER_ID || selectedSlot.practitionerId;
-          const appointmentTypeId = env.CLINIKO_APPT_TYPE_ID || selectedSlot.appointmentTypeId;
+          const isNewPatient = finalResponse.state.np === true;
+          const appointmentTypeId = isNewPatient
+            ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID  // Longer new patient appointment (45 min)
+            : env.CLINIKO_APPT_TYPE_ID;             // Standard follow-up (30 min)
 
           if (!practitionerId || !appointmentTypeId) {
             throw new Error('Missing Cliniko configuration (practitioner ID or appointment type ID)');
@@ -412,7 +415,8 @@ export async function handleOpenAIConversation(
             time: selectedSlot.startISO,
             speakable: selectedSlot.speakable,
             practitionerId,
-            appointmentTypeId
+            appointmentTypeId,
+            isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT'
           });
 
           // Create appointment in Cliniko
