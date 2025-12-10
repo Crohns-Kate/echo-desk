@@ -80,13 +80,19 @@ async function loadConversationContext(
       return null;
     }
 
-    // Return stored context with history validation
+    // Return stored context with validation
     const loadedContext = conversation.context as any as ConversationContext;
 
     // CRITICAL: Ensure history is a proper array (might be undefined/null from DB)
     if (!Array.isArray(loadedContext.history)) {
       console.warn('[OpenAICallHandler] Invalid history in stored context, initializing as empty array');
       loadedContext.history = [];
+    }
+
+    // CRITICAL: Ensure currentState is an object (might be undefined/null from DB)
+    if (!loadedContext.currentState || typeof loadedContext.currentState !== 'object') {
+      console.warn('[OpenAICallHandler] Invalid currentState in stored context, initializing as empty object');
+      loadedContext.currentState = {};
     }
 
     return loadedContext;
@@ -305,6 +311,11 @@ export async function handleOpenAIConversation(
   try {
     // 1. Load or create conversation context
     let context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
+
+    // DEFENSIVE: Ensure currentState exists
+    if (!context.currentState) {
+      context.currentState = {};
+    }
 
     // 2. Check if we need to fetch appointment slots (rs = ready_to_offer_slots)
     if (context.currentState.rs && !context.availableSlots) {
