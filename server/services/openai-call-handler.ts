@@ -319,11 +319,18 @@ export async function handleOpenAIConversation(
       context.currentState = {};
     }
 
-    // 2. Check if we need to fetch appointment slots (rs = ready_to_offer_slots)
-    if (context.currentState.rs && !context.availableSlots) {
-      console.log('[OpenAICallHandler] Fetching appointment slots...');
+    // 2. PROACTIVE slot fetching: If we have enough info, fetch slots BEFORE calling AI
+    //    This allows AI to offer real slots in the same turn
+    const hasIntent = context.currentState.im === 'book';
+    const hasTimePreference = !!context.currentState.tp;
+    const hasNewPatientStatus = context.currentState.np !== null && context.currentState.np !== undefined;
+    const shouldFetchSlots = hasIntent && hasTimePreference && hasNewPatientStatus && !context.availableSlots;
+
+    if (shouldFetchSlots) {
+      console.log('[OpenAICallHandler] Proactively fetching appointment slots (have all required info)...');
       const slots = await fetchAvailableSlots(context.currentState, tenantId, timezone);
       context.availableSlots = slots;
+      console.log('[OpenAICallHandler] Fetched', slots.length, 'slots for AI to offer');
     }
 
     // 3. Call OpenAI receptionist brain
