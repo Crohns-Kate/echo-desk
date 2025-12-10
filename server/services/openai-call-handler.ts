@@ -346,30 +346,43 @@ export async function handleOpenAIConversation(
     //     and call AI again so it can offer the slots in the same turn
     let finalResponse = response;
     if (response.state.rs === true && !context.availableSlots) {
-      console.log('[OpenAICallHandler] 🔄 AI set rs=true but no slots yet - fetching now...');
-
       // Merge the new state so we have tp and np for fetching
       const mergedState = { ...context.currentState, ...response.state };
-      const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
 
-      if (slots.length > 0) {
-        context.availableSlots = slots;
-        console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, calling AI again to offer them');
-
-        // Call AI again with the slots now available
-        const responseWithSlots = await callReceptionistBrain(context, userUtterance);
-        console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
-        finalResponse = responseWithSlots;
-      } else {
-        console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
-        // No slots available - provide a helpful response instead of leaving caller hanging
+      // SAFEGUARD: Don't fetch slots if we don't know new/existing patient status
+      if (mergedState.np === null || mergedState.np === undefined) {
+        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but np is null - cannot fetch slots yet');
+        // Override response to ask about new/existing patient
         finalResponse = {
-          reply: "I'm sorry, we don't have any appointments available at that exact time. Would a different time work for you? I can check mornings or later in the afternoon.",
+          reply: "Sure, I can help with that. Have you been to Spinalogic before, or would this be your first visit?",
           state: {
             ...response.state,
-            rs: false  // Reset so we can try again with a new time preference
+            rs: false  // Reset so we properly collect np first
           }
         };
+      } else {
+        console.log('[OpenAICallHandler] 🔄 AI set rs=true - fetching slots now...');
+        const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
+
+        if (slots.length > 0) {
+          context.availableSlots = slots;
+          console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, calling AI again to offer them');
+
+          // Call AI again with the slots now available
+          const responseWithSlots = await callReceptionistBrain(context, userUtterance);
+          console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
+          finalResponse = responseWithSlots;
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
+          // No slots available - provide a helpful response instead of leaving caller hanging
+          finalResponse = {
+            reply: "I'm sorry, we don't have any appointments available at that exact time. Would a different time work for you? I can check mornings or later in the afternoon.",
+            state: {
+              ...response.state,
+              rs: false  // Reset so we can try again with a new time preference
+            }
+          };
+        }
       }
     }
 
