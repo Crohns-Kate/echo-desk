@@ -14,6 +14,8 @@ export interface LLMOptions {
   temperature?: number;
   maxTokens?: number;
   model?: string;
+  /** Force JSON output mode (OpenAI only) */
+  jsonMode?: boolean;
 }
 
 export interface LLMResponse {
@@ -51,18 +53,25 @@ async function callOpenAI(
   const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
   const model = options.model || 'gpt-4o-mini';
 
+  const requestBody: any = {
+    model,
+    messages,
+    temperature: options.temperature ?? 0.3,
+    max_tokens: options.maxTokens ?? 500
+  };
+
+  // Enable JSON mode if requested (forces valid JSON output)
+  if (options.jsonMode) {
+    requestBody.response_format = { type: 'json_object' };
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${OPENAI_API_KEY}`
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: options.temperature ?? 0.3,
-      max_tokens: options.maxTokens ?? 500
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
