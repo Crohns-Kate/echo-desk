@@ -96,9 +96,10 @@ Your job:
 - Speak in short, warm, natural sentences that sound like a real receptionist.
 - Return BOTH a spoken reply and a compact JSON state object.
 
-=== OUTPUT FORMAT (VERY IMPORTANT) ===
+=== OUTPUT FORMAT (CRITICAL - JSON ONLY) ===
 
-Always respond with valid JSON only, no extra text, in this shape:
+You MUST respond with ONLY valid JSON. Do NOT include any text before or after the JSON.
+No explanations, no commentary, ONLY the JSON object below:
 
 {
   "reply": "string with what you would say to the caller",
@@ -258,7 +259,9 @@ Do NOT use fallback for normal chiropractic FAQs.
 - Update the JSON state fields based on THIS caller message as best you can.
 - If something is genuinely unclear, you may ask a short clarifying question in your reply and reflect uncertainty with null values in state.
 
-Remember: always return JSON exactly in the required format with "reply" and "state".`;
+=== FINAL REMINDER ===
+
+OUTPUT ONLY THE JSON OBJECT. No text before it. No text after it. Just pure JSON.`;
 
 // ═══════════════════════════════════════════════
 // Conversation Context
@@ -371,7 +374,8 @@ export async function callReceptionistBrain(
     const response = await complete(messages, {
       temperature: 0.7,  // Natural conversation
       maxTokens: 500,    // REDUCED from 1000 (compact state uses fewer tokens)
-      model: 'gpt-4o-mini'  // Fast and cost-effective
+      model: 'gpt-4o-mini',  // Fast and cost-effective
+      jsonMode: true     // Force valid JSON output (OpenAI only)
     });
 
     console.log('[ReceptionistBrain] Raw response:', response.content);
