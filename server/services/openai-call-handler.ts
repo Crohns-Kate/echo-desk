@@ -22,7 +22,7 @@ import {
   type ParsedCallState
 } from '../ai/receptionistBrain';
 import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient } from './cliniko';
-import { sendAppointmentConfirmation, sendNewPatientForm } from './sms';
+import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
 import { env } from '../utils/env';
@@ -417,6 +417,20 @@ export async function handleOpenAIConversation(
         console.warn('[OpenAICallHandler] Invalid slot index:', response.state.si);
       } else {
         console.log('[OpenAICallHandler] Appointment already created, skipping');
+      }
+    }
+
+    // 5b. Check if map link was requested
+    if (response.state.ml === true && !context.currentState.ml) {
+      try {
+        await sendMapLink({
+          to: callerPhone,
+          clinicName: clinicName || 'Spinalogic'
+        });
+        console.log('[OpenAICallHandler] ✅ Map link SMS sent');
+        context.currentState.ml = true; // Mark as sent to prevent duplicates
+      } catch (error) {
+        console.error('[OpenAICallHandler] ❌ Error sending map link:', error);
       }
     }
 

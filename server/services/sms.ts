@@ -278,3 +278,32 @@ export async function sendMessageCaptureLink(params: {
     console.error('[SMS] Failed to send message capture link', e);
   }
 }
+
+/**
+ * Send a map/directions link to the clinic
+ * Used when caller asks for directions
+ */
+export async function sendMapLink(params: {
+  to: string;
+  clinicName: string;
+  clinicAddress?: string;
+}): Promise<void> {
+  try {
+    // Default clinic address - can be overridden via params
+    const address = params.clinicAddress || 'Spinalogic Chiropractic Brisbane';
+    const encodedAddress = encodeURIComponent(address);
+    const mapLink = `https://maps.google.com/maps?q=${encodedAddress}`;
+
+    const message = `Here's a map link with directions to ${params.clinicName}: ${mapLink}`;
+
+    await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: params.to
+    });
+
+    console.log('[SMS] Sent map link to', params.to);
+  } catch (e) {
+    console.error('[SMS] Failed to send map link', e);
+  }
+}
