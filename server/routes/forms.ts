@@ -1,6 +1,7 @@
 import { Express, Request, Response } from "express";
 import { storage } from "../storage";
-import { findPatientByPhoneRobust, updateClinikoPatient } from "../integrations/cliniko";
+import { findPatientByPhoneRobust } from "../services/cliniko";
+import { updateClinikoPatient } from "../integrations/cliniko";
 
 /**
  * Form collection routes
