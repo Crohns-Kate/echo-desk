@@ -342,16 +342,11 @@ export async function callReceptionistBrain(
   userUtterance: string
 ): Promise<ReceptionistResponse> {
 
-  // Build messages for OpenAI (LEAN - only essential info)
-  const messages: LLMMessage[] = [
-    { role: 'system', content: RECEPTIONIST_SYSTEM_PROMPT }
-  ];
-
-  // Compact context message (minimize tokens)
-  let contextInfo = `Context:\n`;
+  // Build compact context info
+  let contextInfo = '';
 
   if (context.firstTurn) {
-    contextInfo += `first_turn: true\n`;
+    contextInfo += 'first_turn: true\n';
   }
 
   if (context.knownPatient) {
@@ -368,10 +363,13 @@ export async function callReceptionistBrain(
     contextInfo += `slots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
   }
 
-  messages.push({
-    role: 'system',
-    content: contextInfo
-  });
+  // Combine system prompt with context into ONE system message
+  const systemPrompt = RECEPTIONIST_SYSTEM_PROMPT + (contextInfo ? `\n\n=== CURRENT CALL CONTEXT ===\n${contextInfo}` : '');
+
+  // Build messages for OpenAI (SINGLE system message + history + current utterance)
+  const messages: LLMMessage[] = [
+    { role: 'system', content: systemPrompt }
+  ];
 
   // Add ONLY last 3 conversation turns (token efficiency)
   const recentHistory = context.history.slice(-3);
