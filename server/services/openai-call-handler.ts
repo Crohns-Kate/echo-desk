@@ -498,8 +498,20 @@ export async function handleOpenAIConversation(
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
     saySafe(gather, finalResponse.reply);
 
-    // 8. If no response after gather times out, handle silence
-    saySafe(vr, "Are you still there? Let me know if you need anything else.");
+    // 8. If no response after gather times out, give them another chance
+    const retryGather = vr.gather({
+      input: ['speech'],
+      timeout: 10,  // Longer timeout for the retry
+      speechTimeout: 'auto',
+      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+      method: 'POST',
+      enhanced: true,
+      hints: 'yes, no, goodbye, that\'s all, nothing else, thank you'
+    });
+    saySafe(retryGather, "Are you still there? Is there anything else you'd like to know?");
+
+    // 9. If still no response, close gracefully (not abruptly)
+    saySafe(vr, "Thanks for calling Spinalogic. Have a great day!");
 
     return vr;
 
@@ -556,8 +568,20 @@ export async function handleOpenAIGreeting(
 
     saySafe(gather, greeting);
 
-    // If no response
-    saySafe(vr, "Are you still there?");
+    // If no response after greeting, give them another chance
+    const retryGather = vr.gather({
+      input: ['speech'],
+      timeout: 10,
+      speechTimeout: 'auto',
+      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+      method: 'POST',
+      enhanced: true,
+      hints: 'appointment, booking, question, today, tomorrow'
+    });
+    saySafe(retryGather, "Are you still there? How can I help you today?");
+
+    // If still no response, close gracefully
+    saySafe(vr, "Thanks for calling Spinalogic. Feel free to call back anytime.");
 
     return vr;
 
