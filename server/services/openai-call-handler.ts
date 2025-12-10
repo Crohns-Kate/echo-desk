@@ -339,16 +339,39 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
+    // 3b. CRITICAL: If AI just set rs=true but we don't have slots yet, fetch them NOW
+    //     and call AI again so it can offer the slots in the same turn
+    let finalResponse = response;
+    if (response.state.rs === true && !context.availableSlots) {
+      console.log('[OpenAICallHandler] 🔄 AI set rs=true but no slots yet - fetching now...');
+
+      // Merge the new state so we have tp and np for fetching
+      const mergedState = { ...context.currentState, ...response.state };
+      const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
+
+      if (slots.length > 0) {
+        context.availableSlots = slots;
+        console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, calling AI again to offer them');
+
+        // Call AI again with the slots now available
+        const responseWithSlots = await callReceptionistBrain(context, userUtterance);
+        console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
+        finalResponse = responseWithSlots;
+      } else {
+        console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time');
+      }
+    }
+
     // 4. Update conversation history
     context = addTurnToHistory(context, 'user', userUtterance);
-    context = addTurnToHistory(context, 'assistant', response.reply);
-    context = updateConversationState(context, response.state);
+    context = addTurnToHistory(context, 'assistant', finalResponse.reply);
+    context = updateConversationState(context, finalResponse.state);
 
     // 5. Check if booking is confirmed and create appointment
-    if (response.state.bc && response.state.nm && context.availableSlots && response.state.si !== undefined && response.state.si !== null) {
+    if (finalResponse.state.bc && finalResponse.state.nm && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
       console.log('[OpenAICallHandler] 🎯 Booking confirmed! Creating appointment...');
 
-      const selectedSlot = context.availableSlots[response.state.si];
+      const selectedSlot = context.availableSlots[finalResponse.state.si];
       if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
         try {
           // Get Cliniko config from env
@@ -360,7 +383,7 @@ export async function handleOpenAIConversation(
           }
 
           console.log('[OpenAICallHandler] Creating appointment with:', {
-            name: response.state.nm,
+            name: finalResponse.state.nm,
             phone: callerPhone,
             time: selectedSlot.startISO,
             speakable: selectedSlot.speakable,
@@ -373,8 +396,8 @@ export async function handleOpenAIConversation(
             practitionerId,
             appointmentTypeId,
             startsAt: selectedSlot.startISO,
-            fullName: response.state.nm,
-            notes: response.state.sym ? `Symptom: ${response.state.sym}` : undefined,
+            fullName: finalResponse.state.nm,
+            notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
             tenantCtx: tenantId ? { id: tenantId } as any : undefined
           });
 
@@ -394,7 +417,7 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
 
           // For NEW patients, send the intake form link to collect name spelling, email, phone
-          if (response.state.np === true) {
+          if (finalResponse.state.np === true) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
 
@@ -414,14 +437,14 @@ export async function handleOpenAIConversation(
           console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
         }
       } else if (!selectedSlot) {
-        console.warn('[OpenAICallHandler] Invalid slot index:', response.state.si);
+        console.warn('[OpenAICallHandler] Invalid slot index:', finalResponse.state.si);
       } else {
         console.log('[OpenAICallHandler] Appointment already created, skipping');
       }
     }
 
     // 5b. Check if map link was requested
-    if (response.state.ml === true && !context.currentState.ml) {
+    if (finalResponse.state.ml === true && !context.currentState.ml) {
       try {
         await sendMapLink({
           to: callerPhone,
@@ -438,7 +461,7 @@ export async function handleOpenAIConversation(
     await saveConversationContext(callSid, context);
 
     // 6. Generate TwiML response
-    saySafe(vr, response.reply);
+    saySafe(vr, finalResponse.reply);
 
     // 7. Gather next user input
     const gather = vr.gather({
