@@ -484,10 +484,7 @@ export async function handleOpenAIConversation(
     // 6. Save context to database
     await saveConversationContext(callSid, context);
 
-    // 6. Generate TwiML response
-    saySafe(vr, finalResponse.reply);
-
-    // 7. Gather next user input
+    // 7. Gather next user input with barge-in enabled (Say INSIDE Gather)
     const gather = vr.gather({
       input: ['speech'],
       timeout: 8,
@@ -498,7 +495,10 @@ export async function handleOpenAIConversation(
       hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
     });
 
-    // 8. If no response, handle silence
+    // Say response INSIDE gather to enable barge-in (caller can interrupt)
+    saySafe(gather, finalResponse.reply);
+
+    // 8. If no response after gather times out, handle silence
     saySafe(vr, "Are you still there? Let me know if you need anything else.");
 
     return vr;
