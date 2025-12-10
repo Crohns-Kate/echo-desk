@@ -349,8 +349,19 @@ export function registerForms(app: Express) {
 
       // Update patient in Cliniko with correct details
       try {
-        // Find patient by phone number
-        const patient = await findPatientByPhoneRobust(phone);
+        // IMPORTANT: Use the CALLER's phone number from the call record first
+        // The patient was created with the caller's phone, which may be formatted differently
+        // than what they enter in the form
+        const callerPhone = call.callerPhone;
+        console.log('[POST /api/forms/submit] Looking up patient by caller phone:', callerPhone);
+
+        let patient = await findPatientByPhoneRobust(callerPhone);
+
+        // If not found by caller phone, try the phone entered in form
+        if (!patient && phone !== callerPhone) {
+          console.log('[POST /api/forms/submit] Not found by caller phone, trying form phone:', phone);
+          patient = await findPatientByPhoneRobust(phone);
+        }
 
         if (patient) {
           console.log('[POST /api/forms/submit] Found Cliniko patient:', patient.id);
@@ -364,7 +375,7 @@ export function registerForms(app: Express) {
 
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
         } else {
-          console.log('[POST /api/forms/submit] No matching Cliniko patient found for phone:', phone);
+          console.log('[POST /api/forms/submit] No matching Cliniko patient found for caller phone:', callerPhone, 'or form phone:', phone);
         }
       } catch (clinikoError) {
         // Log but don't fail the request - form data is saved in context
