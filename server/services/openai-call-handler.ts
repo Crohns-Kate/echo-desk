@@ -22,8 +22,10 @@ import {
   type ParsedCallState
 } from '../ai/receptionistBrain';
 import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient } from './cliniko';
+import { sendAppointmentConfirmation } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
+import { env } from '../utils/env';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone.js';
 import utc from 'dayjs/plugin/utc.js';
@@ -335,7 +337,69 @@ export async function handleOpenAIConversation(
     context = addTurnToHistory(context, 'assistant', response.reply);
     context = updateConversationState(context, response.state);
 
-    // 5. Save context to database
+    // 5. Check if booking is confirmed and create appointment
+    if (response.state.bc && response.state.nm && context.availableSlots && response.state.si !== undefined && response.state.si !== null) {
+      console.log('[OpenAICallHandler] 🎯 Booking confirmed! Creating appointment...');
+
+      const selectedSlot = context.availableSlots[response.state.si];
+      if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
+        try {
+          // Get Cliniko config from env
+          const practitionerId = env.CLINIKO_PRACTITIONER_ID || selectedSlot.practitionerId;
+          const appointmentTypeId = env.CLINIKO_APPOINTMENT_TYPE_ID || selectedSlot.appointmentTypeId;
+
+          if (!practitionerId || !appointmentTypeId) {
+            throw new Error('Missing Cliniko configuration (practitioner ID or appointment type ID)');
+          }
+
+          console.log('[OpenAICallHandler] Creating appointment with:', {
+            name: response.state.nm,
+            phone: callerPhone,
+            time: selectedSlot.startISO,
+            speakable: selectedSlot.speakable,
+            practitionerId,
+            appointmentTypeId
+          });
+
+          // Create appointment in Cliniko
+          const appointment = await createAppointmentForPatient(callerPhone, {
+            practitionerId,
+            appointmentTypeId,
+            startsAt: selectedSlot.startISO,
+            fullName: response.state.nm,
+            notes: response.state.sym ? `Symptom: ${response.state.sym}` : undefined,
+            tenantCtx: tenantId ? { tenantId } : undefined
+          });
+
+          console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);
+
+          // Format appointment date for SMS
+          const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
+          const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
+
+          // Send SMS confirmation
+          await sendAppointmentConfirmation({
+            to: callerPhone,
+            appointmentDate: formattedDate,
+            clinicName: clinicName || 'Spinalogic'
+          });
+
+          console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
+
+          // Mark appointment as created to prevent duplicates
+          context.currentState.appointmentCreated = true;
+
+        } catch (error) {
+          console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
+        }
+      } else if (!selectedSlot) {
+        console.warn('[OpenAICallHandler] Invalid slot index:', response.state.si);
+      } else {
+        console.log('[OpenAICallHandler] Appointment already created, skipping');
+      }
+    }
+
+    // 6. Save context to database
     await saveConversationContext(callSid, context);
 
     // 6. Generate TwiML response
