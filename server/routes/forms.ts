@@ -352,10 +352,10 @@ export function registerForms(app: Express) {
         // IMPORTANT: Use the CALLER's phone number from the call record first
         // The patient was created with the caller's phone, which may be formatted differently
         // than what they enter in the form
-        const callerPhone = call.callerPhone;
+        const callerPhone = call.fromNumber;  // Schema uses 'fromNumber' for caller phone
         console.log('[POST /api/forms/submit] Looking up patient by caller phone:', callerPhone);
 
-        let patient = await findPatientByPhoneRobust(callerPhone);
+        let patient = callerPhone ? await findPatientByPhoneRobust(callerPhone) : null;
 
         // If not found by caller phone, try the phone entered in form
         if (!patient && phone !== callerPhone) {
