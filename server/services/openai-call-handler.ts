@@ -150,7 +150,7 @@ async function getOrCreateContext(
 
 /**
  * Parse natural language time preference into date range
- * Examples: "today afternoon", "tomorrow morning", "this afternoon at 4pm"
+ * Examples: "today afternoon", "tomorrow morning", "this afternoon at 4pm", "today at 4:00 p.m."
  */
 function parseTimePreference(
   timePreferenceRaw: string | null,
@@ -164,61 +164,64 @@ function parseTimePreference(
   let start: dayjs.Dayjs;
   let end: dayjs.Dayjs;
 
-  // Handle "today"
-  if (lower.includes('today')) {
-    start = now;
-    end = now.endOf('day');
+  // Extract specific time if mentioned (e.g., "4pm", "4:00 p.m.", "10:30am")
+  const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(?:a\.?m\.?|p\.?m\.?)/);
+  let specificHour: number | null = null;
+  let specificMinute = 0;
 
-    // Refine to morning/afternoon/evening
-    if (lower.includes('morning')) {
-      start = now.hour(8).minute(0);
-      end = now.hour(12).minute(0);
-    } else if (lower.includes('afternoon')) {
-      start = now.hour(12).minute(0);
-      end = now.hour(17).minute(0);
-    } else if (lower.includes('evening')) {
-      start = now.hour(17).minute(0);
-      end = now.hour(20).minute(0);
-    }
-  }
-  // Handle "tomorrow"
-  else if (lower.includes('tomorrow')) {
-    start = now.add(1, 'day').hour(8).minute(0);
-    end = now.add(1, 'day').hour(18).minute(0);
+  if (timeMatch) {
+    specificHour = parseInt(timeMatch[1], 10);
+    specificMinute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
 
-    if (lower.includes('morning')) {
-      start = now.add(1, 'day').hour(8).minute(0);
-      end = now.add(1, 'day').hour(12).minute(0);
-    } else if (lower.includes('afternoon')) {
-      start = now.add(1, 'day').hour(12).minute(0);
-      end = now.add(1, 'day').hour(17).minute(0);
+    // Convert to 24-hour format
+    if (lower.includes('p.m.') || lower.includes('pm')) {
+      if (specificHour !== 12) specificHour += 12;
+    } else if (lower.includes('a.m.') || lower.includes('am')) {
+      if (specificHour === 12) specificHour = 0;
     }
+
+    console.log('[parseTimePreference] Extracted specific time:', specificHour, ':', specificMinute);
   }
-  // Handle "this afternoon" (default to today)
-  else if (lower.includes('afternoon')) {
-    start = now.hour(12).minute(0);
-    end = now.hour(17).minute(0);
+
+  // Determine base day
+  let baseDay = now;
+  if (lower.includes('tomorrow')) {
+    baseDay = now.add(1, 'day');
+  } else if (lower.includes('next week')) {
+    baseDay = now.add(7, 'days');
   }
-  // Handle "this morning" (default to today)
+
+  // If we have a specific time, narrow the range around it
+  if (specificHour !== null) {
+    start = baseDay.hour(specificHour).minute(specificMinute).second(0);
+    // Search from 1 hour before to 2 hours after the requested time
+    start = start.subtract(1, 'hour');
+    end = baseDay.hour(specificHour).minute(specificMinute).add(2, 'hour');
+
+    console.log('[parseTimePreference] Specific time range:', start.format('HH:mm'), 'to', end.format('HH:mm'));
+  }
+  // Otherwise use time-of-day ranges
   else if (lower.includes('morning')) {
-    start = now.hour(8).minute(0);
-    end = now.hour(12).minute(0);
-  }
-  // Handle "next week"
-  else if (lower.includes('next week')) {
-    start = now.add(7, 'days').hour(8).minute(0);
-    end = now.add(7, 'days').hour(18).minute(0);
-  }
-  // Default: rest of today
-  else {
-    start = now;
-    end = now.endOf('day');
+    start = baseDay.hour(8).minute(0);
+    end = baseDay.hour(12).minute(0);
+  } else if (lower.includes('afternoon')) {
+    start = baseDay.hour(12).minute(0);
+    end = baseDay.hour(17).minute(0);
+  } else if (lower.includes('evening')) {
+    start = baseDay.hour(17).minute(0);
+    end = baseDay.hour(20).minute(0);
+  } else {
+    // Default: business hours
+    start = baseDay.hour(8).minute(0);
+    end = baseDay.hour(18).minute(0);
   }
 
-  // If start time is in the past, move to next day
+  // If start time is in the past, move to now
   if (start.isBefore(now)) {
     start = now;
   }
+
+  console.log('[parseTimePreference] Final range:', start.format('YYYY-MM-DD HH:mm'), 'to', end.format('YYYY-MM-DD HH:mm'));
 
   return {
     start: start.toDate(),
@@ -358,7 +361,15 @@ export async function handleOpenAIConversation(
         console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
         finalResponse = responseWithSlots;
       } else {
-        console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time');
+        console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
+        // No slots available - provide a helpful response instead of leaving caller hanging
+        finalResponse = {
+          reply: "I'm sorry, we don't have any appointments available at that exact time. Would a different time work for you? I can check mornings or later in the afternoon.",
+          state: {
+            ...response.state,
+            rs: false  // Reset so we can try again with a new time preference
+          }
+        };
       }
     }
 
