@@ -39,6 +39,15 @@ export interface CompactCallState {
 
   /** rs = ready_to_offer_slots: true when backend can fetch appointment times */
   rs: boolean;
+
+  /** bc = booking_confirmed: true when user confirms they want to book the appointment */
+  bc?: boolean;
+
+  /** si = selected_slot_index: 0, 1, or 2 for which slot user picked */
+  si?: number | null;
+
+  /** appointmentCreated = flag to prevent duplicate bookings (backend-only, not set by AI) */
+  appointmentCreated?: boolean;
 }
 
 /**
@@ -110,7 +119,9 @@ No explanations, no commentary, ONLY the JSON object below:
     "tp": "time preference string or null",
     "sym": "symptom/complaint or null",
     "faq": ["list", "of", "faq-style", "questions"],
-    "rs": true or false
+    "rs": true or false,
+    "bc": true or false (optional),
+    "si": 0 or 1 or 2 or null (optional)
   }
 }
 
@@ -128,6 +139,8 @@ Meaning of fields:
 - faq = list of FAQ topics explicitly asked about in THIS turn (e.g. ["pricing", "treat_kids"] or free-text questions).
 - rs  = ready_to_offer_slots: true only when we know enough for the backend to fetch 3 closest appointment times
         (we know: intent is book, we know new vs existing, and we have some day/time preference).
+- bc  = booking_confirmed: set to true when the user confirms they want the appointment booked (after you've offered times).
+- si  = selected_slot_index: 0, 1, or 2 for which time slot the user picked (0=first, 1=second, 2=third offered time).
 
 The backend will maintain overall state separately and will pass you only a short summary in the messages.
 You do NOT need to repeat full history in the state; just parse THIS turn and update the state fields as best you can.
@@ -206,7 +219,15 @@ When you see 3 slots provided in the context, your reply should be like:
 
 "I have three times that could work: [slot1], [slot2], and [slot3]. Which suits you best?"
 
-Once the caller chooses one, confirm it in reply and keep state consistent.
+When the caller chooses a time:
+- Set si to 0, 1, or 2 based on which slot they picked (0=first, 1=second, 2=third)
+- Ask for their name if you don't have it yet (nm is null)
+
+Once you have name (nm) and slot selection (si):
+- Confirm the booking in your reply: "Great, Michael, I have you booked for [time]. Looking forward to seeing you then."
+- Set bc = true to tell the backend to actually create the appointment
+
+The backend will then create the appointment in the system and send a confirmation SMS.
 
 === FAQ ANSWERS (DO NOT FALL BACK FOR THESE) ===
 
