@@ -22,7 +22,7 @@ import {
   type ParsedCallState
 } from '../ai/receptionistBrain';
 import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient } from './cliniko';
-import { sendAppointmentConfirmation } from './sms';
+import { sendAppointmentConfirmation, sendNewPatientForm } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
 import { env } from '../utils/env';
@@ -392,6 +392,20 @@ export async function handleOpenAIConversation(
           });
 
           console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
+
+          // For NEW patients, send the intake form link to collect name spelling, email, phone
+          if (response.state.np === true) {
+            // Generate form token using callSid
+            const formToken = `form_${callSid}`;
+
+            await sendNewPatientForm({
+              to: callerPhone,
+              token: formToken,
+              clinicName: clinicName || 'Spinalogic'
+            });
+
+            console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+          }
 
           // Mark appointment as created to prevent duplicates
           context.currentState.appointmentCreated = true;

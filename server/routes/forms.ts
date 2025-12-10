@@ -1,5 +1,6 @@
 import { Express, Request, Response } from "express";
 import { storage } from "../storage";
+import { findPatientByPhoneRobust, updateClinikoPatient } from "../integrations/cliniko";
 
 /**
  * Form collection routes
@@ -344,6 +345,30 @@ export function registerForms(app: Express) {
       });
 
       console.log('[POST /api/forms/submit] ✅ Form data merged into context successfully');
+
+      // Update patient in Cliniko with correct details
+      try {
+        // Find patient by phone number
+        const patient = await findPatientByPhoneRobust(phone);
+
+        if (patient) {
+          console.log('[POST /api/forms/submit] Found Cliniko patient:', patient.id);
+
+          // Update patient with correct name spelling and email
+          await updateClinikoPatient(patient.id.toString(), {
+            first_name: firstName,
+            last_name: lastName,
+            email: email
+          });
+
+          console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
+        } else {
+          console.log('[POST /api/forms/submit] No matching Cliniko patient found for phone:', phone);
+        }
+      } catch (clinikoError) {
+        // Log but don't fail the request - form data is saved in context
+        console.error('[POST /api/forms/submit] Cliniko update failed (non-critical):', clinikoError);
+      }
 
       res.json({
         success: true,
