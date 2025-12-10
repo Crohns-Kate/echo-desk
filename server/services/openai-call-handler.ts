@@ -150,7 +150,7 @@ async function getOrCreateContext(
 
 /**
  * Parse natural language time preference into date range
- * Examples: "today afternoon", "tomorrow morning", "this afternoon at 4pm"
+ * Examples: "today afternoon", "tomorrow morning", "this afternoon at 4pm", "today at 4:00 p.m."
  */
 function parseTimePreference(
   timePreferenceRaw: string | null,
@@ -164,61 +164,64 @@ function parseTimePreference(
   let start: dayjs.Dayjs;
   let end: dayjs.Dayjs;
 
-  // Handle "today"
-  if (lower.includes('today')) {
-    start = now;
-    end = now.endOf('day');
+  // Extract specific time if mentioned (e.g., "4pm", "4:00 p.m.", "10:30am")
+  const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(?:a\.?m\.?|p\.?m\.?)/);
+  let specificHour: number | null = null;
+  let specificMinute = 0;
 
-    // Refine to morning/afternoon/evening
-    if (lower.includes('morning')) {
-      start = now.hour(8).minute(0);
-      end = now.hour(12).minute(0);
-    } else if (lower.includes('afternoon')) {
-      start = now.hour(12).minute(0);
-      end = now.hour(17).minute(0);
-    } else if (lower.includes('evening')) {
-      start = now.hour(17).minute(0);
-      end = now.hour(20).minute(0);
-    }
-  }
-  // Handle "tomorrow"
-  else if (lower.includes('tomorrow')) {
-    start = now.add(1, 'day').hour(8).minute(0);
-    end = now.add(1, 'day').hour(18).minute(0);
+  if (timeMatch) {
+    specificHour = parseInt(timeMatch[1], 10);
+    specificMinute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
 
-    if (lower.includes('morning')) {
-      start = now.add(1, 'day').hour(8).minute(0);
-      end = now.add(1, 'day').hour(12).minute(0);
-    } else if (lower.includes('afternoon')) {
-      start = now.add(1, 'day').hour(12).minute(0);
-      end = now.add(1, 'day').hour(17).minute(0);
+    // Convert to 24-hour format
+    if (lower.includes('p.m.') || lower.includes('pm')) {
+      if (specificHour !== 12) specificHour += 12;
+    } else if (lower.includes('a.m.') || lower.includes('am')) {
+      if (specificHour === 12) specificHour = 0;
     }
+
+    console.log('[parseTimePreference] Extracted specific time:', specificHour, ':', specificMinute);
   }
-  // Handle "this afternoon" (default to today)
-  else if (lower.includes('afternoon')) {
-    start = now.hour(12).minute(0);
-    end = now.hour(17).minute(0);
+
+  // Determine base day
+  let baseDay = now;
+  if (lower.includes('tomorrow')) {
+    baseDay = now.add(1, 'day');
+  } else if (lower.includes('next week')) {
+    baseDay = now.add(7, 'days');
   }
-  // Handle "this morning" (default to today)
+
+  // If we have a specific time, narrow the range around it
+  if (specificHour !== null) {
+    start = baseDay.hour(specificHour).minute(specificMinute).second(0);
+    // Search from 1 hour before to 2 hours after the requested time
+    start = start.subtract(1, 'hour');
+    end = baseDay.hour(specificHour).minute(specificMinute).add(2, 'hour');
+
+    console.log('[parseTimePreference] Specific time range:', start.format('HH:mm'), 'to', end.format('HH:mm'));
+  }
+  // Otherwise use time-of-day ranges
   else if (lower.includes('morning')) {
-    start = now.hour(8).minute(0);
-    end = now.hour(12).minute(0);
-  }
-  // Handle "next week"
-  else if (lower.includes('next week')) {
-    start = now.add(7, 'days').hour(8).minute(0);
-    end = now.add(7, 'days').hour(18).minute(0);
-  }
-  // Default: rest of today
-  else {
-    start = now;
-    end = now.endOf('day');
+    start = baseDay.hour(8).minute(0);
+    end = baseDay.hour(12).minute(0);
+  } else if (lower.includes('afternoon')) {
+    start = baseDay.hour(12).minute(0);
+    end = baseDay.hour(17).minute(0);
+  } else if (lower.includes('evening')) {
+    start = baseDay.hour(17).minute(0);
+    end = baseDay.hour(20).minute(0);
+  } else {
+    // Default: business hours
+    start = baseDay.hour(8).minute(0);
+    end = baseDay.hour(18).minute(0);
   }
 
-  // If start time is in the past, move to next day
+  // If start time is in the past, move to now
   if (start.isBefore(now)) {
     start = now;
   }
+
+  console.log('[parseTimePreference] Final range:', start.format('YYYY-MM-DD HH:mm'), 'to', end.format('YYYY-MM-DD HH:mm'));
 
   return {
     start: start.toDate(),
@@ -339,16 +342,47 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
+    // 3b. CRITICAL: If AI just set rs=true but we don't have slots yet, fetch them NOW
+    //     and call AI again so it can offer the slots in the same turn
+    let finalResponse = response;
+    if (response.state.rs === true && !context.availableSlots) {
+      console.log('[OpenAICallHandler] 🔄 AI set rs=true but no slots yet - fetching now...');
+
+      // Merge the new state so we have tp and np for fetching
+      const mergedState = { ...context.currentState, ...response.state };
+      const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
+
+      if (slots.length > 0) {
+        context.availableSlots = slots;
+        console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, calling AI again to offer them');
+
+        // Call AI again with the slots now available
+        const responseWithSlots = await callReceptionistBrain(context, userUtterance);
+        console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
+        finalResponse = responseWithSlots;
+      } else {
+        console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
+        // No slots available - provide a helpful response instead of leaving caller hanging
+        finalResponse = {
+          reply: "I'm sorry, we don't have any appointments available at that exact time. Would a different time work for you? I can check mornings or later in the afternoon.",
+          state: {
+            ...response.state,
+            rs: false  // Reset so we can try again with a new time preference
+          }
+        };
+      }
+    }
+
     // 4. Update conversation history
     context = addTurnToHistory(context, 'user', userUtterance);
-    context = addTurnToHistory(context, 'assistant', response.reply);
-    context = updateConversationState(context, response.state);
+    context = addTurnToHistory(context, 'assistant', finalResponse.reply);
+    context = updateConversationState(context, finalResponse.state);
 
     // 5. Check if booking is confirmed and create appointment
-    if (response.state.bc && response.state.nm && context.availableSlots && response.state.si !== undefined && response.state.si !== null) {
+    if (finalResponse.state.bc && finalResponse.state.nm && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
       console.log('[OpenAICallHandler] 🎯 Booking confirmed! Creating appointment...');
 
-      const selectedSlot = context.availableSlots[response.state.si];
+      const selectedSlot = context.availableSlots[finalResponse.state.si];
       if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
         try {
           // Get Cliniko config from env
@@ -360,7 +394,7 @@ export async function handleOpenAIConversation(
           }
 
           console.log('[OpenAICallHandler] Creating appointment with:', {
-            name: response.state.nm,
+            name: finalResponse.state.nm,
             phone: callerPhone,
             time: selectedSlot.startISO,
             speakable: selectedSlot.speakable,
@@ -373,8 +407,8 @@ export async function handleOpenAIConversation(
             practitionerId,
             appointmentTypeId,
             startsAt: selectedSlot.startISO,
-            fullName: response.state.nm,
-            notes: response.state.sym ? `Symptom: ${response.state.sym}` : undefined,
+            fullName: finalResponse.state.nm,
+            notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
             tenantCtx: tenantId ? { id: tenantId } as any : undefined
           });
 
@@ -394,7 +428,7 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
 
           // For NEW patients, send the intake form link to collect name spelling, email, phone
-          if (response.state.np === true) {
+          if (finalResponse.state.np === true) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
 
@@ -414,14 +448,14 @@ export async function handleOpenAIConversation(
           console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
         }
       } else if (!selectedSlot) {
-        console.warn('[OpenAICallHandler] Invalid slot index:', response.state.si);
+        console.warn('[OpenAICallHandler] Invalid slot index:', finalResponse.state.si);
       } else {
         console.log('[OpenAICallHandler] Appointment already created, skipping');
       }
     }
 
     // 5b. Check if map link was requested
-    if (response.state.ml === true && !context.currentState.ml) {
+    if (finalResponse.state.ml === true && !context.currentState.ml) {
       try {
         await sendMapLink({
           to: callerPhone,
@@ -438,7 +472,7 @@ export async function handleOpenAIConversation(
     await saveConversationContext(callSid, context);
 
     // 6. Generate TwiML response
-    saySafe(vr, response.reply);
+    saySafe(vr, finalResponse.reply);
 
     // 7. Gather next user input
     const gather = vr.gather({
