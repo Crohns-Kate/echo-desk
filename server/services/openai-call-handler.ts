@@ -490,11 +490,12 @@ export async function handleOpenAIConversation(
     // 7. Gather next user input
     const gather = vr.gather({
       input: ['speech'],
-      timeout: 5,
+      timeout: 8,
       speechTimeout: 'auto',
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
-      enhanced: true
+      enhanced: true,
+      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
     });
 
     // 8. If no response, handle silence
