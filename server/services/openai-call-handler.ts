@@ -346,7 +346,7 @@ export async function handleOpenAIConversation(
         try {
           // Get Cliniko config from env
           const practitionerId = env.CLINIKO_PRACTITIONER_ID || selectedSlot.practitionerId;
-          const appointmentTypeId = env.CLINIKO_APPOINTMENT_TYPE_ID || selectedSlot.appointmentTypeId;
+          const appointmentTypeId = env.CLINIKO_APPT_TYPE_ID || selectedSlot.appointmentTypeId;
 
           if (!practitionerId || !appointmentTypeId) {
             throw new Error('Missing Cliniko configuration (practitioner ID or appointment type ID)');
@@ -368,7 +368,7 @@ export async function handleOpenAIConversation(
             startsAt: selectedSlot.startISO,
             fullName: response.state.nm,
             notes: response.state.sym ? `Symptom: ${response.state.sym}` : undefined,
-            tenantCtx: tenantId ? { tenantId } : undefined
+            tenantCtx: tenantId ? { id: tenantId } as any : undefined
           });
 
           console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);

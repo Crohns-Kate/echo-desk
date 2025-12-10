@@ -45,6 +45,9 @@ export interface CompactCallState {
 
   /** si = selected_slot_index: 0, 1, or 2 for which slot user picked */
   si?: number | null;
+
+  /** appointmentCreated = flag to prevent duplicate bookings (backend-only, not set by AI) */
+  appointmentCreated?: boolean;
 }
 
 /**
