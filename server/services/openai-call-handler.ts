@@ -268,19 +268,52 @@ async function fetchAvailableSlots(
     const now = dayjs().tz(timezone);
     console.log('[OpenAICallHandler] Current time in', timezone, ':', now.format('h:mm A'));
 
-    // Filter out past times and format slots for human speech
-    const futureSlots = availability.slots.filter((slot: { startISO: string }) => {
+    // Convert time range to dayjs for filtering
+    const rangeStart = dayjs(timeRange.start).tz(timezone);
+    const rangeEnd = dayjs(timeRange.end).tz(timezone);
+    console.log('[OpenAICallHandler] Filtering slots within range:', rangeStart.format('h:mm A'), 'to', rangeEnd.format('h:mm A'));
+
+    // Filter slots to:
+    // 1. Be within the requested time range (e.g., afternoon 3pm-6pm)
+    // 2. Be in the future (15 min buffer)
+    const filteredSlots = availability.slots.filter((slot: { startISO: string }) => {
       const slotTime = dayjs(slot.startISO).tz(timezone);
-      // Add 15 min buffer - don't offer slots less than 15 min from now
+
+      // Check if slot is within requested time range
+      // Use >= and < comparison (slotTime >= rangeStart AND slotTime < rangeEnd)
+      const withinRange = (slotTime.isAfter(rangeStart) || slotTime.isSame(rangeStart)) && slotTime.isBefore(rangeEnd);
+
+      // Check if slot is in the future (15 min buffer)
+      const isFuture = slotTime.isAfter(now.add(15, 'minute'));
+
+      return withinRange && isFuture;
+    });
+
+    console.log('[OpenAICallHandler] Slots after time range filter:', filteredSlots.length);
+
+    if (filteredSlots.length === 0) {
+      console.log('[OpenAICallHandler] No slots available in requested time range');
+      // Fallback: try to find ANY future slots if user's requested time has none
+      const anyFutureSlots = availability.slots.filter((slot: { startISO: string }) => {
+        const slotTime = dayjs(slot.startISO).tz(timezone);
+        return slotTime.isAfter(now.add(15, 'minute'));
+      });
+
+      if (anyFutureSlots.length > 0) {
+        console.log('[OpenAICallHandler] Falling back to', anyFutureSlots.length, 'future slots outside requested range');
+        // Continue with these slots - AI can explain no afternoon slots available
+      } else {
+        console.log('[OpenAICallHandler] No future slots available at all');
+        return [];
+      }
+    }
+
+    const slotsToUse = filteredSlots.length > 0 ? filteredSlots : availability.slots.filter((slot: { startISO: string }) => {
+      const slotTime = dayjs(slot.startISO).tz(timezone);
       return slotTime.isAfter(now.add(15, 'minute'));
     });
 
-    if (futureSlots.length === 0) {
-      console.log('[OpenAICallHandler] All slots are in the past, none available');
-      return [];
-    }
-
-    const slots = futureSlots.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
+    const slots = slotsToUse.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
       const slotTime = dayjs(slot.startISO).tz(timezone);
       const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
 
