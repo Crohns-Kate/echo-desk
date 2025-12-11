@@ -60,6 +60,12 @@ export interface CompactCallState {
 
   /** ml = map_link_requested: true when caller wants directions/map link sent */
   ml?: boolean;
+
+  /** rc = reschedule_confirmed: true when user confirms they want to reschedule */
+  rc?: boolean;
+
+  /** cc = cancel_confirmed: true when user confirms they want to cancel */
+  cc?: boolean;
 }
 
 /**
@@ -137,7 +143,9 @@ No explanations, no commentary, ONLY the JSON object below:
     "sl": true or false (optional),
     "em": "email or null (optional)",
     "pc": true or false (optional),
-    "ml": true or false (optional)
+    "ml": true or false (optional),
+    "rc": true or false (optional - reschedule confirmed),
+    "cc": true or false (optional - cancel confirmed)
   }
 }
 
@@ -161,6 +169,8 @@ Meaning of fields:
 - em  = email: if caller provides their email verbally, capture it here.
 - pc  = phone_confirmed: set to true when caller confirms they are calling from their own phone number.
 - ml  = map_link_requested: set to true when caller wants a map/directions link sent via SMS.
+- rc  = reschedule_confirmed: set to true when user confirms they want to reschedule to a new slot.
+- cc  = cancel_confirmed: set to true when user confirms they want to cancel their appointment.
 
 The backend will maintain overall state separately and will pass you only a short summary in the messages.
 You do NOT need to repeat full history in the state; just parse THIS turn and update the state fields as best you can.
@@ -322,6 +332,37 @@ Your job is to TELL the caller about it in your booking confirmation (see above)
 The form collects: correct name spelling, email address, and phone verification.
 This data syncs to Cliniko automatically when they submit the form.
 
+=== RESCHEDULE FLOW (im = "change") ===
+
+When caller wants to reschedule/change their appointment:
+
+1. Set im = "change"
+2. The backend will automatically look up their upcoming appointment using their phone number
+3. If found, context will show: "upcoming_appointment: [date/time]"
+4. Ask when they'd like to reschedule to: "When would you like to change it to?"
+5. Once they give a new time preference (tp), set rs = true
+6. Backend will fetch new available slots
+7. When you see slots in context, offer them
+8. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
+9. Set rc = true (reschedule confirmed)
+
+If no upcoming appointment found:
+"I couldn't find an upcoming appointment for this number. Would you like to book a new appointment instead?"
+
+=== CANCEL FLOW (im = "cancel") ===
+
+When caller wants to cancel their appointment:
+
+1. Set im = "cancel"
+2. Backend will look up their upcoming appointment
+3. If found, context will show: "upcoming_appointment: [date/time]"
+4. Confirm cancellation: "I see you have an appointment on [date/time]. Are you sure you'd like to cancel?"
+5. If they confirm (say yes): Set cc = true (cancel confirmed)
+6. Say: "I've cancelled your appointment. Feel free to call back when you'd like to rebook."
+
+If no upcoming appointment found:
+"I couldn't find an upcoming appointment for this number. Is there something else I can help with?"
+
 === FAQ ANSWERS (DO NOT FALL BACK FOR THESE) ===
 
 For normal clinic questions, answer directly, briefly, and then keep moving the booking or conversation forward.
@@ -460,6 +501,15 @@ export interface ConversationContext {
     appointmentTypeId?: string;
   }>;
 
+  /** Upcoming appointment for reschedule/cancel (injected by backend) */
+  upcomingAppointment?: {
+    id: string;
+    practitionerId: string;
+    appointmentTypeId: string;
+    startsAt: string;
+    speakable: string;  // e.g., "Thursday at 2:30 PM"
+  };
+
   /** Whether this is the first turn (for greeting) */
   firstTurn?: boolean;
 }
@@ -496,6 +546,11 @@ export async function callReceptionistBrain(
   // Add available slots (if fetched) - PROMINENTLY so AI sees them
   if (context.availableSlots && context.availableSlots.length > 0) {
     contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
+  }
+
+  // Add upcoming appointment (for reschedule/cancel) - PROMINENTLY so AI sees it
+  if (context.upcomingAppointment) {
+    contextInfo += `\n⚠️ UPCOMING APPOINTMENT FOUND:\nupcoming_appointment: ${context.upcomingAppointment.speakable}\n`;
   }
 
   // Combine system prompt with context into ONE system message
