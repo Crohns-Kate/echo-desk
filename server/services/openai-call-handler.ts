@@ -185,10 +185,32 @@ function parseTimePreference(
 
   // Determine base day
   let baseDay = now;
-  if (lower.includes('tomorrow')) {
+  if (lower.includes('today')) {
+    baseDay = now; // Explicitly handle "today"
+  } else if (lower.includes('tomorrow')) {
     baseDay = now.add(1, 'day');
   } else if (lower.includes('next week')) {
     baseDay = now.add(7, 'days');
+  } else {
+    // Check for day names (monday, tuesday, etc.)
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    for (let i = 0; i < dayNames.length; i++) {
+      if (lower.includes(dayNames[i])) {
+        // Find the next occurrence of this day
+        const targetDay = i; // 0 = Sunday, 1 = Monday, etc.
+        const currentDay = now.day();
+        let daysToAdd = targetDay - currentDay;
+
+        // If the day is today or in the past, move to next week
+        if (daysToAdd <= 0) {
+          daysToAdd += 7;
+        }
+
+        baseDay = now.add(daysToAdd, 'day');
+        console.log('[parseTimePreference] Found day name:', dayNames[i], '→', baseDay.format('YYYY-MM-DD'));
+        break;
+      }
+    }
   }
 
   // If we have a specific time, narrow the range around it

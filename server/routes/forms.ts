@@ -366,12 +366,28 @@ export function registerForms(app: Express) {
         if (patient) {
           console.log('[POST /api/forms/submit] Found Cliniko patient:', patient.id);
 
-          // Update patient with correct name spelling and email
-          await updateClinikoPatient(patient.id.toString(), {
+          // Update patient with correct name spelling, email, and phone
+          // Only update phone if user entered a different one than the caller phone
+          const updatePayload: {
+            first_name: string;
+            last_name: string;
+            email: string;
+            phone_numbers?: Array<{ label: string; number: string }>;
+          } = {
             first_name: firstName,
             last_name: lastName,
             email: email
-          });
+          };
+
+          // If user provided a different phone number, update it
+          if (phone && phone !== callerPhone) {
+            console.log('[POST /api/forms/submit] User provided different phone number:', phone, '(original:', callerPhone, ')');
+            updatePayload.phone_numbers = [
+              { label: 'Mobile', number: phone }
+            ];
+          }
+
+          await updateClinikoPatient(patient.id.toString(), updatePayload);
 
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
         } else {
