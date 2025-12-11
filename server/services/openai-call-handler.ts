@@ -21,7 +21,7 @@ import {
   type CompactCallState,
   type ParsedCallState
 } from '../ai/receptionistBrain';
-import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient } from './cliniko';
+import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, rescheduleAppointment, cancelAppointment } from './cliniko';
 import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
@@ -351,6 +351,36 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler] Fetched', slots.length, 'slots for AI to offer');
     }
 
+    // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is change or cancel
+    const isRescheduleOrCancel = context.currentState.im === 'change' || context.currentState.im === 'cancel';
+    if (isRescheduleOrCancel && !context.upcomingAppointment) {
+      console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
+      try {
+        // First find the patient
+        const patient = await findPatientByPhoneRobust(callerPhone);
+        if (patient) {
+          const upcoming = await getNextUpcomingAppointment(patient.id);
+          if (upcoming) {
+            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+            context.upcomingAppointment = {
+              id: upcoming.id,
+              practitionerId: upcoming.practitioner_id,
+              appointmentTypeId: upcoming.appointment_type_id,
+              startsAt: upcoming.starts_at,
+              speakable: apptTime.format('dddd [at] h:mm A') // e.g., "Thursday at 2:30 PM"
+            };
+            console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
+          }
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+        }
+      } catch (error) {
+        console.error('[OpenAICallHandler] Error looking up appointment:', error);
+      }
+    }
+
     // 3. Call OpenAI receptionist brain
     const response = await callReceptionistBrain(context, userUtterance);
 
@@ -411,6 +441,40 @@ export async function handleOpenAIConversation(
             }
           };
         }
+      }
+    }
+
+    // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
+    if ((finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment) {
+      console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - looking up appointment...');
+      try {
+        const patient = await findPatientByPhoneRobust(callerPhone);
+        if (patient) {
+          const upcoming = await getNextUpcomingAppointment(patient.id);
+          if (upcoming) {
+            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+            context.upcomingAppointment = {
+              id: upcoming.id,
+              practitionerId: upcoming.practitioner_id,
+              appointmentTypeId: upcoming.appointment_type_id,
+              startsAt: upcoming.starts_at,
+              speakable: apptTime.format('dddd [at] h:mm A')
+            };
+            console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
+
+            // Call AI again with the appointment info so it can tell the user
+            const responseWithAppt = await callReceptionistBrain(context, userUtterance);
+            console.log('[OpenAICallHandler] Reply with appointment:', responseWithAppt.reply);
+            finalResponse = responseWithAppt;
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found');
+            // Let AI handle this - it should offer to book instead
+          }
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+        }
+      } catch (error) {
+        console.error('[OpenAICallHandler] Error looking up appointment:', error);
       }
     }
 
@@ -510,6 +574,50 @@ export async function handleOpenAIConversation(
         context.currentState.ml = true; // Mark as sent to prevent duplicates
       } catch (error) {
         console.error('[OpenAICallHandler] ❌ Error sending map link:', error);
+      }
+    }
+
+    // 5c. RESCHEDULE: Handle reschedule confirmation
+    if (finalResponse.state.rc === true && context.upcomingAppointment && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
+      const selectedSlot = context.availableSlots[finalResponse.state.si];
+      if (selectedSlot && !context.currentState.rc) {
+        console.log('[OpenAICallHandler] 🔄 Reschedule confirmed! Moving appointment...');
+        try {
+          await rescheduleAppointment(
+            context.upcomingAppointment.id,
+            selectedSlot.startISO,
+            undefined, // patientId not needed
+            context.upcomingAppointment.practitionerId,
+            context.upcomingAppointment.appointmentTypeId
+          );
+          console.log('[OpenAICallHandler] ✅ Appointment rescheduled to:', selectedSlot.speakable);
+
+          // Send SMS confirmation
+          const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
+          const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
+          await sendAppointmentConfirmation({
+            to: callerPhone,
+            appointmentDate: formattedDate,
+            clinicName: clinicName || 'Spinalogic'
+          });
+          console.log('[OpenAICallHandler] ✅ Reschedule SMS confirmation sent');
+
+          context.currentState.rc = true; // Mark as done to prevent duplicates
+        } catch (error) {
+          console.error('[OpenAICallHandler] ❌ Error rescheduling appointment:', error);
+        }
+      }
+    }
+
+    // 5d. CANCEL: Handle cancel confirmation
+    if (finalResponse.state.cc === true && context.upcomingAppointment && !context.currentState.cc) {
+      console.log('[OpenAICallHandler] ❌ Cancel confirmed! Cancelling appointment...');
+      try {
+        await cancelAppointment(context.upcomingAppointment.id);
+        console.log('[OpenAICallHandler] ✅ Appointment cancelled');
+        context.currentState.cc = true; // Mark as done to prevent duplicates
+      } catch (error) {
+        console.error('[OpenAICallHandler] ❌ Error cancelling appointment:', error);
       }
     }
 
