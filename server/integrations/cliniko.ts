@@ -276,16 +276,16 @@ async function clinikoPatch(path: string, payload: any): Promise<any> {
 
 /**
  * Update an existing patient in Cliniko
+ * NOTE: This internal function only updates email, NOT names
+ * Name updates should go through updateClinikoPatient (explicit form submission)
  */
 async function updatePatient(patientId: string, updates: {
-  firstName?: string;
-  lastName?: string;
   email?: string;
 }): Promise<any> {
   const payload: any = {};
 
-  if (updates.firstName) payload.first_name = updates.firstName;
-  if (updates.lastName) payload.last_name = updates.lastName;
+  // Only allow email updates through this internal function
+  // Name updates must go through explicit form submission
   if (updates.email) payload.email = sanitizeEmail(updates.email);
 
   console.log('[Cliniko] Updating patient', patientId, 'with:', payload);
@@ -303,50 +303,43 @@ async function updatePatient(patientId: string, updates: {
 /**
  * Check if patient needs updating and update if necessary
  * Returns true if update was performed
+ *
+ * IMPORTANT: We NEVER update names here to prevent data corruption.
+ * Name updates should ONLY happen through explicit form submission.
  */
 async function checkAndUpdatePatient(
   patient: any,
   newFullName?: string,
   newEmail?: string | null
 ): Promise<boolean> {
-  const updates: { firstName?: string; lastName?: string; email?: string } = {};
+  const updates: { email?: string } = {};
 
-  // Check if name needs updating
+  // CRITICAL: DO NOT update names through this function
+  // Names should only be updated through explicit user form submission
+  // Updating names here can corrupt ALL existing appointments for the patient
   if (newFullName && newFullName.trim()) {
-    const [newFirst, ...rest] = newFullName.trim().split(/\s+/);
-    const newLast = rest.join(' ') || '';
+    console.log('[Cliniko] checkAndUpdatePatient: Name provided but NOT updating');
+    console.log('[Cliniko]   - Existing name:', patient.first_name, patient.last_name);
+    console.log('[Cliniko]   - New name (ignored):', newFullName);
+    console.log('[Cliniko]   - Reason: Names only updated via form submission to prevent data corruption');
+  }
 
-    const existingFirst = (patient.first_name || '').trim();
-    const existingLast = (patient.last_name || '').trim();
+  // Check if email needs updating (ONLY if currently missing)
+  if (newEmail) {
+    const sanitized = sanitizeEmail(newEmail);
+    const existingEmail = (patient.email || '').trim().toLowerCase();
 
-    // Only update if the new name is more complete or different
-    // Avoid updating if new name is less specific (e.g., "Unknown" vs actual name)
-    const isMoreComplete = newFirst && newFirst !== 'Unknown' && newFirst !== 'New Caller';
-    const isDifferent = newFirst.toLowerCase() !== existingFirst.toLowerCase() ||
-                        newLast.toLowerCase() !== existingLast.toLowerCase();
-
-    if (isMoreComplete && isDifferent && existingFirst !== newFirst) {
-      console.log('[Cliniko] Name change detected:');
-      console.log('[Cliniko]   Old:', existingFirst, existingLast);
-      console.log('[Cliniko]   New:', newFirst, newLast);
-      updates.firstName = newFirst;
-      if (newLast) updates.lastName = newLast;
+    // Only update email if patient doesn't have one yet
+    if (sanitized && !existingEmail) {
+      console.log('[Cliniko] Email update needed:');
+      console.log('[Cliniko]   Patient has no email, adding:', sanitized);
+      updates.email = sanitized;
     }
   }
 
-  // Check if email needs updating
-  const sanitizedNewEmail = sanitizeEmail(newEmail || '');
-  const existingEmail = (patient.email || '').trim().toLowerCase();
-
-  if (sanitizedNewEmail && sanitizedNewEmail !== existingEmail) {
-    console.log('[Cliniko] Email change detected:');
-    console.log('[Cliniko]   Old:', existingEmail || '(none)');
-    console.log('[Cliniko]   New:', sanitizedNewEmail);
-    updates.email = sanitizedNewEmail;
-  }
-
-  // Perform update if needed
+  // Only update if there are changes
   if (Object.keys(updates).length > 0) {
+    console.log('[Cliniko] Updating patient with:', updates);
     await updatePatient(patient.id, updates);
     return true;
   }
