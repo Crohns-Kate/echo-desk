@@ -492,7 +492,9 @@ export async function handleOpenAIConversation(
         try {
           // Get Cliniko config from env - use correct appointment type based on new vs existing patient
           const practitionerId = env.CLINIKO_PRACTITIONER_ID || selectedSlot.practitionerId;
-          const isNewPatient = finalResponse.state.np === true;
+          // CRITICAL: Use context.currentState.np (accumulated from all turns), NOT finalResponse.state.np
+          // The np flag is typically set early in the conversation, not in the booking confirmation turn
+          const isNewPatient = context.currentState.np === true;
           const appointmentTypeId = isNewPatient
             ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID  // Longer new patient appointment (45 min)
             : env.CLINIKO_APPT_TYPE_ID;             // Standard follow-up (30 min)
@@ -537,7 +539,8 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
 
           // For NEW patients, send the intake form link to collect name spelling, email, phone
-          if (finalResponse.state.np === true) {
+          // Use context.currentState.np (accumulated state) since np was set early in conversation
+          if (isNewPatient) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
 
