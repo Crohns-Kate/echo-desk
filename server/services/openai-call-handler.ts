@@ -264,8 +264,23 @@ async function fetchAvailableSlots(
       return [];
     }
 
-    // Format slots for human speech
-    const slots = availability.slots.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
+    // Get current time in the clinic's timezone
+    const now = dayjs().tz(timezone);
+    console.log('[OpenAICallHandler] Current time in', timezone, ':', now.format('h:mm A'));
+
+    // Filter out past times and format slots for human speech
+    const futureSlots = availability.slots.filter((slot: { startISO: string }) => {
+      const slotTime = dayjs(slot.startISO).tz(timezone);
+      // Add 15 min buffer - don't offer slots less than 15 min from now
+      return slotTime.isAfter(now.add(15, 'minute'));
+    });
+
+    if (futureSlots.length === 0) {
+      console.log('[OpenAICallHandler] All slots are in the past, none available');
+      return [];
+    }
+
+    const slots = futureSlots.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
       const slotTime = dayjs(slot.startISO).tz(timezone);
       const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
 
@@ -277,7 +292,7 @@ async function fetchAvailableSlots(
       };
     });
 
-    console.log('[OpenAICallHandler] Found', slots.length, 'slots:', slots.map((s: { speakable: string }) => s.speakable).join(', '));
+    console.log('[OpenAICallHandler] Found', slots.length, 'future slots:', slots.map((s: { speakable: string }) => s.speakable).join(', '));
     return slots;
 
   } catch (error) {
@@ -349,7 +364,7 @@ export async function handleOpenAIConversation(
       // Merge the new state so we have tp and np for fetching
       const mergedState = { ...context.currentState, ...response.state };
 
-      // SAFEGUARD: Don't fetch slots if we don't know new/existing patient status
+      // SAFEGUARD 1: Don't fetch slots if we don't know new/existing patient status
       if (mergedState.np === null || mergedState.np === undefined) {
         console.log('[OpenAICallHandler] ⚠️ AI set rs=true but np is null - cannot fetch slots yet');
         // Override response to ask about new/existing patient
@@ -358,6 +373,18 @@ export async function handleOpenAIConversation(
           state: {
             ...response.state,
             rs: false  // Reset so we properly collect np first
+          }
+        };
+      }
+      // SAFEGUARD 2: Don't fetch slots if we don't have a time preference
+      else if (!mergedState.tp) {
+        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but tp is null - need time preference first');
+        // Override response to ask for time preference
+        finalResponse = {
+          reply: "When would you like to come in? I can check what we have available.",
+          state: {
+            ...response.state,
+            rs: false  // Reset so we properly collect tp first
           }
         };
       } else {
@@ -376,10 +403,11 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
           // No slots available - provide a helpful response instead of leaving caller hanging
           finalResponse = {
-            reply: "I'm sorry, we don't have any appointments available at that exact time. Would a different time work for you? I can check mornings or later in the afternoon.",
+            reply: "I'm sorry, we don't have any appointments available at that time. Would a different time work for you? I can check mornings or later in the afternoon.",
             state: {
               ...response.state,
-              rs: false  // Reset so we can try again with a new time preference
+              rs: false,  // Reset so we can try again with a new time preference
+              tp: null    // Clear the time preference so user can give a new one
             }
           };
         }
