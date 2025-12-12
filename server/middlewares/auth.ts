@@ -6,6 +6,7 @@
 import { Request, Response, NextFunction } from "express";
 import { getUserById, canAccessTenant, isSuperAdmin, logAuditEvent } from "../services/auth";
 import type { User, Tenant, UserRole } from "../../shared/schema";
+import { storage } from "../storage";
 
 // Extend Express Request to include user and tenant
 declare global {
@@ -14,6 +15,7 @@ declare global {
       user?: User;
       tenant?: Tenant;
       impersonating?: boolean;
+      activeTenantId?: number; // Resolved tenant ID for the request
     }
   }
 }
@@ -23,6 +25,44 @@ export interface SessionData {
   userId: number;
   tenantId?: number;
   impersonatingTenantId?: number; // For super admin impersonation
+  activeTenantId?: number; // Currently selected tenant (for super admins)
+}
+
+/**
+ * Resolve the tenant ID for a request.
+ * Priority order:
+ * 1. X-Tenant-Id header (for super admins selecting a tenant)
+ * 2. Route parameter :tenantId
+ * 3. Session's activeTenantId (for super admins)
+ * 4. User's own tenantId
+ */
+export function resolveRequestTenantId(req: Request): number | null {
+  const session = req.session as unknown as { data?: SessionData };
+
+  // 1. Check X-Tenant-Id header (primarily for super admin tenant selection)
+  const headerTenantId = req.headers['x-tenant-id'];
+  if (headerTenantId && typeof headerTenantId === 'string') {
+    const parsed = parseInt(headerTenantId, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  // 2. Check route parameter
+  if (req.params.tenantId) {
+    const parsed = parseInt(req.params.tenantId, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  // 3. Check session's active tenant (for super admins who selected a tenant)
+  if (session.data?.activeTenantId) {
+    return session.data.activeTenantId;
+  }
+
+  // 4. Fall back to user's own tenant
+  return req.user?.tenantId ?? null;
 }
 
 /**
@@ -109,17 +149,16 @@ export function requireTenantAdmin(req: Request, res: Response, next: NextFuncti
 
 /**
  * Require access to a specific tenant
- * Use with :tenantId param or falls back to user's tenant
+ * Resolves tenant from X-Tenant-Id header, route param, session, or user's tenant
+ * Loads and attaches the tenant to the request
  */
 export function requireTenantAccess(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {
     return res.status(401).json({ error: "Authentication required" });
   }
 
-  // Get target tenant ID from params or user's tenant
-  // Note: parseInt(undefined) returns NaN which is falsy
-  const paramTenantId = req.params.tenantId ? parseInt(req.params.tenantId) : null;
-  const tenantId = paramTenantId || req.user.tenantId;
+  // Resolve tenant ID using the helper
+  const tenantId = resolveRequestTenantId(req);
 
   if (!tenantId) {
     console.warn('[Auth] Tenant access denied - no tenantId:', {
@@ -127,14 +166,17 @@ export function requireTenantAccess(req: Request, res: Response, next: NextFunct
       email: req.user.email,
       role: req.user.role,
       userTenantId: req.user.tenantId,
+      headerTenantId: req.headers['x-tenant-id'],
       paramTenantId: req.params.tenantId
     });
     return res.status(400).json({
-      error: "No tenant associated with your account. Please contact support.",
-      code: "NO_TENANT"
+      error: "No tenant selected. Please select a clinic to manage.",
+      code: "NO_TENANT",
+      requiresTenantSelection: true // Signal to UI to show tenant selector
     });
   }
 
+  // Check access permission
   if (!canAccessTenant(req.user, tenantId)) {
     // Log unauthorized access attempt
     logAuditEvent(
@@ -152,7 +194,26 @@ export function requireTenantAccess(req: Request, res: Response, next: NextFunct
     return res.status(403).json({ error: "Access denied to this tenant" });
   }
 
-  next();
+  // Store the resolved tenant ID on the request
+  req.activeTenantId = tenantId;
+
+  // Load the tenant if not already loaded or if different from user's tenant
+  if (!req.tenant || req.tenant.id !== tenantId) {
+    storage.getTenantById(tenantId)
+      .then((tenant) => {
+        if (!tenant) {
+          return res.status(404).json({ error: "Tenant not found" });
+        }
+        req.tenant = tenant;
+        next();
+      })
+      .catch((err) => {
+        console.error('[Auth] Error loading tenant:', err);
+        res.status(500).json({ error: "Failed to load tenant" });
+      });
+  } else {
+    next();
+  }
 }
 
 /**

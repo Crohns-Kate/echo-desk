@@ -14,6 +14,13 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -46,9 +53,10 @@ import {
   Trash2,
   Star,
   ArrowLeft,
+  ChevronDown,
 } from "lucide-react";
 import { Link } from "wouter";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, getApiHeaders, setActiveTenantId, getActiveTenantId } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 // Types
@@ -86,11 +94,27 @@ interface Practitioner {
   updatedAt: string;
 }
 
+// User type for auth check
+interface AuthUser {
+  id: number;
+  email: string;
+  role: string;
+  tenantId: number | null;
+}
+
+// Tenant list item for selector
+interface TenantListItem {
+  id: number;
+  slug: string;
+  clinicName: string;
+}
+
 export default function TenantSettings() {
   const { toast } = useToast();
   const [formData, setFormData] = useState<Partial<TenantProfile>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [activeTab, setActiveTab] = useState("clinic");
+  const [selectedTenantId, setSelectedTenantId] = useState<number | null>(getActiveTenantId());
 
   // Practitioner dialog state
   const [practitionerDialogOpen, setPractitionerDialogOpen] = useState(false);
@@ -101,11 +125,43 @@ export default function TenantSettings() {
     isDefault: false,
   });
 
+  // Fetch current user to check role
+  const { data: authData } = useQuery<{ user: AuthUser }>({
+    queryKey: ["/api/auth/me"],
+  });
+
+  const isSuperAdmin = authData?.user?.role === "super_admin";
+  const userHasTenant = !!authData?.user?.tenantId;
+
+  // Fetch list of tenants for super admin selector
+  const { data: tenantsList } = useQuery<TenantListItem[]>({
+    queryKey: ["/api/admin/tenants"],
+    enabled: isSuperAdmin, // Only fetch if super admin
+  });
+
+  // Handle tenant selection for super admin
+  const handleTenantSelect = (tenantId: string) => {
+    const id = parseInt(tenantId, 10);
+    setSelectedTenantId(id);
+    setActiveTenantId(id);
+    // Invalidate queries to refetch with new tenant
+    queryClient.invalidateQueries({ queryKey: ["tenantProfile"] });
+    queryClient.invalidateQueries({ queryKey: ["tenantPractitioners"] });
+    toast({
+      title: "Clinic selected",
+      description: "Settings will now show for the selected clinic.",
+    });
+  };
+
   // Fetch tenant profile
   const { data: profile, isLoading: profileLoading, error: profileError } = useQuery<TenantProfile>({
     queryKey: ["tenantProfile"],
     queryFn: async () => {
-      const response = await fetch("/api/tenant/profile", { credentials: "include" });
+      const headers = getApiHeaders();
+      const response = await fetch("/api/tenant/profile", {
+        credentials: "include",
+        headers,
+      });
       if (!response.ok) {
         const err = await response.json().catch(() => ({ error: "Failed to fetch profile" }));
         throw new Error(err.error || "Failed to fetch profile");
@@ -113,16 +169,22 @@ export default function TenantSettings() {
       return response.json();
     },
     retry: false, // Don't retry on error (super admin case)
+    enabled: userHasTenant || !!selectedTenantId, // Only fetch if user has tenant or super admin selected one
   });
 
   // Fetch practitioners
   const { data: practitioners, isLoading: practitionersLoading } = useQuery<Practitioner[]>({
     queryKey: ["tenantPractitioners"],
     queryFn: async () => {
-      const response = await fetch("/api/tenant/practitioners", { credentials: "include" });
+      const headers = getApiHeaders();
+      const response = await fetch("/api/tenant/practitioners", {
+        credentials: "include",
+        headers,
+      });
       if (!response.ok) throw new Error("Failed to fetch practitioners");
       return response.json();
     },
+    enabled: userHasTenant || !!selectedTenantId, // Only fetch if tenant context exists
   });
 
   // Update form when profile loads
@@ -136,9 +198,10 @@ export default function TenantSettings() {
   // Save profile mutation
   const saveProfileMutation = useMutation({
     mutationFn: async (data: Partial<TenantProfile>) => {
+      const headers = getApiHeaders("application/json");
       const response = await fetch("/api/tenant/profile", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers,
         credentials: "include",
         body: JSON.stringify(data),
       });
@@ -168,9 +231,10 @@ export default function TenantSettings() {
   // Create practitioner mutation
   const createPractitionerMutation = useMutation({
     mutationFn: async (data: { name: string; clinikoPractitionerId?: string; isDefault?: boolean }) => {
+      const headers = getApiHeaders("application/json");
       const response = await fetch("/api/tenant/practitioners", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         credentials: "include",
         body: JSON.stringify(data),
       });
@@ -201,9 +265,10 @@ export default function TenantSettings() {
   // Update practitioner mutation
   const updatePractitionerMutation = useMutation({
     mutationFn: async ({ id, data }: { id: number; data: Partial<Practitioner> }) => {
+      const headers = getApiHeaders("application/json");
       const response = await fetch(`/api/tenant/practitioners/${id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers,
         credentials: "include",
         body: JSON.stringify(data),
       });
@@ -235,8 +300,10 @@ export default function TenantSettings() {
   // Delete practitioner mutation
   const deletePractitionerMutation = useMutation({
     mutationFn: async (id: number) => {
+      const headers = getApiHeaders();
       const response = await fetch(`/api/tenant/practitioners/${id}`, {
         method: "DELETE",
+        headers,
         credentials: "include",
       });
       if (!response.ok) {
@@ -316,38 +383,120 @@ export default function TenantSettings() {
     );
   }
 
-  // Handle case where super admin has no tenant or profile failed to load
-  if (!profile || profileError) {
+  // Handle case where super admin needs to select a tenant
+  if (isSuperAdmin && !selectedTenantId && !userHasTenant) {
     return (
       <div className="container mx-auto py-6 max-w-4xl">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Settings className="h-5 w-5" />
-              No Tenant Selected
+              Select a Clinic
             </CardTitle>
             <CardDescription>
-              As a super admin, you need to access tenant settings from the Tenants page.
+              As a super admin, please select a clinic to manage its settings.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              To edit clinic settings, go to the Tenants page and click the edit icon next to the tenant you want to configure.
-            </p>
-            <Link href="/tenants">
-              <Button>
-                <Building2 className="h-4 w-4 mr-2" />
-                Go to Tenants
-              </Button>
-            </Link>
+            {tenantsList && tenantsList.length > 0 ? (
+              <div className="space-y-4">
+                <Label>Select Clinic</Label>
+                <Select onValueChange={handleTenantSelect}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Choose a clinic..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tenantsList.map((tenant) => (
+                      <SelectItem key={tenant.id} value={tenant.id.toString()}>
+                        {tenant.clinicName} ({tenant.slug})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No clinics found. Create a tenant first from the Tenants page.
+              </p>
+            )}
+            <div className="pt-4 border-t">
+              <Link href="/tenants">
+                <Button variant="outline">
+                  <Building2 className="h-4 w-4 mr-2" />
+                  Go to Tenants
+                </Button>
+              </Link>
+            </div>
           </CardContent>
         </Card>
       </div>
     );
   }
 
+  // Handle case where profile failed to load for other reasons
+  if (!profile && profileError) {
+    return (
+      <div className="container mx-auto py-6 max-w-4xl">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-destructive">
+              <Settings className="h-5 w-5" />
+              Error Loading Settings
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {profileError instanceof Error ? profileError.message : "Failed to load clinic settings."}
+            </p>
+            <Button onClick={() => queryClient.invalidateQueries({ queryKey: ["tenantProfile"] })}>
+              Try Again
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Still loading
+  if (!profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
     <div className="container mx-auto py-6 max-w-4xl space-y-6">
+      {/* Super Admin Tenant Switcher */}
+      {isSuperAdmin && tenantsList && tenantsList.length > 0 && (
+        <Card className="bg-blue-50/50 border-blue-200">
+          <CardContent className="py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-blue-700">
+                <Building2 className="h-4 w-4" />
+                <span>Managing clinic:</span>
+              </div>
+              <Select
+                value={selectedTenantId?.toString() || profile?.id?.toString()}
+                onValueChange={handleTenantSelect}
+              >
+                <SelectTrigger className="w-[250px] bg-white">
+                  <SelectValue placeholder="Select clinic..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {tenantsList.map((tenant) => (
+                    <SelectItem key={tenant.id} value={tenant.id.toString()}>
+                      {tenant.clinicName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-1">
