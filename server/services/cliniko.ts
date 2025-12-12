@@ -14,6 +14,95 @@ import timezone from 'dayjs/plugin/timezone.js';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+// ═══════════════════════════════════════════════
+// Availability Cache (15-30 second TTL to reduce Cliniko calls)
+// ═══════════════════════════════════════════════
+
+interface CachedSlots {
+  slots: Array<{ startISO: string; endISO?: string; label?: string }>;
+  timestamp: number;
+}
+
+// Cache key format: tenantId:practitionerId:apptTypeId:dateRange
+const availabilityCache = new Map<string, CachedSlots>();
+const CACHE_TTL_MS = 20_000; // 20 seconds
+
+/**
+ * Normalize a time range into a cache-friendly label
+ * e.g., same-day morning query → "2024-12-12_morning"
+ */
+function normalizeTimeRangeForCache(fromISO: string, toISO: string, tz: string): string {
+  const from = dayjs(fromISO).tz(tz);
+  const to = dayjs(toISO).tz(tz);
+  const dateStr = from.format('YYYY-MM-DD');
+
+  // Determine time-of-day label based on hour range
+  const fromHour = from.hour();
+  const toHour = to.hour();
+
+  let timeLabel = 'full';
+  if (fromHour >= 5 && toHour <= 12) {
+    timeLabel = 'morning';
+  } else if (fromHour >= 12 && toHour <= 17) {
+    timeLabel = 'afternoon';
+  } else if (fromHour >= 17 && toHour <= 21) {
+    timeLabel = 'evening';
+  } else if (from.isSame(to, 'day')) {
+    // Same day, use hour range
+    timeLabel = `${fromHour}-${toHour}`;
+  }
+
+  // If spans multiple days, include end date
+  if (!from.isSame(to, 'day')) {
+    return `${dateStr}_to_${to.format('YYYY-MM-DD')}`;
+  }
+
+  return `${dateStr}_${timeLabel}`;
+}
+
+function getCacheKey(
+  tenantId: number | undefined,
+  practitionerId: string,
+  appointmentTypeId: string,
+  timeRangeLabel: string
+): string {
+  return `${tenantId || 'default'}:${practitionerId}:${appointmentTypeId}:${timeRangeLabel}`;
+}
+
+function getCachedAvailability(key: string): CachedSlots | null {
+  const cached = availabilityCache.get(key);
+  if (!cached) return null;
+
+  const age = Date.now() - cached.timestamp;
+  if (age > CACHE_TTL_MS) {
+    availabilityCache.delete(key);
+    return null;
+  }
+
+  console.log(`[Cliniko] Cache HIT for ${key} (age: ${Math.round(age / 1000)}s)`);
+  return cached;
+}
+
+function setCachedAvailability(key: string, slots: Array<{ startISO: string; endISO?: string; label?: string }>): void {
+  availabilityCache.set(key, {
+    slots,
+    timestamp: Date.now()
+  });
+  console.log(`[Cliniko] Cache SET for ${key}`);
+
+  // Clean old entries (simple cleanup every 100 sets)
+  if (availabilityCache.size > 100) {
+    const now = Date.now();
+    const keysToDelete: string[] = [];
+    availabilityCache.forEach((v, k) => {
+      if (now - v.timestamp > CACHE_TTL_MS * 2) {
+        keysToDelete.push(k);
+      }
+    });
+    keysToDelete.forEach(k => availabilityCache.delete(k));
+  }
+}
+
 // Helper to build Cliniko headers and base URL from tenant context or env fallback
 function getClinikoConfig(tenantCtx?: TenantContext): { base: string; headers: Record<string, string> } {
   let apiKey: string;
@@ -493,6 +582,9 @@ export interface EnrichedSlot {
  * Fetch availability across multiple practitioners and merge results
  * Returns top N slots sorted by time, with practitioner attribution
  *
+ * RESILIENCE: If one practitioner API call fails, still returns slots from others.
+ * CACHING: Uses 20-second cache per tenant+practitioner+apptType+date to reduce Cliniko calls.
+ *
  * @param practitioners - Array of practitioners from DB with clinikoPractitionerId
  * @param opts - Query options (fromISO, toISO, timezone, tenantCtx, isNewPatient)
  * @param maxSlots - Maximum slots to return (default 3)
@@ -525,8 +617,14 @@ export async function getMultiPractitionerAvailability(
 
   console.log(`[Cliniko] Fetching availability for ${validPractitioners.length} practitioners with concurrency=${concurrencyLimit}`);
 
+  // Normalize time range for cache key (includes date + time-of-day label)
+  const timeRangeLabel = normalizeTimeRangeForCache(opts.fromISO, opts.toISO, tz);
+
   // Fetch slots for each practitioner with concurrency limit
   const allSlots: EnrichedSlot[] = [];
+  let successCount = 0;
+  let failCount = 0;
+  let cacheHitCount = 0;
 
   // Process in batches for concurrency control
   for (let i = 0; i < validPractitioners.length; i += concurrencyLimit) {
@@ -537,20 +635,42 @@ export async function getMultiPractitionerAvailability(
         try {
           // Determine appointment type based on isNewPatient
           const appointmentTypeId = opts.isNewPatient
-            ? opts.tenantCtx?.cliniko?.newPatientApptTypeId
-            : opts.tenantCtx?.cliniko?.standardApptTypeId;
+            ? (opts.tenantCtx?.cliniko?.newPatientApptTypeId || '')
+            : (opts.tenantCtx?.cliniko?.standardApptTypeId || '');
 
-          const result = await getAvailability({
-            fromISO: opts.fromISO,
-            toISO: opts.toISO,
-            timezone: tz,
-            practitionerId: practitioner.clinikoPractitionerId!,
-            appointmentTypeId: appointmentTypeId || undefined,
-            tenantCtx: opts.tenantCtx,
-          });
+          // Check cache first (key includes normalized time preference)
+          const cacheKey = getCacheKey(
+            opts.tenantCtx?.id,
+            practitioner.clinikoPractitionerId!,
+            appointmentTypeId,
+            timeRangeLabel
+          );
+
+          const cached = getCachedAvailability(cacheKey);
+          let rawSlots: Array<{ startISO: string; endISO?: string; label?: string }>;
+
+          if (cached) {
+            rawSlots = cached.slots;
+            cacheHitCount++;
+          } else {
+            const result = await getAvailability({
+              fromISO: opts.fromISO,
+              toISO: opts.toISO,
+              timezone: tz,
+              practitionerId: practitioner.clinikoPractitionerId!,
+              appointmentTypeId: appointmentTypeId || undefined,
+              tenantCtx: opts.tenantCtx,
+            });
+            rawSlots = result.slots;
+
+            // Cache the result
+            setCachedAvailability(cacheKey, rawSlots);
+          }
+
+          successCount++;
 
           // Enrich slots with practitioner info
-          return result.slots.map(slot => ({
+          return rawSlots.map(slot => ({
             startISO: slot.startISO,
             speakable: dayjs(slot.startISO).tz(tz).format('h:mm A'),
             speakableWithPractitioner: `${dayjs(slot.startISO).tz(tz).format('h:mm A')} with ${practitioner.name}`,
@@ -558,22 +678,29 @@ export async function getMultiPractitionerAvailability(
             practitionerDisplayName: practitioner.name,
             appointmentTypeId: appointmentTypeId || opts.tenantCtx?.cliniko?.standardApptTypeId || '',
           }));
-        } catch (error) {
-          console.error(`[Cliniko] Error fetching availability for ${practitioner.name}:`, error);
+        } catch (error: any) {
+          failCount++;
+          console.error(`[Cliniko] ⚠️ Error fetching availability for ${practitioner.name}:`, error.message || error);
+          // RESILIENCE: Return empty array, don't throw - other practitioners may succeed
           return [];
         }
       })
     );
 
-    // Collect successful results
+    // Collect successful results (Promise.allSettled always resolves)
     for (const result of batchResults) {
       if (result.status === 'fulfilled') {
         allSlots.push(...result.value);
+      } else {
+        // This shouldn't happen with our try/catch, but handle rejected promises
+        failCount++;
+        console.error(`[Cliniko] ⚠️ Promise rejected:`, result.reason);
       }
     }
   }
 
-  console.log(`[Cliniko] Found ${allSlots.length} total slots across all practitioners`);
+  console.log(`[Cliniko] Results: ${successCount} succeeded, ${failCount} failed, ${cacheHitCount} cache hits`);
+  console.log(`[Cliniko] Found ${allSlots.length} total slots across ${successCount} practitioners`);
 
   // Sort by time, then take top N
   const sortedSlots = allSlots.sort((a, b) =>

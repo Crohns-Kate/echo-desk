@@ -117,10 +117,22 @@ export function requireTenantAccess(req: Request, res: Response, next: NextFunct
   }
 
   // Get target tenant ID from params or user's tenant
-  const tenantId = parseInt(req.params.tenantId) || req.user.tenantId;
+  // Note: parseInt(undefined) returns NaN which is falsy
+  const paramTenantId = req.params.tenantId ? parseInt(req.params.tenantId) : null;
+  const tenantId = paramTenantId || req.user.tenantId;
 
   if (!tenantId) {
-    return res.status(400).json({ error: "Tenant ID required" });
+    console.warn('[Auth] Tenant access denied - no tenantId:', {
+      userId: req.user.id,
+      email: req.user.email,
+      role: req.user.role,
+      userTenantId: req.user.tenantId,
+      paramTenantId: req.params.tenantId
+    });
+    return res.status(400).json({
+      error: "No tenant associated with your account. Please contact support.",
+      code: "NO_TENANT"
+    });
   }
 
   if (!canAccessTenant(req.user, tenantId)) {

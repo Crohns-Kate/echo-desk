@@ -635,7 +635,21 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler] 🎯 Booking confirmed! Creating appointment...');
 
       const selectedSlot = context.availableSlots[finalResponse.state.si];
-      if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
+
+      // BOOKING LOCK: Prevent double-booking from race conditions / duplicate webhooks
+      const now = Date.now();
+      const lockExpiry = context.currentState.bookingLockUntil || 0;
+      const isLocked = lockExpiry > now;
+
+      if (isLocked && !context.currentState.appointmentCreated) {
+        // Lock is active but appointment not yet created - booking in progress
+        console.log('[OpenAICallHandler] ⏳ Booking lock active, skipping duplicate attempt (expires in', Math.round((lockExpiry - now) / 1000), 's)');
+        // Don't create duplicate - the original request will complete
+      } else if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
+        // Set booking lock for 10 seconds to prevent race conditions
+        context.currentState.bookingLockUntil = now + 10_000;
+        console.log('[OpenAICallHandler] 🔒 Booking lock acquired for 10 seconds');
+
         try {
           // CRITICAL: Use enriched slot's practitioner and appointment type (from multi-practitioner query)
           // Only fallback to env vars if slot doesn't have the info (legacy single-practitioner mode)
@@ -690,14 +704,24 @@ export async function handleOpenAIConversation(
           const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
 
           // Send SMS confirmation (only if not already sent)
+          // Include: time, practitioner name, address, and map link
           if (!context.currentState.smsConfirmSent) {
+            const includeMapUrl = googleMapsUrl || undefined;
             await sendAppointmentConfirmation({
               to: callerPhone,
               appointmentDate: formattedDate,
-              clinicName: clinicName || 'Spinalogic'
+              clinicName: clinicName || 'Spinalogic',
+              practitionerName: selectedSlot.practitionerDisplayName || undefined,
+              address: clinicAddress || context.tenantInfo?.address,
+              mapUrl: includeMapUrl
             });
             context.currentState.smsConfirmSent = true;
-            console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
+            // Track if map was included in confirmation SMS
+            if (includeMapUrl) {
+              context.currentState.confirmSmsIncludedMap = true;
+              context.currentState.smsMapSent = true; // Map already sent via confirmation
+            }
+            console.log('[OpenAICallHandler] ✅ SMS confirmation sent (mapIncluded:', !!includeMapUrl, ')');
           } else {
             console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
           }
