@@ -9,6 +9,7 @@
  */
 
 import { complete, type LLMMessage } from './llmProvider';
+import type { EnrichedSlot } from '../services/cliniko';
 
 // ═══════════════════════════════════════════════
 // Types for Structured Call State (Abbreviated for Token Efficiency)
@@ -66,6 +67,19 @@ export interface CompactCallState {
 
   /** cc = cancel_confirmed: true when user confirms they want to cancel */
   cc?: boolean;
+
+  // ═══════════════════════════════════════════════
+  // SMS Tracking Flags (backend-only, prevent duplicates)
+  // ═══════════════════════════════════════════════
+
+  /** smsConfirmSent = true after booking confirmation SMS sent */
+  smsConfirmSent?: boolean;
+
+  /** smsIntakeSent = true after new patient intake form SMS sent */
+  smsIntakeSent?: boolean;
+
+  /** smsMapSent = true after map/directions SMS sent (replaces ml tracking) */
+  smsMapSent?: boolean;
 }
 
 /**
@@ -547,6 +561,15 @@ export interface ConversationContext {
   /** Tenant/clinic information */
   clinicName?: string;
 
+  /** Compact tenant info for AI context (injected by backend) */
+  tenantInfo?: {
+    clinicName: string;
+    address?: string;
+    hasMapsLink: boolean;
+    practitionerNames: string[];  // Display names for "who will I see" question
+    timezone: string;
+  };
+
   /** Known patient info (from caller ID lookup) */
   knownPatient?: {
     firstName: string;
@@ -554,13 +577,8 @@ export interface ConversationContext {
     id: string;
   };
 
-  /** Available appointment slots (injected by backend) */
-  availableSlots?: Array<{
-    startISO: string;
-    speakable: string;
-    practitionerId?: string;
-    appointmentTypeId?: string;
-  }>;
+  /** Available appointment slots (injected by backend) - enriched with practitioner info */
+  availableSlots?: EnrichedSlot[];
 
   /** Upcoming appointment for reschedule/cancel (injected by backend) */
   upcomingAppointment?: {
@@ -597,6 +615,21 @@ export async function callReceptionistBrain(
   // Build compact context info
   let contextInfo = '';
 
+  // [TENANT] block - clinic info for personalized responses
+  if (context.tenantInfo) {
+    contextInfo += '[TENANT]\n';
+    contextInfo += `clinic_name: ${context.tenantInfo.clinicName}\n`;
+    if (context.tenantInfo.address) {
+      contextInfo += `address: ${context.tenantInfo.address}\n`;
+    }
+    contextInfo += `has_maps_link: ${context.tenantInfo.hasMapsLink}\n`;
+    if (context.tenantInfo.practitionerNames.length > 0) {
+      contextInfo += `practitioners: ${context.tenantInfo.practitionerNames.join(', ')}\n`;
+    }
+    contextInfo += `timezone: ${context.tenantInfo.timezone}\n`;
+    contextInfo += '\n';
+  }
+
   if (context.firstTurn) {
     contextInfo += 'first_turn: true\n';
   }
@@ -611,8 +644,12 @@ export async function callReceptionistBrain(
   }
 
   // Add available slots (if fetched) - PROMINENTLY so AI sees them
+  // Include practitioner names so AI can say "3:45 PM with Dr Sarah"
   if (context.availableSlots && context.availableSlots.length > 0) {
-    contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: [${context.availableSlots.map(s => s.speakable).join(', ')}]\n`;
+    const slotDescriptions = context.availableSlots.map((s, idx) =>
+      `[${idx}] ${s.speakableWithPractitioner || s.speakable}`
+    );
+    contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: ${slotDescriptions.join(', ')}\n`;
   }
 
   // Add upcoming appointment (for reschedule/cancel) - PROMINENTLY so AI sees it

@@ -477,6 +477,125 @@ export async function getAvailability(opts?: {
   }
 }
 
+/**
+ * Enriched slot with full identity for end-to-end booking
+ */
+export interface EnrichedSlot {
+  startISO: string;
+  speakable: string;               // e.g., "3:45 PM"
+  speakableWithPractitioner: string; // e.g., "3:45 PM with Dr Sarah"
+  clinikoPractitionerId: string;
+  practitionerDisplayName: string;
+  appointmentTypeId: string;
+}
+
+/**
+ * Fetch availability across multiple practitioners and merge results
+ * Returns top N slots sorted by time, with practitioner attribution
+ *
+ * @param practitioners - Array of practitioners from DB with clinikoPractitionerId
+ * @param opts - Query options (fromISO, toISO, timezone, tenantCtx, isNewPatient)
+ * @param maxSlots - Maximum slots to return (default 3)
+ * @param concurrencyLimit - Max parallel API calls (default 3)
+ */
+export async function getMultiPractitionerAvailability(
+  practitioners: Array<{
+    name: string;
+    clinikoPractitionerId: string | null;
+  }>,
+  opts: {
+    fromISO: string;
+    toISO: string;
+    timezone?: string;
+    tenantCtx?: TenantContext;
+    isNewPatient?: boolean;
+  },
+  maxSlots: number = 3,
+  concurrencyLimit: number = 3
+): Promise<{ slots: EnrichedSlot[] }> {
+  const tz = opts.timezone || 'Australia/Brisbane';
+
+  // Filter practitioners with valid Cliniko IDs
+  const validPractitioners = practitioners.filter(p => p.clinikoPractitionerId);
+
+  if (validPractitioners.length === 0) {
+    console.warn('[Cliniko] No practitioners with Cliniko IDs found');
+    return { slots: [] };
+  }
+
+  console.log(`[Cliniko] Fetching availability for ${validPractitioners.length} practitioners with concurrency=${concurrencyLimit}`);
+
+  // Fetch slots for each practitioner with concurrency limit
+  const allSlots: EnrichedSlot[] = [];
+
+  // Process in batches for concurrency control
+  for (let i = 0; i < validPractitioners.length; i += concurrencyLimit) {
+    const batch = validPractitioners.slice(i, i + concurrencyLimit);
+
+    const batchResults = await Promise.allSettled(
+      batch.map(async (practitioner) => {
+        try {
+          // Determine appointment type based on isNewPatient
+          const appointmentTypeId = opts.isNewPatient
+            ? opts.tenantCtx?.cliniko?.newPatientApptTypeId
+            : opts.tenantCtx?.cliniko?.standardApptTypeId;
+
+          const result = await getAvailability({
+            fromISO: opts.fromISO,
+            toISO: opts.toISO,
+            timezone: tz,
+            practitionerId: practitioner.clinikoPractitionerId!,
+            appointmentTypeId: appointmentTypeId || undefined,
+            tenantCtx: opts.tenantCtx,
+          });
+
+          // Enrich slots with practitioner info
+          return result.slots.map(slot => ({
+            startISO: slot.startISO,
+            speakable: dayjs(slot.startISO).tz(tz).format('h:mm A'),
+            speakableWithPractitioner: `${dayjs(slot.startISO).tz(tz).format('h:mm A')} with ${practitioner.name}`,
+            clinikoPractitionerId: practitioner.clinikoPractitionerId!,
+            practitionerDisplayName: practitioner.name,
+            appointmentTypeId: appointmentTypeId || opts.tenantCtx?.cliniko?.standardApptTypeId || '',
+          }));
+        } catch (error) {
+          console.error(`[Cliniko] Error fetching availability for ${practitioner.name}:`, error);
+          return [];
+        }
+      })
+    );
+
+    // Collect successful results
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled') {
+        allSlots.push(...result.value);
+      }
+    }
+  }
+
+  console.log(`[Cliniko] Found ${allSlots.length} total slots across all practitioners`);
+
+  // Sort by time, then take top N
+  const sortedSlots = allSlots.sort((a, b) =>
+    new Date(a.startISO).getTime() - new Date(b.startISO).getTime()
+  );
+
+  // Filter to future slots only (15 min buffer)
+  const now = dayjs().tz(tz);
+  const futureSlots = sortedSlots.filter(slot =>
+    dayjs(slot.startISO).tz(tz).isAfter(now.add(15, 'minute'))
+  );
+
+  const topSlots = futureSlots.slice(0, maxSlots);
+
+  console.log(`[Cliniko] Returning top ${topSlots.length} slots:`);
+  topSlots.forEach((slot, idx) => {
+    console.log(`[Cliniko]   ${idx + 1}. ${slot.speakableWithPractitioner}`);
+  });
+
+  return { slots: topSlots };
+}
+
 export async function createAppointmentForPatient(phone: string, payload: {
   practitionerId: string;
   appointmentTypeId: string;

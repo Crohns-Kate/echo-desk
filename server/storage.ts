@@ -625,6 +625,31 @@ export class DatabaseStorage implements IStorage {
     return practitioner || undefined;
   }
 
+  /**
+   * Get all active practitioners for a tenant (for multi-practitioner availability)
+   * Returns practitioners with their Cliniko IDs for API calls
+   */
+  async getActivePractitioners(tenantId: number): Promise<Array<{
+    id: number;
+    name: string;
+    clinikoPractitionerId: string | null;
+    isDefault: boolean;
+  }>> {
+    return db
+      .select({
+        id: practitioners.id,
+        name: practitioners.name,
+        clinikoPractitionerId: practitioners.clinikoPractitionerId,
+        isDefault: practitioners.isDefault,
+      })
+      .from(practitioners)
+      .where(and(
+        eq(practitioners.tenantId, tenantId),
+        eq(practitioners.isActive, true)
+      ))
+      .orderBy(desc(practitioners.isDefault), practitioners.name);
+  }
+
   async seed(): Promise<void> {
     // Check if default tenant exists
     const existing = await this.getTenant('default');
