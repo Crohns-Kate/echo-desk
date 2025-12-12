@@ -158,6 +158,25 @@ export const tenants = pgTable("tenants", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Practitioners - supports multiple practitioners per tenant
+export const practitioners = pgTable("practitioners", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").references(() => tenants.id).notNull(),
+
+  // Practitioner details
+  name: text("name").notNull(),  // Display name, e.g., "Dr Michael Smith"
+  clinikoPractitionerId: text("cliniko_practitioner_id"),  // Cliniko practitioner ID
+
+  // Scheduling
+  isActive: boolean("is_active").default(true),
+  isDefault: boolean("is_default").default(false),  // Primary practitioner for this tenant
+  schedule: jsonb("schedule").default(sql`'{}'::jsonb`),  // Working days/hours JSON
+
+  // Metadata
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // Phone mapping - stores caller identity (tenant-scoped)
 export const phoneMap = pgTable("phone_map", {
   id: serial("id").primaryKey(),
@@ -285,6 +304,14 @@ export const tenantsRelations = relations(tenants, ({ many }) => ({
   conversations: many(conversations),
   users: many(users),
   phoneNumbers: many(phoneNumberPool),
+  practitioners: many(practitioners),
+}));
+
+export const practitionersRelations = relations(practitioners, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [practitioners.tenantId],
+    references: [tenants.id],
+  }),
 }));
 
 export const phoneNumberPoolRelations = relations(phoneNumberPool, ({ one }) => ({
@@ -330,6 +357,12 @@ export const alertsRelations = relations(alerts, ({ one }) => ({
 export const insertTenantSchema = createInsertSchema(tenants).omit({
   id: true,
   createdAt: true,
+});
+
+export const insertPractitionerSchema = createInsertSchema(practitioners).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
 });
 
 export const insertPhoneMapSchema = createInsertSchema(phoneMap).omit({

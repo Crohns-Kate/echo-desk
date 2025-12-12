@@ -5,9 +5,10 @@
 
 import { Router, Request, Response } from "express";
 import { db } from "../db";
-import { callLogs, tenants } from "../../shared/schema";
+import { callLogs, tenants, practitioners } from "../../shared/schema";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { requireAuth, requireTenantAccess } from "../middlewares/auth";
+import { storage } from "../storage";
 
 const router = Router();
 
@@ -170,10 +171,12 @@ router.patch("/profile", async (req: Request, res: Response) => {
     const allowedFields = [
       "clinicName",
       "email",
+      "address",
       "addressStreet",
       "addressCity",
       "addressState",
       "addressPostcode",
+      "googleMapsUrl",
       "timezone",
       "businessHours",
       "greeting",
@@ -269,6 +272,110 @@ router.patch("/onboarding/step", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Update onboarding step error:", error);
     res.status(500).json({ error: "Failed to update step" });
+  }
+});
+
+// =====================================================
+// Practitioner Management Routes
+// =====================================================
+
+/**
+ * GET /api/tenant/practitioners
+ * List all practitioners for the authenticated tenant
+ */
+router.get("/practitioners", async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const practitionerList = await storage.listPractitioners(tenantId);
+    res.json(practitionerList);
+  } catch (error) {
+    console.error("List practitioners error:", error);
+    res.status(500).json({ error: "Failed to fetch practitioners" });
+  }
+});
+
+/**
+ * POST /api/tenant/practitioners
+ * Create a new practitioner for the authenticated tenant
+ */
+router.post("/practitioners", async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const { name, clinikoPractitionerId, isDefault } = req.body;
+
+    if (!name || typeof name !== "string" || name.trim() === "") {
+      return res.status(400).json({ error: "Name is required" });
+    }
+
+    const practitioner = await storage.createPractitioner(tenantId, {
+      name: name.trim(),
+      clinikoPractitionerId: clinikoPractitionerId?.trim() || undefined,
+      isDefault: Boolean(isDefault),
+    });
+
+    res.status(201).json(practitioner);
+  } catch (error) {
+    console.error("Create practitioner error:", error);
+    res.status(500).json({ error: "Failed to create practitioner" });
+  }
+});
+
+/**
+ * PATCH /api/tenant/practitioners/:id
+ * Update a practitioner
+ */
+router.patch("/practitioners/:id", async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const practitionerId = parseInt(req.params.id);
+
+    // Verify practitioner belongs to this tenant
+    const existing = await storage.getPractitionerById(practitionerId);
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "Practitioner not found" });
+    }
+
+    const { name, clinikoPractitionerId, isActive, isDefault, schedule } = req.body;
+    const updates: Record<string, any> = {};
+
+    if (name !== undefined) updates.name = name.trim();
+    if (clinikoPractitionerId !== undefined) updates.clinikoPractitionerId = clinikoPractitionerId?.trim() || null;
+    if (isActive !== undefined) updates.isActive = Boolean(isActive);
+    if (isDefault !== undefined) updates.isDefault = Boolean(isDefault);
+    if (schedule !== undefined) updates.schedule = schedule;
+
+    const practitioner = await storage.updatePractitioner(practitionerId, updates);
+    res.json(practitioner);
+  } catch (error) {
+    console.error("Update practitioner error:", error);
+    res.status(500).json({ error: "Failed to update practitioner" });
+  }
+});
+
+/**
+ * DELETE /api/tenant/practitioners/:id
+ * Delete a practitioner
+ */
+router.delete("/practitioners/:id", async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const practitionerId = parseInt(req.params.id);
+
+    // Verify practitioner belongs to this tenant
+    const existing = await storage.getPractitionerById(practitionerId);
+    if (!existing || existing.tenantId !== tenantId) {
+      return res.status(404).json({ error: "Practitioner not found" });
+    }
+
+    const deleted = await storage.deletePractitioner(practitionerId);
+    if (deleted) {
+      res.json({ success: true });
+    } else {
+      res.status(500).json({ error: "Failed to delete practitioner" });
+    }
+  } catch (error) {
+    console.error("Delete practitioner error:", error);
+    res.status(500).json({ error: "Failed to delete practitioner" });
   }
 });
 

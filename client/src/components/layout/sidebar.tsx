@@ -7,9 +7,14 @@ import {
   Activity,
   Settings,
   BarChart3,
-  Building2
+  Building2,
+  MessageSquare,
+  CreditCard,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
 
 interface NavItem {
   href: string;
@@ -17,7 +22,8 @@ interface NavItem {
   icon: React.ReactNode;
 }
 
-const navItems: NavItem[] = [
+// Admin navigation items
+const adminNavItems: NavItem[] = [
   {
     href: "/",
     label: "Dashboard",
@@ -60,8 +66,51 @@ const navItems: NavItem[] = [
   },
 ];
 
+// Tenant navigation items
+const tenantNavItems: NavItem[] = [
+  {
+    href: "/",
+    label: "Dashboard",
+    icon: <LayoutDashboard className="h-4 w-4" />,
+  },
+  {
+    href: "/calls",
+    label: "Call Logs",
+    icon: <Phone className="h-4 w-4" />,
+  },
+  {
+    href: "/transcripts",
+    label: "Transcripts",
+    icon: <FileText className="h-4 w-4" />,
+  },
+  {
+    href: "/faqs",
+    label: "FAQs",
+    icon: <MessageSquare className="h-4 w-4" />,
+  },
+  {
+    href: "/alerts",
+    label: "Alerts",
+    icon: <AlertCircle className="h-4 w-4" />,
+  },
+  {
+    href: "/settings",
+    label: "Clinic Settings",
+    icon: <Settings className="h-4 w-4" />,
+  },
+  {
+    href: "/billing",
+    label: "Billing",
+    icon: <CreditCard className="h-4 w-4" />,
+  },
+];
+
 export function Sidebar() {
   const [location] = useLocation();
+  const { isSuperAdmin, tenant, logout } = useAuth();
+
+  // Choose navigation items based on user role
+  const navItems = isSuperAdmin ? adminNavItems : tenantNavItems;
 
   return (
     <aside className="hidden md:flex md:flex-col md:w-64 border-r bg-muted/10">
@@ -72,7 +121,9 @@ export function Sidebar() {
           </div>
           <div>
             <h2 className="font-semibold text-lg">Echo Desk</h2>
-            <p className="text-xs text-muted-foreground">AI Voice Receptionist</p>
+            <p className="text-xs text-muted-foreground">
+              {isSuperAdmin ? "Admin Portal" : tenant?.clinicName || "AI Voice Receptionist"}
+            </p>
           </div>
         </div>
       </div>
@@ -100,11 +151,20 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t">
+      <div className="p-4 border-t space-y-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <div className="h-2 w-2 rounded-full bg-green-500" />
           <span>System Online</span>
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start text-muted-foreground hover:text-foreground"
+          onClick={() => logout()}
+        >
+          <LogOut className="h-4 w-4 mr-2" />
+          Sign Out
+        </Button>
       </div>
     </aside>
   );
