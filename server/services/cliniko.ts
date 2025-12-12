@@ -23,18 +23,50 @@ interface CachedSlots {
   timestamp: number;
 }
 
-// Cache key format: tenantId:practitionerId:apptTypeId:fromDate:toDate
+// Cache key format: tenantId:practitionerId:apptTypeId:dateRange
 const availabilityCache = new Map<string, CachedSlots>();
 const CACHE_TTL_MS = 20_000; // 20 seconds
+
+/**
+ * Normalize a time range into a cache-friendly label
+ * e.g., same-day morning query → "2024-12-12_morning"
+ */
+function normalizeTimeRangeForCache(fromISO: string, toISO: string, tz: string): string {
+  const from = dayjs(fromISO).tz(tz);
+  const to = dayjs(toISO).tz(tz);
+  const dateStr = from.format('YYYY-MM-DD');
+
+  // Determine time-of-day label based on hour range
+  const fromHour = from.hour();
+  const toHour = to.hour();
+
+  let timeLabel = 'full';
+  if (fromHour >= 5 && toHour <= 12) {
+    timeLabel = 'morning';
+  } else if (fromHour >= 12 && toHour <= 17) {
+    timeLabel = 'afternoon';
+  } else if (fromHour >= 17 && toHour <= 21) {
+    timeLabel = 'evening';
+  } else if (from.isSame(to, 'day')) {
+    // Same day, use hour range
+    timeLabel = `${fromHour}-${toHour}`;
+  }
+
+  // If spans multiple days, include end date
+  if (!from.isSame(to, 'day')) {
+    return `${dateStr}_to_${to.format('YYYY-MM-DD')}`;
+  }
+
+  return `${dateStr}_${timeLabel}`;
+}
 
 function getCacheKey(
   tenantId: number | undefined,
   practitionerId: string,
   appointmentTypeId: string,
-  fromDate: string,
-  toDate: string
+  timeRangeLabel: string
 ): string {
-  return `${tenantId || 'default'}:${practitionerId}:${appointmentTypeId}:${fromDate}:${toDate}`;
+  return `${tenantId || 'default'}:${practitionerId}:${appointmentTypeId}:${timeRangeLabel}`;
 }
 
 function getCachedAvailability(key: string): CachedSlots | null {
@@ -585,13 +617,8 @@ export async function getMultiPractitionerAvailability(
 
   console.log(`[Cliniko] Fetching availability for ${validPractitioners.length} practitioners with concurrency=${concurrencyLimit}`);
 
-  // Extract date portion for cache key
-  const fromDate = opts.fromISO.includes('T')
-    ? dayjs(opts.fromISO).tz(tz).format('YYYY-MM-DD')
-    : opts.fromISO;
-  const toDate = opts.toISO.includes('T')
-    ? dayjs(opts.toISO).tz(tz).format('YYYY-MM-DD')
-    : opts.toISO;
+  // Normalize time range for cache key (includes date + time-of-day label)
+  const timeRangeLabel = normalizeTimeRangeForCache(opts.fromISO, opts.toISO, tz);
 
   // Fetch slots for each practitioner with concurrency limit
   const allSlots: EnrichedSlot[] = [];
@@ -611,13 +638,12 @@ export async function getMultiPractitionerAvailability(
             ? (opts.tenantCtx?.cliniko?.newPatientApptTypeId || '')
             : (opts.tenantCtx?.cliniko?.standardApptTypeId || '');
 
-          // Check cache first
+          // Check cache first (key includes normalized time preference)
           const cacheKey = getCacheKey(
             opts.tenantCtx?.id,
             practitioner.clinikoPractitionerId!,
             appointmentTypeId,
-            fromDate,
-            toDate
+            timeRangeLabel
           );
 
           const cached = getCachedAvailability(cacheKey);

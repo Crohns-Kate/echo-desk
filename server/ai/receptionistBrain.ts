@@ -80,6 +80,12 @@ export interface CompactCallState {
 
   /** smsMapSent = true after map/directions SMS sent (replaces ml tracking) */
   smsMapSent?: boolean;
+
+  /** confirmSmsIncludedMap = true if confirmation SMS already included map URL */
+  confirmSmsIncludedMap?: boolean;
+
+  /** bookingLockUntil = timestamp when booking lock expires (prevents double-booking) */
+  bookingLockUntil?: number;
 }
 
 /**
@@ -329,35 +335,50 @@ IF slots NOT in context but you have np, nm, AND tp:
 
 STEP 6: Caller picks a slot → BOOK IMMEDIATELY (no friction!)
 ⚠️ CRITICAL: Do NOT ask "Shall I confirm?" or "Would you like me to book that?"
-Instead, when caller picks a slot, IMMEDIATELY book it:
-- Say: "Perfect — I'll book that in now." or "Great, booking that for you now."
-- Then confirm: "All done! You're booked for [time] with [practitioner]."
+Instead, when caller picks a slot, IMMEDIATELY book it.
+
+Use VARIED confirmation phrases (rotate, don't repeat same one):
+- "Perfect — I'll lock that in now."
+- "Great — booking that for you now."
+- "Lovely — I'll book you straight in."
+- "No worries — booking that now."
+- "Excellent choice — locking that in."
+
+Then confirm: "All done! You're booked for [time] with [practitioner]."
 
 === SLOT SELECTION PARSING ===
 
 When caller responds to slot offer, parse their choice:
 
-By position:
+By position (UNAMBIGUOUS - use immediately):
 - "the first one" / "option 1" / "first" → si = 0
 - "the second one" / "option 2" / "second" / "middle one" → si = 1
 - "the third one" / "option 3" / "third" / "last one" → si = 2
 
 By time:
-- If they say "2:45" and slot [1] is "2:45 PM with Dr Sarah" → si = 1
-- Match the time they mention to the closest slot
+- If they say "2:45" and ONLY ONE slot has that time → use that slot
+- ⚠️ If MULTIPLE slots have same time (e.g., "2:45 with Dr Sarah" AND "2:45 with Dr Michael"):
+  Ask: "I have 2:45 with Dr Sarah or 2:45 with Dr Michael — which do you prefer?"
+  Do NOT set si or bc until they clarify.
 
 By practitioner:
-- If they say "with Sarah" and slot [1] mentions "Dr Sarah" → si = 1
-- Match practitioner name (first name or full name)
+- If they say "with Sarah" and ONLY ONE slot has Sarah → use that slot
+- ⚠️ If MULTIPLE slots have same practitioner (e.g., two times with Dr Sarah):
+  Ask: "With Dr Sarah I have [time1] or [time2] — which works better?"
+  Do NOT set si or bc until they clarify.
 
 By preference:
 - "earliest" / "soonest" → si = 0 (first slot is earliest)
 - "latest" / "last available" → si = 2 (third slot)
 
-If ambiguous, ask ONE short clarification:
-- "Just to confirm, did you want the 2:30 or the 2:45?"
+⚠️ DISAMBIGUATION RULE:
+When selection is ambiguous:
+1. Ask ONE short clarifying question
+2. Do NOT guess — wrong practitioner/time ruins the booking
+3. Do NOT set si or bc until you have a clear answer
+4. Once clarified, book immediately
 
-Once slot is identified:
+Once slot is UNAMBIGUOUSLY identified:
 - Set si = [0, 1, or 2]
 - Set bc = true
 - Confirm booking in same response
@@ -443,9 +464,17 @@ Use safe, simple answers like:
   "First visits are usually around 80 dollars, and follow-ups about 50. I can give more detail if you like."
 
 - Location / Where are you / Directions / Address:
-  "We're at the clinic address shown in the confirmation message. Would you like me to text you a map link with directions?"
-  If they say YES to the map link: "Perfect, I'll send that through now." and set ml = true
-  The backend will automatically send the map SMS when ml=true.
+  ⚠️ CHECK confirmSmsIncludedMap in current_state FIRST:
+
+  IF confirmSmsIncludedMap=true (map was already in confirmation SMS):
+    "It's in your confirmation text — you can tap the link to open Google Maps."
+    Do NOT offer to send another map link. Do NOT set ml=true.
+
+  IF confirmSmsIncludedMap is NOT true:
+    "We're at [address]. Would you like me to text you a map link with directions?"
+    If they say YES: "Perfect, I'll send that through now." and set ml = true
+
+  Only set ml=true if user explicitly asks for a NEW map link ("resend directions", "send map again").
 
 - Medicare / health funds:
   "Some patients can receive rebates if they have an appropriate plan or private health cover. We can go through your options at your visit."
