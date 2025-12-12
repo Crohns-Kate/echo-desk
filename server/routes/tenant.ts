@@ -167,7 +167,11 @@ router.get("/profile", async (req: Request, res: Response) => {
  */
 router.patch("/profile", async (req: Request, res: Response) => {
   try {
-    const tenantId = req.tenant!.id;
+    // Check tenant exists (super admins may not have one)
+    if (!req.tenant) {
+      return res.status(400).json({ error: "No tenant associated with this account. Super admins must impersonate a tenant first." });
+    }
+    const tenantId = req.tenant.id;
 
     // Fields that tenants can update themselves
     const allowedFields = [
