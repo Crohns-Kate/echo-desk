@@ -465,4 +465,123 @@ router.post(
   }
 );
 
+/**
+ * POST /api/auth/select-tenant
+ * Set active tenant for super admin (stored in session)
+ */
+router.post("/select-tenant", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { tenantId } = req.body;
+
+    if (!req.user) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    // Only super admins can switch tenants
+    if (req.user.role !== "super_admin") {
+      return res.status(403).json({ error: "Only super admins can switch tenants" });
+    }
+
+    // Validate tenant ID
+    if (!tenantId || typeof tenantId !== "number") {
+      return res.status(400).json({ error: "Valid tenant ID is required" });
+    }
+
+    // Verify tenant exists
+    const { storage } = await import("../storage");
+    const tenant = await storage.getTenantById(tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+
+    // Update session with active tenant
+    const session = req.session as unknown as { data: { userId: number; activeTenantId?: number }; save: (cb: (err?: Error) => void) => void };
+    session.data.activeTenantId = tenantId;
+
+    session.save((err: Error | undefined) => {
+      if (err) {
+        console.error("Session save error:", err);
+        return res.status(500).json({ error: "Failed to save session" });
+      }
+
+      // Log tenant switch
+      logAuditEvent(
+        "tenant_switch",
+        req.user!.id,
+        tenantId,
+        "tenant",
+        tenantId,
+        undefined,
+        undefined,
+        req.ip,
+        req.headers["user-agent"]
+      ).catch(console.error);
+
+      console.log(`[Auth] Super admin ${req.user!.email} switched to tenant ${tenantId} (${tenant.clinicName})`);
+
+      res.json({
+        success: true,
+        tenant: {
+          id: tenant.id,
+          slug: tenant.slug,
+          clinicName: tenant.clinicName,
+        },
+      });
+    });
+  } catch (error) {
+    console.error("Select tenant error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * GET /api/auth/active-tenant
+ * Get currently active tenant for the session
+ */
+router.get("/active-tenant", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const session = req.session as unknown as { data?: { activeTenantId?: number } };
+
+    // For regular users, return their tenant
+    if (req.user?.role !== "super_admin" && req.user?.tenantId) {
+      const result = await getUserById(req.user.id);
+      if (result?.tenant) {
+        return res.json({
+          tenant: {
+            id: result.tenant.id,
+            slug: result.tenant.slug,
+            clinicName: result.tenant.clinicName,
+          },
+        });
+      }
+    }
+
+    // For super admins, check session for active tenant
+    const activeTenantId = session.data?.activeTenantId;
+
+    if (!activeTenantId) {
+      return res.json({ tenant: null });
+    }
+
+    const { storage } = await import("../storage");
+    const tenant = await storage.getTenantById(activeTenantId);
+
+    if (!tenant) {
+      return res.json({ tenant: null });
+    }
+
+    res.json({
+      tenant: {
+        id: tenant.id,
+        slug: tenant.slug,
+        clinicName: tenant.clinicName,
+      },
+    });
+  } catch (error) {
+    console.error("Get active tenant error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;
