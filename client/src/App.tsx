@@ -76,7 +76,7 @@ function AdminRoutes() {
         <Route path="/tenants/new" component={TenantOnboarding} />
         <Route path="/tenants/:tenantId/faqs" component={FaqManagement} />
         <Route path="/tenants/:tenantId/billing" component={Billing} />
-        <Route path="/settings" component={Settings} />
+        <Route path="/settings" component={TenantSettings} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
