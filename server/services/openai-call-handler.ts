@@ -367,6 +367,9 @@ export interface OpenAICallHandlerOptions {
   tenantId?: number;
   clinicName?: string;
   timezone?: string;
+  googleMapsUrl?: string;  // Tenant's Google Maps URL for directions
+  practitionerName?: string;  // Practitioner name for "who will I see" question
+  clinicAddress?: string;  // Clinic address for fallback map link
 }
 
 /**
@@ -376,7 +379,7 @@ export interface OpenAICallHandlerOptions {
 export async function handleOpenAIConversation(
   options: OpenAICallHandlerOptions
 ): Promise<twilio.twiml.VoiceResponse> {
-  const { callSid, callerPhone, userUtterance, tenantId, clinicName, timezone = 'Australia/Brisbane' } = options;
+  const { callSid, callerPhone, userUtterance, tenantId, clinicName, timezone = 'Australia/Brisbane', googleMapsUrl, practitionerName, clinicAddress } = options;
 
   const vr = new twilio.twiml.VoiceResponse();
 
@@ -390,6 +393,11 @@ export async function handleOpenAIConversation(
     // DEFENSIVE: Ensure currentState exists
     if (!context.currentState) {
       context.currentState = {};
+    }
+
+    // Set practitioner name in context (for "who will I see" question)
+    if (practitionerName) {
+      context.practitionerName = practitionerName;
     }
 
     // 2. PROACTIVE slot fetching: If we have enough info, fetch slots BEFORE calling AI
@@ -611,6 +619,9 @@ export async function handleOpenAIConversation(
           // Mark appointment as created to prevent duplicates
           context.currentState.appointmentCreated = true;
 
+          // Save booked slot time for reference in FAQ answers
+          context.bookedSlotTime = selectedSlot.speakable;
+
         } catch (error) {
           console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
         }
@@ -626,7 +637,9 @@ export async function handleOpenAIConversation(
       try {
         await sendMapLink({
           to: callerPhone,
-          clinicName: clinicName || 'Spinalogic'
+          clinicName: clinicName || 'Spinalogic',
+          mapUrl: googleMapsUrl,  // Use tenant's configured Google Maps URL
+          clinicAddress: clinicAddress  // Fallback to address-based map
         });
         console.log('[OpenAICallHandler] ✅ Map link SMS sent');
         context.currentState.ml = true; // Mark as sent to prevent duplicates

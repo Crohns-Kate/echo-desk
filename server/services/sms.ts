@@ -287,12 +287,18 @@ export async function sendMapLink(params: {
   to: string;
   clinicName: string;
   clinicAddress?: string;
+  mapUrl?: string; // Direct Google Maps URL from tenant config
 }): Promise<void> {
   try {
-    // Default clinic address - can be overridden via params
-    const address = params.clinicAddress || 'Spinalogic Chiropractic Brisbane';
-    const encodedAddress = encodeURIComponent(address);
-    const mapLink = `https://maps.google.com/maps?q=${encodedAddress}`;
+    // Use direct map URL if provided (from tenant config), otherwise generate from address
+    let mapLink: string;
+    if (params.mapUrl) {
+      mapLink = params.mapUrl;
+    } else {
+      const address = params.clinicAddress || 'Spinalogic Chiropractic Brisbane';
+      const encodedAddress = encodeURIComponent(address);
+      mapLink = `https://maps.google.com/maps?q=${encodedAddress}`;
+    }
 
     const message = `Here's a map link with directions to ${params.clinicName}: ${mapLink}`;
 

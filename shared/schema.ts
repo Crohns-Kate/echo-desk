@@ -85,6 +85,7 @@ export const tenants = pgTable("tenants", {
   phoneNumber: text("phone_number").unique(), // Twilio phone number (E.164)
   email: text("email"),
   address: text("address"),
+  googleMapsUrl: text("google_maps_url"), // Google Maps link for directions
 
   // Timezone
   timezone: text("timezone").notNull().default("Australia/Brisbane"),

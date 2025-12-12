@@ -5302,7 +5302,14 @@ export function registerVoice(app: Express) {
 
     // Get tenant context
     const call = await storage.getCallByCallSid(callSid);
-    let tenantCtx = null;
+    let tenantCtx: {
+      id: number;
+      slug: string;
+      clinicName: string;
+      timezone: string;
+      googleMapsUrl?: string;
+      address?: string;
+    } | null = null;
     if (call?.tenantId) {
       const tenant = await storage.getTenantById(call.tenantId);
       if (tenant) {
@@ -5310,7 +5317,9 @@ export function registerVoice(app: Express) {
           id: tenant.id,
           slug: tenant.slug,
           clinicName: tenant.clinicName,
-          timezone: tenant.timezone || 'Australia/Brisbane'
+          timezone: tenant.timezone || 'Australia/Brisbane',
+          googleMapsUrl: (tenant as any).googleMapsUrl,  // May not exist in DB yet
+          address: (tenant as any).address
         };
       }
     }
@@ -5324,7 +5333,10 @@ export function registerVoice(app: Express) {
         userUtterance: speechResult,
         tenantId: tenantCtx?.id,
         clinicName: tenantCtx?.clinicName,
-        timezone: tenantCtx?.timezone || 'Australia/Brisbane'
+        timezone: tenantCtx?.timezone || 'Australia/Brisbane',
+        googleMapsUrl: tenantCtx?.googleMapsUrl,
+        clinicAddress: tenantCtx?.address,
+        practitionerName: env.CLINIKO_PRACTITIONER_NAME || undefined  // Use env for now
       });
 
       return res.type("text/xml").send(vr.toString());
