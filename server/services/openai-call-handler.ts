@@ -690,14 +690,18 @@ export async function handleOpenAIConversation(
           const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
 
           // Send SMS confirmation (only if not already sent)
+          // Include: time, practitioner name, address, and map link
           if (!context.currentState.smsConfirmSent) {
             await sendAppointmentConfirmation({
               to: callerPhone,
               appointmentDate: formattedDate,
-              clinicName: clinicName || 'Spinalogic'
+              clinicName: clinicName || 'Spinalogic',
+              practitionerName: selectedSlot.practitionerDisplayName || undefined,
+              address: clinicAddress || context.tenantInfo?.address,
+              mapUrl: googleMapsUrl || undefined
             });
             context.currentState.smsConfirmSent = true;
-            console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
+            console.log('[OpenAICallHandler] ✅ SMS confirmation sent with practitioner:', selectedSlot.practitionerDisplayName);
           } else {
             console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
           }

@@ -8,17 +8,42 @@ export async function sendAppointmentConfirmation(params: {
   to: string;
   appointmentDate: string;
   clinicName: string;
+  practitionerName?: string;  // Optional practitioner name
+  address?: string;           // Optional clinic address
+  mapUrl?: string;            // Optional Google Maps URL
 }): Promise<void> {
   try {
-    const message = `Your appointment at ${params.clinicName} has been confirmed for ${params.appointmentDate}. We look forward to seeing you!`;
-    
+    // Build the message with available info
+    let messageParts: string[] = [];
+
+    // Core confirmation
+    if (params.practitionerName) {
+      messageParts.push(`Your appointment at ${params.clinicName} with ${params.practitionerName} is confirmed for ${params.appointmentDate}.`);
+    } else {
+      messageParts.push(`Your appointment at ${params.clinicName} is confirmed for ${params.appointmentDate}.`);
+    }
+
+    // Add address if provided
+    if (params.address) {
+      messageParts.push(`Address: ${params.address}`);
+    }
+
+    // Add map link if available
+    if (params.mapUrl) {
+      messageParts.push(`Directions: ${params.mapUrl}`);
+    }
+
+    messageParts.push('We look forward to seeing you!');
+
+    const message = messageParts.join(' ');
+
     await client.messages.create({
       body: message,
       from: fromNumber,
       to: params.to
     });
-    
-    console.log('[SMS] Sent confirmation to', params.to);
+
+    console.log('[SMS] Sent confirmation to', params.to, 'with practitioner:', params.practitionerName || 'N/A');
   } catch (e) {
     console.error('[SMS] Failed to send confirmation', e);
   }
