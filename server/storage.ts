@@ -633,7 +633,7 @@ export class DatabaseStorage implements IStorage {
     id: number;
     name: string;
     clinikoPractitionerId: string | null;
-    isDefault: boolean;
+    isDefault: boolean | null;
   }>> {
     return db
       .select({
