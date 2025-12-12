@@ -52,6 +52,8 @@ interface Tenant {
   clinicName: string;
   phoneNumber?: string;
   email?: string;
+  address?: string;
+  googleMapsUrl?: string;
   timezone: string;
   voiceName?: string;
   greeting: string;
@@ -75,6 +77,8 @@ interface TenantFormData {
   clinicName: string;
   phoneNumber: string;
   email: string;
+  address: string;
+  googleMapsUrl: string;
   timezone: string;
   voiceName: string;
   greeting: string;
@@ -94,6 +98,8 @@ const defaultFormData: TenantFormData = {
   clinicName: "",
   phoneNumber: "",
   email: "",
+  address: "",
+  googleMapsUrl: "",
   timezone: "Australia/Brisbane",
   voiceName: "Polly.Olivia-Neural",
   greeting: "Thanks for calling",
@@ -165,6 +171,29 @@ function TenantFormComponent({ formData, setFormData, editingTenant, onSubmit, o
             placeholder="clinic@example.com"
           />
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="address">Address</Label>
+        <Input
+          id="address"
+          value={formData.address}
+          onChange={(e) => setFormData(prev => ({ ...prev, address: e.target.value }))}
+          placeholder="123 Main Street, Brisbane QLD 4000"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="googleMapsUrl">Google Maps Link</Label>
+        <Input
+          id="googleMapsUrl"
+          value={formData.googleMapsUrl}
+          onChange={(e) => setFormData(prev => ({ ...prev, googleMapsUrl: e.target.value }))}
+          placeholder="https://maps.google.com/..."
+        />
+        <p className="text-xs text-muted-foreground">
+          Sent to callers via SMS when they request directions
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -390,6 +419,8 @@ export default function Tenants() {
       clinicName: tenant.clinicName,
       phoneNumber: tenant.phoneNumber || "",
       email: tenant.email || "",
+      address: tenant.address || "",
+      googleMapsUrl: tenant.googleMapsUrl || "",
       timezone: tenant.timezone,
       voiceName: tenant.voiceName || "Polly.Olivia-Neural",
       greeting: tenant.greeting,

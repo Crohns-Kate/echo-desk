@@ -9,6 +9,9 @@ import {
   qaReports,
   faqs,
   practitioners,
+  auditLog,
+  users,
+  phoneNumberPool,
   type Tenant,
   type PhoneMap,
   type Conversation,
@@ -138,11 +141,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: number): Promise<boolean> {
-    // Delete related data first (cascade)
+    // Delete related data first (cascade) - order matters for foreign keys
+    await db.delete(auditLog).where(eq(auditLog.tenantId, id));
+    await db.delete(qaReports).where(eq(qaReports.tenantId, id));
     await db.delete(callLogs).where(eq(callLogs.tenantId, id));
     await db.delete(conversations).where(eq(conversations.tenantId, id));
     await db.delete(alerts).where(eq(alerts.tenantId, id));
     await db.delete(faqs).where(eq(faqs.tenantId, id));
+    await db.delete(practitioners).where(eq(practitioners.tenantId, id));
+    await db.delete(appointments).where(eq(appointments.tenantId, id));
+
+    // Release phone numbers back to pool
+    await db.update(phoneNumberPool)
+      .set({ status: 'available', tenantId: null, releasedAt: new Date() })
+      .where(eq(phoneNumberPool.tenantId, id));
+
+    // Delete users (users table has onDelete cascade, but let's be explicit)
+    await db.delete(users).where(eq(users.tenantId, id));
 
     // Delete the tenant
     const result = await db.delete(tenants).where(eq(tenants.id, id)).returning();
