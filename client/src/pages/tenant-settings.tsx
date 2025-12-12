@@ -102,13 +102,17 @@ export default function TenantSettings() {
   });
 
   // Fetch tenant profile
-  const { data: profile, isLoading: profileLoading } = useQuery<TenantProfile>({
+  const { data: profile, isLoading: profileLoading, error: profileError } = useQuery<TenantProfile>({
     queryKey: ["tenantProfile"],
     queryFn: async () => {
       const response = await fetch("/api/tenant/profile", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch profile");
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Failed to fetch profile" }));
+        throw new Error(err.error || "Failed to fetch profile");
+      }
       return response.json();
     },
+    retry: false, // Don't retry on error (super admin case)
   });
 
   // Fetch practitioners
@@ -308,6 +312,36 @@ export default function TenantSettings() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Handle case where super admin has no tenant or profile failed to load
+  if (!profile || profileError) {
+    return (
+      <div className="container mx-auto py-6 max-w-4xl">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              No Tenant Selected
+            </CardTitle>
+            <CardDescription>
+              As a super admin, you need to access tenant settings from the Tenants page.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              To edit clinic settings, go to the Tenants page and click the edit icon next to the tenant you want to configure.
+            </p>
+            <Link href="/tenants">
+              <Button>
+                <Building2 className="h-4 w-4 mr-2" />
+                Go to Tenants
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
       </div>
     );
   }
