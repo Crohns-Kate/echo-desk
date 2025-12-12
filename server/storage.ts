@@ -8,6 +8,7 @@ import {
   appointments,
   qaReports,
   faqs,
+  practitioners,
   type Tenant,
   type PhoneMap,
   type Conversation,
@@ -76,6 +77,14 @@ export interface IStorage {
   listFaqs(tenantId?: number, activeOnly?: boolean): Promise<Faq[]>;
   searchFaqs(query: string, tenantId?: number): Promise<Faq[]>;
   trackFaqUsage(id: number): Promise<void>;
+
+  // Practitioners
+  createPractitioner(tenantId: number, data: { name: string; clinikoPractitionerId?: string; isDefault?: boolean }): Promise<any>;
+  updatePractitioner(id: number, updates: Partial<{ name: string; clinikoPractitionerId?: string; isActive?: boolean; isDefault?: boolean; schedule?: any }>): Promise<any>;
+  deletePractitioner(id: number): Promise<boolean>;
+  getPractitionerById(id: number): Promise<any>;
+  listPractitioners(tenantId: number): Promise<any[]>;
+  getDefaultPractitioner(tenantId: number): Promise<any>;
 
   // Stats
   getStats(tenantId?: number): Promise<{
@@ -535,6 +544,85 @@ export class DatabaseStorage implements IStorage {
         lastUsedAt: new Date(),
       })
       .where(eq(faqs.id, id));
+  }
+
+  // Practitioners
+  async createPractitioner(tenantId: number, data: { name: string; clinikoPractitionerId?: string; isDefault?: boolean }): Promise<any> {
+    // If this is the default practitioner, clear any existing defaults for this tenant
+    if (data.isDefault) {
+      await db
+        .update(practitioners)
+        .set({ isDefault: false })
+        .where(eq(practitioners.tenantId, tenantId));
+    }
+
+    const [practitioner] = await db
+      .insert(practitioners)
+      .values({
+        tenantId,
+        name: data.name,
+        clinikoPractitionerId: data.clinikoPractitionerId,
+        isDefault: data.isDefault || false,
+      })
+      .returning();
+    return practitioner;
+  }
+
+  async updatePractitioner(id: number, updates: Partial<{ name: string; clinikoPractitionerId?: string; isActive?: boolean; isDefault?: boolean; schedule?: any }>): Promise<any> {
+    // If setting as default, clear other defaults first
+    if (updates.isDefault) {
+      const practitioner = await this.getPractitionerById(id);
+      if (practitioner) {
+        await db
+          .update(practitioners)
+          .set({ isDefault: false })
+          .where(eq(practitioners.tenantId, practitioner.tenantId));
+      }
+    }
+
+    const [practitioner] = await db
+      .update(practitioners)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(practitioners.id, id))
+      .returning();
+    return practitioner || undefined;
+  }
+
+  async deletePractitioner(id: number): Promise<boolean> {
+    const result = await db
+      .delete(practitioners)
+      .where(eq(practitioners.id, id));
+    return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  async getPractitionerById(id: number): Promise<any> {
+    const [practitioner] = await db
+      .select()
+      .from(practitioners)
+      .where(eq(practitioners.id, id))
+      .limit(1);
+    return practitioner || undefined;
+  }
+
+  async listPractitioners(tenantId: number): Promise<any[]> {
+    return db
+      .select()
+      .from(practitioners)
+      .where(eq(practitioners.tenantId, tenantId))
+      .orderBy(desc(practitioners.isDefault), practitioners.name);
+  }
+
+  async getDefaultPractitioner(tenantId: number): Promise<any> {
+    const [practitioner] = await db
+      .select()
+      .from(practitioners)
+      .where(and(
+        eq(practitioners.tenantId, tenantId),
+        eq(practitioners.isDefault, true),
+        eq(practitioners.isActive, true)
+      ))
+      .limit(1);
+    return practitioner || undefined;
   }
 
   async seed(): Promise<void> {

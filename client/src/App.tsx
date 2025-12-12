@@ -24,6 +24,7 @@ import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import ChangePassword from "@/pages/change-password";
 import TenantDashboard from "@/pages/tenant-dashboard";
+import TenantSettings from "@/pages/tenant-settings";
 import Pricing from "@/pages/pricing";
 import Signup from "@/pages/signup";
 import NotFound from "@/pages/not-found";
@@ -95,7 +96,7 @@ function TenantRoutes() {
         <Route path="/transcripts" component={Transcripts} />
         <Route path="/alerts" component={Alerts} />
         <Route path="/faqs" component={FaqManagement} />
-        <Route path="/settings" component={Settings} />
+        <Route path="/settings" component={TenantSettings} />
         <Route path="/billing" component={Billing} />
         <Route component={NotFound} />
       </Switch>

@@ -85,6 +85,7 @@ export const tenants = pgTable("tenants", {
   phoneNumber: text("phone_number").unique(), // Twilio phone number (E.164)
   email: text("email"),
   address: text("address"),
+  googleMapsUrl: text("google_maps_url"), // Google Maps link for directions
 
   // Timezone
   timezone: text("timezone").notNull().default("Australia/Brisbane"),
@@ -153,6 +154,25 @@ export const tenants = pgTable("tenants", {
 
   // Metadata
   isActive: boolean("is_active").default(false), // Default false until onboarding complete
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Practitioners - supports multiple practitioners per tenant
+export const practitioners = pgTable("practitioners", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").references(() => tenants.id).notNull(),
+
+  // Practitioner details
+  name: text("name").notNull(),  // Display name, e.g., "Dr Michael Smith"
+  clinikoPractitionerId: text("cliniko_practitioner_id"),  // Cliniko practitioner ID
+
+  // Scheduling
+  isActive: boolean("is_active").default(true),
+  isDefault: boolean("is_default").default(false),  // Primary practitioner for this tenant
+  schedule: jsonb("schedule").default(sql`'{}'::jsonb`),  // Working days/hours JSON
+
+  // Metadata
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -284,6 +304,14 @@ export const tenantsRelations = relations(tenants, ({ many }) => ({
   conversations: many(conversations),
   users: many(users),
   phoneNumbers: many(phoneNumberPool),
+  practitioners: many(practitioners),
+}));
+
+export const practitionersRelations = relations(practitioners, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [practitioners.tenantId],
+    references: [tenants.id],
+  }),
 }));
 
 export const phoneNumberPoolRelations = relations(phoneNumberPool, ({ one }) => ({
@@ -329,6 +357,12 @@ export const alertsRelations = relations(alerts, ({ one }) => ({
 export const insertTenantSchema = createInsertSchema(tenants).omit({
   id: true,
   createdAt: true,
+});
+
+export const insertPractitionerSchema = createInsertSchema(practitioners).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
 });
 
 export const insertPhoneMapSchema = createInsertSchema(phoneMap).omit({
