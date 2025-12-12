@@ -157,7 +157,7 @@ function getEmergencyResponse(): string {
  * Get medical advice refusal response
  */
 function getMedicalAdviceResponse(): string {
-  return `I'm not able to provide medical advice or diagnosis. For any medical concerns, please speak directly with our practitioner during your appointment, or if it's urgent, please contact your GP or call 000 for emergencies. Would you like me to help you book an appointment instead?`;
+  return `I'm not able to provide medical advice or diagnosis. For any medical concerns, please speak directly with our practitioner during your appointment, or if it's urgent, please call 000 for emergencies. Would you like me to help you book an appointment instead?`;
 }
 
 /**

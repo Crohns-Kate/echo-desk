@@ -9,6 +9,8 @@ import { callLogs, tenants, practitioners } from "../../shared/schema";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { requireAuth, requireTenantAccess } from "../middlewares/auth";
 import { storage } from "../storage";
+import { getPractitioners } from "../services/cliniko";
+import { getTenantContext } from "../services/tenantResolver";
 
 const router = Router();
 
@@ -376,6 +378,112 @@ router.delete("/practitioners/:id", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Delete practitioner error:", error);
     res.status(500).json({ error: "Failed to delete practitioner" });
+  }
+});
+
+/**
+ * POST /api/tenant/cliniko/sync-practitioners
+ * Sync practitioners from Cliniko into the local database
+ * Upserts by clinikoPractitionerId, preserves custom display names
+ */
+router.post("/cliniko/sync-practitioners", async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenant!.id;
+    const tenant = await storage.getTenantById(tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+
+    // Get tenant context for Cliniko API
+    const tenantCtx = getTenantContext(tenant);
+
+    if (!tenantCtx.cliniko?.apiKey) {
+      return res.status(400).json({ error: "Cliniko API key not configured for this tenant" });
+    }
+
+    console.log(`[TENANT][SYNC] Syncing practitioners for tenant ${tenant.slug}`);
+
+    // Fetch practitioners from Cliniko
+    const clinikoPractitioners = await getPractitioners(tenantCtx);
+
+    console.log(`[TENANT][SYNC] Found ${clinikoPractitioners.length} practitioners in Cliniko`);
+
+    // Get existing practitioners from DB
+    const existingPractitioners = await storage.listPractitioners(tenantId);
+    const existingByClinikoId = new Map(
+      existingPractitioners
+        .filter(p => p.clinikoPractitionerId)
+        .map(p => [p.clinikoPractitionerId, p])
+    );
+
+    const results = {
+      created: 0,
+      updated: 0,
+      deactivated: 0,
+      unchanged: 0,
+      practitioners: [] as Array<{ name: string; clinikoPractitionerId: string; action: string }>
+    };
+
+    // Upsert each Cliniko practitioner
+    const syncedClinikoIds = new Set<string>();
+    for (const cp of clinikoPractitioners) {
+      syncedClinikoIds.add(cp.id);
+
+      const displayName = `${cp.first_name} ${cp.last_name}`.trim();
+      const existing = existingByClinikoId.get(cp.id);
+
+      if (existing) {
+        // Update if inactive (reactivate)
+        if (!existing.isActive) {
+          await storage.updatePractitioner(existing.id, { isActive: true });
+          results.updated++;
+          results.practitioners.push({ name: displayName, clinikoPractitionerId: cp.id, action: 'reactivated' });
+        } else {
+          results.unchanged++;
+          results.practitioners.push({ name: displayName, clinikoPractitionerId: cp.id, action: 'unchanged' });
+        }
+        // Note: We preserve existing display name - don't overwrite customized names
+      } else {
+        // Create new practitioner
+        await storage.createPractitioner(tenantId, {
+          name: displayName,
+          clinikoPractitionerId: cp.id,
+          isDefault: clinikoPractitioners.length === 1 // Default if only one
+        });
+        results.created++;
+        results.practitioners.push({ name: displayName, clinikoPractitionerId: cp.id, action: 'created' });
+      }
+    }
+
+    // Optionally deactivate practitioners not in Cliniko (query param: ?deactivateMissing=true)
+    if (req.query.deactivateMissing === 'true') {
+      for (const existing of existingPractitioners) {
+        if (existing.clinikoPractitionerId && !syncedClinikoIds.has(existing.clinikoPractitionerId) && existing.isActive) {
+          await storage.updatePractitioner(existing.id, { isActive: false });
+          results.deactivated++;
+          results.practitioners.push({
+            name: existing.name,
+            clinikoPractitionerId: existing.clinikoPractitionerId,
+            action: 'deactivated'
+          });
+        }
+      }
+    }
+
+    console.log(`[TENANT][SYNC] Sync complete:`, results);
+
+    res.json({
+      success: true,
+      message: `Synced ${clinikoPractitioners.length} practitioners from Cliniko`,
+      results
+    });
+  } catch (error: any) {
+    console.error("Cliniko sync error:", error);
+    res.status(500).json({
+      error: "Failed to sync practitioners from Cliniko",
+      details: error.message
+    });
   }
 });
 

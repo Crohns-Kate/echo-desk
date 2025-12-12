@@ -21,7 +21,8 @@ import {
   type CompactCallState,
   type ParsedCallState
 } from '../ai/receptionistBrain';
-import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, rescheduleAppointment, cancelAppointment } from './cliniko';
+import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
+import { getTenantContext } from './tenantResolver';
 import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
@@ -254,12 +255,15 @@ function parseTimePreference(
 /**
  * Fetch available appointment slots from Cliniko
  * Uses compact state format (tp = time_preference, np = is_new_patient)
+ *
+ * MULTI-PRACTITIONER: Queries DB for active practitioners and fetches
+ * availability across all of them, returning enriched slots with practitioner info.
  */
 async function fetchAvailableSlots(
   state: Partial<CompactCallState>,
   tenantId?: number,
   timezone: string = 'Australia/Brisbane'
-): Promise<Array<{ startISO: string; speakable: string; practitionerId?: string; appointmentTypeId?: string }>> {
+): Promise<EnrichedSlot[]> {
   if (!state.tp) {  // tp = time preference
     console.log('[OpenAICallHandler] No time preference, cannot fetch slots');
     return [];
@@ -275,10 +279,61 @@ async function fetchAvailableSlots(
 
   try {
     const isNewPatient = state.np === true;  // np = is_new_patient
+
+    // Get tenant context for Cliniko credentials
+    let tenantCtx = undefined;
+    let practitioners: Array<{ name: string; clinikoPractitionerId: string | null }> = [];
+
+    if (tenantId) {
+      // Fetch active practitioners from DB
+      const dbPractitioners = await storage.getActivePractitioners(tenantId);
+      practitioners = dbPractitioners.map(p => ({
+        name: p.name,
+        clinikoPractitionerId: p.clinikoPractitionerId
+      }));
+
+      // Get full tenant for Cliniko context
+      const tenant = await storage.getTenantById(tenantId);
+      if (tenant) {
+        tenantCtx = getTenantContext(tenant);
+      }
+
+      console.log(`[OpenAICallHandler] Found ${practitioners.length} active practitioners for tenant ${tenantId}`);
+    }
+
+    // Use multi-practitioner availability if we have practitioners in DB
+    if (practitioners.length > 0 && practitioners.some(p => p.clinikoPractitionerId)) {
+      console.log('[OpenAICallHandler] Using multi-practitioner availability');
+
+      const { slots } = await getMultiPractitionerAvailability(
+        practitioners,
+        {
+          fromISO: timeRange.start.toISOString(),
+          toISO: timeRange.end.toISOString(),
+          timezone,
+          tenantCtx,
+          isNewPatient
+        },
+        3,  // maxSlots
+        3   // concurrencyLimit
+      );
+
+      if (slots.length > 0) {
+        console.log('[OpenAICallHandler] Found', slots.length, 'slots across practitioners:',
+          slots.map(s => s.speakableWithPractitioner).join(', '));
+        return slots;
+      }
+
+      console.log('[OpenAICallHandler] No slots found via multi-practitioner, falling back');
+    }
+
+    // Fallback: use single-practitioner getAvailability (env-based or default)
+    console.log('[OpenAICallHandler] Using single-practitioner fallback');
     const availability = await getAvailability({
       fromISO: timeRange.start.toISOString(),
       toISO: timeRange.end.toISOString(),
-      timezone
+      timezone,
+      tenantCtx
     });
 
     if (!availability || !availability.slots || availability.slots.length === 0) {
@@ -335,19 +390,28 @@ async function fetchAvailableSlots(
       return slotTime.isAfter(now.add(15, 'minute'));
     });
 
-    const slots = slotsToUse.slice(0, 3).map((slot: { startISO: string; practitionerId?: string; appointmentTypeId?: string }) => {
+    // Convert to EnrichedSlot format (fallback uses env practitioner)
+    const fallbackPractitionerName = env.CLINIKO_PRACTITIONER_NAME || 'the practitioner';
+    const fallbackPractitionerId = env.CLINIKO_PRACTITIONER_ID || '';
+    const fallbackApptTypeId = isNewPatient
+      ? (env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID || '')
+      : (env.CLINIKO_APPT_TYPE_ID || '');
+
+    const slots: EnrichedSlot[] = slotsToUse.slice(0, 3).map((slot: { startISO: string }) => {
       const slotTime = dayjs(slot.startISO).tz(timezone);
       const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
 
       return {
         startISO: slot.startISO,
         speakable,
-        practitionerId: slot.practitionerId,
-        appointmentTypeId: slot.appointmentTypeId
+        speakableWithPractitioner: `${speakable} with ${fallbackPractitionerName}`,
+        clinikoPractitionerId: fallbackPractitionerId,
+        practitionerDisplayName: fallbackPractitionerName,
+        appointmentTypeId: fallbackApptTypeId
       };
     });
 
-    console.log('[OpenAICallHandler] Found', slots.length, 'future slots:', slots.map((s: { speakable: string }) => s.speakable).join(', '));
+    console.log('[OpenAICallHandler] Found', slots.length, 'future slots:', slots.map(s => s.speakable).join(', '));
     return slots;
 
   } catch (error) {
@@ -368,7 +432,7 @@ export interface OpenAICallHandlerOptions {
   clinicName?: string;
   timezone?: string;
   googleMapsUrl?: string;  // Tenant's Google Maps URL for directions
-  practitionerName?: string;  // Practitioner name for "who will I see" question
+  practitionerName?: string;  // Practitioner name for "who will I see" question (deprecated - now uses tenantInfo)
   clinicAddress?: string;  // Clinic address for fallback map link
 }
 
@@ -395,8 +459,28 @@ export async function handleOpenAIConversation(
       context.currentState = {};
     }
 
-    // Set practitioner name in context (for "who will I see" question)
-    if (practitionerName) {
+    // 1b. Populate tenantInfo for AI context (if not already set)
+    if (!context.tenantInfo && tenantId) {
+      const tenant = await storage.getTenantById(tenantId);
+      if (tenant) {
+        // Get practitioner names from DB
+        const practitioners = await storage.getActivePractitioners(tenantId);
+        const practitionerNames = practitioners.map(p => p.name);
+
+        context.tenantInfo = {
+          clinicName: tenant.clinicName || clinicName || 'the clinic',
+          address: clinicAddress || (tenant as any).address,
+          hasMapsLink: !!(googleMapsUrl || (tenant as any).googleMapsUrl),
+          practitionerNames,
+          timezone
+        };
+
+        console.log('[OpenAICallHandler] Set tenantInfo:', context.tenantInfo);
+      }
+    }
+
+    // Set practitioner name in context (for "who will I see" question - legacy fallback)
+    if (practitionerName && !context.tenantInfo?.practitionerNames?.length) {
       context.practitionerName = practitionerName;
     }
 
@@ -553,17 +637,29 @@ export async function handleOpenAIConversation(
       const selectedSlot = context.availableSlots[finalResponse.state.si];
       if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
         try {
-          // Get Cliniko config from env - use correct appointment type based on new vs existing patient
-          const practitionerId = env.CLINIKO_PRACTITIONER_ID || selectedSlot.practitionerId;
-          // CRITICAL: Use context.currentState.np (accumulated from all turns), NOT finalResponse.state.np
-          // The np flag is typically set early in the conversation, not in the booking confirmation turn
+          // CRITICAL: Use enriched slot's practitioner and appointment type (from multi-practitioner query)
+          // Only fallback to env vars if slot doesn't have the info (legacy single-practitioner mode)
           const isNewPatient = context.currentState.np === true;
-          const appointmentTypeId = isNewPatient
-            ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID  // Longer new patient appointment (45 min)
-            : env.CLINIKO_APPT_TYPE_ID;             // Standard follow-up (30 min)
+
+          // Use slot's practitioner ID (from multi-practitioner query) or fallback to env
+          const practitionerId = selectedSlot.clinikoPractitionerId || env.CLINIKO_PRACTITIONER_ID;
+
+          // Use slot's appointment type ID (already determined by isNewPatient during slot fetch)
+          // or fallback to env
+          const appointmentTypeId = selectedSlot.appointmentTypeId ||
+            (isNewPatient ? env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID : env.CLINIKO_APPT_TYPE_ID);
 
           if (!practitionerId || !appointmentTypeId) {
             throw new Error('Missing Cliniko configuration (practitioner ID or appointment type ID)');
+          }
+
+          // Get tenant context for Cliniko API call
+          let tenantCtx = undefined;
+          if (tenantId) {
+            const tenant = await storage.getTenantById(tenantId);
+            if (tenant) {
+              tenantCtx = getTenantContext(tenant);
+            }
           }
 
           console.log('[OpenAICallHandler] Creating appointment with:', {
@@ -572,6 +668,7 @@ export async function handleOpenAIConversation(
             time: selectedSlot.startISO,
             speakable: selectedSlot.speakable,
             practitionerId,
+            practitionerName: selectedSlot.practitionerDisplayName,
             appointmentTypeId,
             isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT'
           });
@@ -583,7 +680,7 @@ export async function handleOpenAIConversation(
             startsAt: selectedSlot.startISO,
             fullName: finalResponse.state.nm,
             notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
-            tenantCtx: tenantId ? { id: tenantId } as any : undefined
+            tenantCtx
           });
 
           console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);
@@ -592,18 +689,22 @@ export async function handleOpenAIConversation(
           const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
           const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
 
-          // Send SMS confirmation
-          await sendAppointmentConfirmation({
-            to: callerPhone,
-            appointmentDate: formattedDate,
-            clinicName: clinicName || 'Spinalogic'
-          });
+          // Send SMS confirmation (only if not already sent)
+          if (!context.currentState.smsConfirmSent) {
+            await sendAppointmentConfirmation({
+              to: callerPhone,
+              appointmentDate: formattedDate,
+              clinicName: clinicName || 'Spinalogic'
+            });
+            context.currentState.smsConfirmSent = true;
+            console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
+          } else {
+            console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
+          }
 
-          console.log('[OpenAICallHandler] ✅ SMS confirmation sent');
-
-          // For NEW patients, send the intake form link to collect name spelling, email, phone
+          // For NEW patients, send the intake form link (only if not already sent)
           // Use context.currentState.np (accumulated state) since np was set early in conversation
-          if (isNewPatient) {
+          if (isNewPatient && !context.currentState.smsIntakeSent) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
 
@@ -612,8 +713,10 @@ export async function handleOpenAIConversation(
               token: formToken,
               clinicName: clinicName || 'Spinalogic'
             });
-
+            context.currentState.smsIntakeSent = true;
             console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+          } else if (isNewPatient) {
+            console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
           }
 
           // Mark appointment as created to prevent duplicates
@@ -632,8 +735,8 @@ export async function handleOpenAIConversation(
       }
     }
 
-    // 5b. Check if map link was requested
-    if (finalResponse.state.ml === true && !context.currentState.ml) {
+    // 5b. Check if map link was requested (use smsMapSent flag to prevent duplicates)
+    if (finalResponse.state.ml === true && !context.currentState.smsMapSent) {
       try {
         await sendMapLink({
           to: callerPhone,
@@ -641,11 +744,14 @@ export async function handleOpenAIConversation(
           mapUrl: googleMapsUrl,  // Use tenant's configured Google Maps URL
           clinicAddress: clinicAddress  // Fallback to address-based map
         });
+        context.currentState.smsMapSent = true;
+        context.currentState.ml = true; // Also set ml for AI awareness
         console.log('[OpenAICallHandler] ✅ Map link SMS sent');
-        context.currentState.ml = true; // Mark as sent to prevent duplicates
       } catch (error) {
         console.error('[OpenAICallHandler] ❌ Error sending map link:', error);
       }
+    } else if (finalResponse.state.ml === true) {
+      console.log('[OpenAICallHandler] Map link SMS already sent, skipping');
     }
 
     // 5c. RESCHEDULE: Handle reschedule confirmation
