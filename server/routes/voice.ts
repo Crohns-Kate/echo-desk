@@ -5276,7 +5276,7 @@ export function registerVoice(app: Express) {
           console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
           // Absolute last resort - send raw TwiML
           if (!res.headersSent) {
-            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try again.</Say><Hangup/></Response>');
+            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
           }
         }
       }
@@ -5322,7 +5322,7 @@ export function registerVoice(app: Express) {
         } catch (emptySpeechError) {
           console.error("[VOICE][OPENAI][EMPTY SPEECH ERROR]", emptySpeechError);
           const minimalVr = new twilio.twiml.VoiceResponse();
-          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "I didn't catch that. Please try again.");
+          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "I didn't catch that. Please try calling again.");
           minimalVr.hangup();
           return res.type("text/xml").send(minimalVr.toString());
         }
@@ -5405,7 +5405,7 @@ export function registerVoice(app: Express) {
           console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
           // Absolute last resort - send raw TwiML
           if (!res.headersSent) {
-            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try again.</Say><Hangup/></Response>');
+            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
           }
         }
       }
