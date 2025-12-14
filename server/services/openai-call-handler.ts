@@ -494,8 +494,9 @@ export async function handleOpenAIConversation(
     if (shouldFetchSlots) {
       console.log('[OpenAICallHandler] Proactively fetching appointment slots (have all required info)...');
       const slots = await fetchAvailableSlots(context.currentState, tenantId, timezone);
-      context.availableSlots = slots;
-      console.log('[OpenAICallHandler] Fetched', slots.length, 'slots for AI to offer');
+      // Always limit to top 3 slots for offering
+      context.availableSlots = slots.slice(0, 3);
+      console.log('[OpenAICallHandler] Fetched', slots.length, 'slots, offering top', context.availableSlots.length, 'options');
     }
 
     // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is change or cancel
@@ -574,13 +575,29 @@ export async function handleOpenAIConversation(
         const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
 
         if (slots.length > 0) {
-          context.availableSlots = slots;
-          console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, calling AI again to offer them');
+          // Ensure we always offer top 3 slots (even if user gave exact time)
+          const slotsToOffer = slots.slice(0, 3);
+          context.availableSlots = slotsToOffer;
+          console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots, offering top', slotsToOffer.length, 'options');
 
           // Call AI again with the slots now available
           const responseWithSlots = await callReceptionistBrain(context, userUtterance);
           console.log('[OpenAICallHandler] Reply with slots:', responseWithSlots.reply);
-          finalResponse = responseWithSlots;
+          
+          // ENFORCE: If AI tries to book without offering slots first, override it
+          if (responseWithSlots.state.bc === true && responseWithSlots.state.si === undefined) {
+            console.log('[OpenAICallHandler] ⚠️ AI tried to book without slot selection - forcing slot offer');
+            finalResponse = {
+              reply: `I have ${slotsToOffer.length} option${slotsToOffer.length > 1 ? 's' : ''} for you. ${slotsToOffer.map((s, i) => `Option ${i + 1}, ${s.speakableWithPractitioner || s.speakable}`).join('. ')}. Which one works best?`,
+              state: {
+                ...responseWithSlots.state,
+                bc: false, // Reset booking confirmed
+                rs: false  // Reset ready to offer slots
+              }
+            };
+          } else {
+            finalResponse = responseWithSlots;
+          }
         } else {
           console.log('[OpenAICallHandler] ⚠️ No slots available for the requested time - providing fallback response');
           // No slots available - provide a helpful response instead of leaving caller hanging
@@ -634,6 +651,66 @@ export async function handleOpenAIConversation(
     context = addTurnToHistory(context, 'user', userUtterance);
     context = addTurnToHistory(context, 'assistant', finalResponse.reply);
     context = updateConversationState(context, finalResponse.state);
+
+    // 4b. Detect repeated confusion or handoff requests
+    let shouldCreateAlert = false;
+    let alertCategory = 'TRICKY';
+    let alertSummary = '';
+
+    // Check for handoff_needed flag from AI
+    if (finalResponse.handoff_needed === true && finalResponse.alert_category) {
+      shouldCreateAlert = true;
+      alertCategory = finalResponse.alert_category;
+      alertSummary = `Caller needs human assistance: ${finalResponse.reply.substring(0, 100)}`;
+    }
+
+    // Check for repeated confusion (same question asked >2 times or similar confusion patterns)
+    const recentTurns = context.history.slice(-4);
+    const userTurns = recentTurns.filter(t => t.role === 'user');
+    if (userTurns.length >= 3) {
+      // Simple heuristic: if user repeats similar question or shows confusion
+      const lastUserMsg = userTurns[userTurns.length - 1].content.toLowerCase();
+      const prevUserMsg = userTurns[userTurns.length - 2]?.content.toLowerCase() || '';
+      
+      // Detect confusion patterns
+      const confusionPhrases = ["i don't understand", "what?", "i'm confused", "that's not what", "no that's not right", "you didn't", "i said"];
+      const hasConfusion = confusionPhrases.some(phrase => lastUserMsg.includes(phrase));
+      
+      if (hasConfusion && userTurns.length >= 2) {
+        shouldCreateAlert = true;
+        alertCategory = 'BOOKING_HELP';
+        alertSummary = `Repeated confusion detected after ${userTurns.length} turns. Last message: ${lastUserMsg.substring(0, 100)}`;
+      }
+    }
+
+    // Create alert if needed
+    if (shouldCreateAlert && tenantId) {
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        const alert = await storage.createAlert({
+          tenantId,
+          conversationId: call?.conversationId,
+          reason: alertCategory.toLowerCase(),
+          payload: {
+            category: alertCategory,
+            summary: alertSummary,
+            callSid,
+            callerPhone,
+            lastUserUtterance: userUtterance,
+            aiResponse: finalResponse.reply,
+            conversationHistory: context.history.slice(-3)
+          }
+        });
+        
+        // Push alert via websocket
+        const { emitAlertCreated } = await import('../services/websocket');
+        emitAlertCreated(alert);
+        
+        console.log(`[OpenAICallHandler] ✅ Alert created: ${alertCategory} for call ${callSid}`);
+      } catch (error) {
+        console.error('[OpenAICallHandler] ❌ Error creating alert:', error);
+      }
+    }
 
     // 5. Check if booking is confirmed and create appointment
     if (finalResponse.state.bc && finalResponse.state.nm && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
@@ -853,13 +930,8 @@ export async function handleOpenAIConversation(
 
     if (wantsToEndCall) {
       console.log('[OpenAICallHandler] Caller wants to end call - hanging up gracefully');
-      const goodbyeMessages = [
-        "Perfect! We'll be in touch soon. Have a lovely day!",
-        "Beautiful! Talk to you soon. Take care!",
-        "Lovely! We'll get back to you shortly. Bye for now!"
-      ];
-      const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
-      saySafe(vr, randomGoodbye);
+      // Use deterministic SSML goodbye template
+      saySafeSSML(vr, ttsGoodbye());
       vr.hangup();
       return vr;
     }
@@ -877,10 +949,10 @@ export async function handleOpenAIConversation(
       hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
     });
 
-    // Add thinking filler if we just fetched slots (to cover API lookup time)
-    if (response.state.rs === true && context.availableSlots && !context.currentState.slotsOffered) {
+    // Add thinking filler BEFORE speaking response if we just fetched slots (covers API lookup time)
+    // This helps reduce dead-air if slots were just fetched
+    if (response.state.rs === true && context.availableSlots && context.availableSlots.length > 0) {
       saySafeSSML(vr, ttsThinking());
-      context.currentState.slotsOffered = true;
     }
 
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
@@ -891,7 +963,7 @@ export async function handleOpenAIConversation(
       saySafe(gather, finalResponse.reply);
     }
 
-    // 8. If no response, close gracefully with single goodbye (no repeated prompts)
+    // 8. If no response after gather times out, close gracefully with single goodbye (no repeated prompts)
     // 9. Final fallback: single warm goodbye and hangup
     saySafeSSML(vr, ttsGoodbye());
     vr.hangup();
