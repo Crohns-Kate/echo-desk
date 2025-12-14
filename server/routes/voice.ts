@@ -5264,7 +5264,7 @@ export function registerVoice(app: Express) {
     console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
     console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
 
-    // If no speech, prompt again with improved settings
+    // If no speech (timeout or empty result), prompt again with improved settings
     if (!speechResult || speechResult.trim() === "") {
       const vr = new twilio.twiml.VoiceResponse();
       const gather = vr.gather({
@@ -5275,12 +5275,14 @@ export function registerVoice(app: Express) {
         method: 'POST',
         enhanced: true,
         bargeIn: true,
+        actionOnEmptyResult: true, // Call action even on timeout
         profanityFilter: false, // Allow natural speech
         hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
       });
       saySafe(gather, "I didn't catch that. What can I help you with?");
-      // Final fallback after retry
-      saySafe(vr, "Thanks for calling. Have a great day!");
+      // Final fallback: Only if action URL completely fails (shouldn't happen)
+      const { ttsGoodbye } = await import("../utils/voice-constants");
+      saySafeSSML(vr, ttsGoodbye());
       vr.hangup();
       return res.type("text/xml").send(getTwimlXml(vr));
     }

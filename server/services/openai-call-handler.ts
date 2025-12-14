@@ -945,14 +945,15 @@ export async function handleOpenAIConversation(
       method: 'POST',
       enhanced: true,
       bargeIn: true,
+      actionOnEmptyResult: true, // Call action even on timeout (empty result)
       profanityFilter: false, // Allow natural speech patterns
       hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
     });
 
-    // Add thinking filler BEFORE speaking response if we just fetched slots (covers API lookup time)
-    // This helps reduce dead-air if slots were just fetched
+    // Add thinking filler INSIDE gather (before response) if we just fetched slots
+    // This plays during the gather and covers API lookup time
     if (response.state.rs === true && context.availableSlots && context.availableSlots.length > 0) {
-      saySafeSSML(vr, ttsThinking());
+      saySafeSSML(gather, ttsThinking());
     }
 
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
@@ -963,9 +964,9 @@ export async function handleOpenAIConversation(
       saySafe(gather, finalResponse.reply);
     }
 
-    // 8. If no response after gather times out, close gracefully with single goodbye (no repeated prompts)
-    // 9. Final fallback: single warm goodbye and hangup
-    saySafeSSML(vr, ttsGoodbye());
+    // Fallback: Only if gather completely fails (action URL unreachable, etc.)
+    // Normal timeout will redirect to action URL, which handles goodbye in openai-continue route
+    saySafe(vr, "Thanks for calling. Goodbye.");
     vr.hangup();
 
     return vr;
@@ -1023,13 +1024,16 @@ export async function handleOpenAIGreeting(
       method: 'POST',
       enhanced: true,
       bargeIn: true,
+      actionOnEmptyResult: true, // Call action even on timeout (empty result)
       hints: 'appointment, booking, reschedule, cancel, question, today, tomorrow, morning, afternoon'
     });
 
     saySafeSSML(gather, fullGreeting);
 
-    // If no response, close gracefully (no repeated prompts)
-    saySafeSSML(vr, ttsGoodbye());
+    // Fallback: Only if gather completely fails (action URL unreachable, etc.)
+    // Normal timeout will redirect to action URL, which handles goodbye in openai-continue route
+    saySafe(vr, "Thanks for calling. Goodbye.");
+    vr.hangup();
 
     return vr;
 
