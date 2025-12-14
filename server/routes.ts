@@ -753,7 +753,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const {
-        clinicName, phoneNumber, email, address, timezone,
+        clinicName, phoneNumber, email, address, googleMapsUrl, timezone,
         voiceName, greeting, fallbackMessage, businessHours,
         clinikoApiKey, clinikoShard, clinikoPractitionerId,
         clinikoStandardApptTypeId, clinikoNewPatientApptTypeId,
@@ -770,6 +770,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (phoneNumber !== undefined) updates.phoneNumber = phoneNumber;
       if (email !== undefined) updates.email = email;
       if (address !== undefined) updates.address = address;
+      if (googleMapsUrl !== undefined) updates.googleMapsUrl = googleMapsUrl;
       if (timezone !== undefined) updates.timezone = timezone;
       if (voiceName !== undefined) updates.voiceName = voiceName;
       if (greeting !== undefined) updates.greeting = greeting;
