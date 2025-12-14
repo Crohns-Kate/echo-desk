@@ -146,10 +146,12 @@ export function saySafeSSML(node: any, ssmlText?: string, voice?: any) {
     return;
   }
 
-  // Ensure SSML is wrapped in <speak> tags
+  // For Twilio's Say element with Polly, SSML should NOT be wrapped in <speak> tags
+  // The Say element itself handles the SSML, so we pass the content directly
   let ssml = ssmlText.trim();
-  if (!ssml.startsWith('<speak>')) {
-    ssml = `<speak>${ssml}</speak>`;
+  // Remove <speak> wrapper if present (Twilio Say doesn't need it)
+  if (ssml.startsWith('<speak>') && ssml.endsWith('</speak>')) {
+    ssml = ssml.slice(7, -8).trim(); // Remove <speak> and </speak>
   }
 
   // Clean SSML: remove control characters
