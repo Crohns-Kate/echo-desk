@@ -545,14 +545,44 @@ export async function handleOpenAIConversation(
       // SAFEGUARD 1: Don't fetch slots if we don't know new/existing patient status
       if (mergedState.np === null || mergedState.np === undefined) {
         console.log('[OpenAICallHandler] ⚠️ AI set rs=true but np is null - cannot fetch slots yet');
-        // Override response to ask about new/existing patient
-        finalResponse = {
-          reply: "Sure, I can help with that. Have you been to Spinalogic before, or would this be your first visit?",
-          state: {
-            ...response.state,
-            rs: false  // Reset so we properly collect np first
-          }
-        };
+        // Check if caller already mentioned new/existing status in their utterance
+        const utteranceLower = userUtterance.toLowerCase();
+        const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
+                            utteranceLower.includes('first time') || utteranceLower.includes('haven\'t been') ||
+                            utteranceLower.includes('never been') || utteranceLower.includes('haven\'t been in');
+        const mentionedExisting = utteranceLower.includes('been before') || utteranceLower.includes('existing') ||
+                                  utteranceLower.includes('been there') || utteranceLower.includes('returning');
+        
+        if (mentionedNew) {
+          // They already said they're new - don't ask again, just acknowledge
+          finalResponse = {
+            reply: "Great, since it's your first visit, let me check what we have available.",
+            state: {
+              ...response.state,
+              np: true,
+              rs: true  // Now we can fetch slots
+            }
+          };
+        } else if (mentionedExisting) {
+          // They already said they're existing - don't ask again, just acknowledge
+          finalResponse = {
+            reply: "Perfect, since you've been here before, let me check what we have available.",
+            state: {
+              ...response.state,
+              np: false,
+              rs: true  // Now we can fetch slots
+            }
+          };
+        } else {
+          // No mention - ask about new/existing patient
+          finalResponse = {
+            reply: "Sure, I can help with that. Have you been to Spinalogic before, or would this be your first visit?",
+            state: {
+              ...response.state,
+              rs: false  // Reset so we properly collect np first
+            }
+          };
+        }
       }
       // SAFEGUARD 2: Don't fetch slots if we don't have a time preference
       else if (!mergedState.tp) {
@@ -957,12 +987,10 @@ export async function handleOpenAIConversation(
     }
 
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
-    // Use SSML if reply looks like SSML (contains tags), otherwise plain text
-    if (finalResponse.reply.includes('<speak>') || finalResponse.reply.includes('<break') || finalResponse.reply.includes('<prosody')) {
-      saySafeSSML(gather, finalResponse.reply);
-    } else {
-      saySafe(gather, finalResponse.reply);
-    }
+    // REGRESSION SAFETY: Always use saySafeSSML which converts SSML to Twilio-native format
+    // This ensures no SSML tags reach Twilio <Say> element (prevents error 13520)
+    // saySafeSSML handles both SSML and plain text safely
+    saySafeSSML(gather, finalResponse.reply);
 
     // With actionOnEmptyResult: true, gather timeout will always redirect to action URL
     // The action URL (openai-continue) handles all timeout cases, so no fallback needed here
