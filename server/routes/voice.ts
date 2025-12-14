@@ -5232,8 +5232,11 @@ export function registerVoice(app: Express) {
       startRecordingWhenReady();
     }
 
-    // Generate OpenAI greeting - wrap in outer try-catch to ensure response is always sent
-    try {
+    // Generate OpenAI greeting - wrap in timeout and try-catch to ensure response is always sent
+    // Twilio webhooks timeout after ~10 seconds, so we need to respond quickly
+    let timeoutId: NodeJS.Timeout | null = null;
+    
+    const greetingPromise = (async () => {
       try {
         const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
         const vr = await handleOpenAIGreeting(
@@ -5245,9 +5248,39 @@ export function registerVoice(app: Express) {
         );
 
         const twimlXml = getTwimlXml(vr);
-        return res.type("text/xml").send(twimlXml);
+        // Clear timeout if we succeeded
+        if (timeoutId) clearTimeout(timeoutId);
+        return { success: true, twimlXml };
       } catch (error) {
         console.error("[VOICE][OPENAI][GREETING ERROR]", error);
+        console.error("[VOICE][OPENAI][GREETING ERROR STACK]", error instanceof Error ? error.stack : 'No stack');
+        // Clear timeout on error too
+        if (timeoutId) clearTimeout(timeoutId);
+        throw error;
+      }
+    })();
+
+    // Timeout after 8 seconds (Twilio times out at ~10 seconds)
+    const timeoutPromise = new Promise<{ success: false; twimlXml: string }>((resolve) => {
+      timeoutId = setTimeout(() => {
+        console.warn("[VOICE][OPENAI][GREETING TIMEOUT] Handler took too long, sending fallback");
+        const timeoutVr = new twilio.twiml.VoiceResponse();
+        saySafe(timeoutVr, "Thanks for calling. Please hold while I connect you.");
+        timeoutVr.pause({ length: 2 });
+        timeoutVr.redirect({ method: "POST" }, abs(`/api/voice/openai-incoming?callSid=${encodeURIComponent(callSid)}`));
+        const timeoutXml = getTwimlXml(timeoutVr);
+        resolve({ success: false, twimlXml: timeoutXml });
+      }, 8000);
+    });
+
+    try {
+      const result = await Promise.race([greetingPromise, timeoutPromise]);
+      if (!res.headersSent) {
+        return res.type("text/xml").send(result.twimlXml);
+      }
+    } catch (error) {
+      console.error("[VOICE][OPENAI][GREETING CATCH]", error);
+      if (!res.headersSent) {
         try {
           const fallbackVr = new twilio.twiml.VoiceResponse();
           saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
@@ -5261,23 +5294,6 @@ export function registerVoice(app: Express) {
           minimalVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a problem. Please try again later.");
           minimalVr.hangup();
           return res.type("text/xml").send(minimalVr.toString());
-        }
-      }
-    } catch (outerError) {
-      // Catch-all for any errors not caught above
-      console.error("[VOICE][OPENAI][GREETING OUTER ERROR]", outerError);
-      if (!res.headersSent) {
-        try {
-          const emergencyVr = new twilio.twiml.VoiceResponse();
-          emergencyVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a technical problem. Please try calling again.");
-          emergencyVr.hangup();
-          return res.type("text/xml").send(emergencyVr.toString());
-        } catch (emergencyError) {
-          console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
-          // Absolute last resort - send raw TwiML
-          if (!res.headersSent) {
-            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
-          }
         }
       }
     }
