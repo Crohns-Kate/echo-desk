@@ -335,7 +335,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SSML Test endpoints
   const { registerTestSSML } = await import('./routes/test-ssml');
   registerTestSSML(app);
-  setupDebugRoutes(app);
 
   // Dashboard - last 20 calls with intent filter
   app.get('/__cliniko/dashboard', async (req, res) => {

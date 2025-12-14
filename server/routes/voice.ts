@@ -5232,24 +5232,54 @@ export function registerVoice(app: Express) {
       startRecordingWhenReady();
     }
 
-    // Generate OpenAI greeting
+    // Generate OpenAI greeting - wrap in outer try-catch to ensure response is always sent
     try {
-      const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
-      const vr = await handleOpenAIGreeting(
-        callSid,
-        from,
-        tenantCtx?.id,
-        tenantCtx?.clinicName,
-        tenantCtx?.timezone || 'Australia/Brisbane'
-      );
+      try {
+        const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
+        const vr = await handleOpenAIGreeting(
+          callSid,
+          from,
+          tenantCtx?.id,
+          tenantCtx?.clinicName,
+          tenantCtx?.timezone || 'Australia/Brisbane'
+        );
 
-      return res.type("text/xml").send(getTwimlXml(vr));
-    } catch (error) {
-      console.error("[VOICE][OPENAI][GREETING ERROR]", error);
-      const fallbackVr = new twilio.twiml.VoiceResponse();
-      saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
-      fallbackVr.hangup();
-      return res.type("text/xml").send(getTwimlXml(fallbackVr));
+        const twimlXml = getTwimlXml(vr);
+        return res.type("text/xml").send(twimlXml);
+      } catch (error) {
+        console.error("[VOICE][OPENAI][GREETING ERROR]", error);
+        try {
+          const fallbackVr = new twilio.twiml.VoiceResponse();
+          saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
+          fallbackVr.hangup();
+          const fallbackXml = getTwimlXml(fallbackVr);
+          return res.type("text/xml").send(fallbackXml);
+        } catch (fallbackError) {
+          console.error("[VOICE][OPENAI][FALLBACK ERROR]", fallbackError);
+          // Last resort: return minimal valid TwiML
+          const minimalVr = new twilio.twiml.VoiceResponse();
+          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a problem. Please try again later.");
+          minimalVr.hangup();
+          return res.type("text/xml").send(minimalVr.toString());
+        }
+      }
+    } catch (outerError) {
+      // Catch-all for any errors not caught above
+      console.error("[VOICE][OPENAI][GREETING OUTER ERROR]", outerError);
+      if (!res.headersSent) {
+        try {
+          const emergencyVr = new twilio.twiml.VoiceResponse();
+          emergencyVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a technical problem. Please try calling again.");
+          emergencyVr.hangup();
+          return res.type("text/xml").send(emergencyVr.toString());
+        } catch (emergencyError) {
+          console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
+          // Absolute last resort - send raw TwiML
+          if (!res.headersSent) {
+            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
+          }
+        }
+      }
     }
   });
 
@@ -5257,82 +5287,128 @@ export function registerVoice(app: Express) {
    * OpenAI Continue - Process user utterance in ongoing conversation
    */
   app.post("/api/voice/openai-continue", async (req: Request, res: Response) => {
-    const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
-    const speechResult = req.body?.SpeechResult || "";
-    const from = req.body?.From || "";
-
-    console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
-    console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
-
-    // If no speech (timeout or empty result), prompt again with improved settings
-    if (!speechResult || speechResult.trim() === "") {
-      const vr = new twilio.twiml.VoiceResponse();
-      const gather = vr.gather({
-        input: ['speech'],
-        timeout: 8, // Longer timeout for background noise
-        speechTimeout: 'auto',
-        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-        method: 'POST',
-        enhanced: true,
-        bargeIn: true,
-        actionOnEmptyResult: true, // Call action even on timeout
-        profanityFilter: false, // Allow natural speech
-        hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
-      });
-      saySafe(gather, "I didn't catch that. What can I help you with?");
-      // Final fallback: Only if action URL completely fails (shouldn't happen)
-      const { ttsGoodbye } = await import("../utils/voice-constants");
-      saySafeSSML(vr, ttsGoodbye());
-      vr.hangup();
-      return res.type("text/xml").send(getTwimlXml(vr));
-    }
-
-    // Get tenant context
-    const call = await storage.getCallByCallSid(callSid);
-    let tenantCtx: {
-      id: number;
-      slug: string;
-      clinicName: string;
-      timezone: string;
-      googleMapsUrl?: string;
-      address?: string;
-    } | null = null;
-    if (call?.tenantId) {
-      const tenant = await storage.getTenantById(call.tenantId);
-      if (tenant) {
-        tenantCtx = {
-          id: tenant.id,
-          slug: tenant.slug,
-          clinicName: tenant.clinicName,
-          timezone: tenant.timezone || 'Australia/Brisbane',
-          googleMapsUrl: (tenant as any).googleMapsUrl,  // May not exist in DB yet
-          address: (tenant as any).address
-        };
-      }
-    }
-
-    // Process conversation with OpenAI
+    // Wrap entire handler in try-catch to ensure we always send a response
     try {
-      const { handleOpenAIConversation } = await import("../services/openai-call-handler");
-      const vr = await handleOpenAIConversation({
-        callSid,
-        callerPhone: from,
-        userUtterance: speechResult,
-        tenantId: tenantCtx?.id,
-        clinicName: tenantCtx?.clinicName,
-        timezone: tenantCtx?.timezone || 'Australia/Brisbane',
-        googleMapsUrl: tenantCtx?.googleMapsUrl,
-        clinicAddress: tenantCtx?.address,
-        practitionerName: env.CLINIKO_PRACTITIONER_NAME || undefined  // Use env for now
-      });
+      const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
+      const speechResult = req.body?.SpeechResult || "";
+      const from = req.body?.From || "";
 
-      return res.type("text/xml").send(getTwimlXml(vr));
-    } catch (error) {
-      console.error("[VOICE][OPENAI][CONTINUE ERROR]", error);
-      const fallbackVr = new twilio.twiml.VoiceResponse();
-      saySafe(fallbackVr, "I'm having trouble processing that. Let me transfer you to our reception team.");
-      fallbackVr.hangup();
-      return res.type("text/xml").send(getTwimlXml(fallbackVr));
+      console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
+      console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
+
+      // If no speech (timeout or empty result), prompt again with improved settings
+      if (!speechResult || speechResult.trim() === "") {
+        try {
+          const vr = new twilio.twiml.VoiceResponse();
+          const gather = vr.gather({
+            input: ['speech'],
+            timeout: 8, // Longer timeout for background noise
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            bargeIn: true,
+            actionOnEmptyResult: true, // Call action even on timeout
+            profanityFilter: false, // Allow natural speech
+            hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
+          });
+          saySafe(gather, "I didn't catch that. What can I help you with?");
+          // Final fallback: Only if action URL completely fails (shouldn't happen)
+          const { ttsGoodbye } = await import("../utils/voice-constants");
+          saySafeSSML(vr, ttsGoodbye());
+          vr.hangup();
+          const twimlXml = getTwimlXml(vr);
+          return res.type("text/xml").send(twimlXml);
+        } catch (emptySpeechError) {
+          console.error("[VOICE][OPENAI][EMPTY SPEECH ERROR]", emptySpeechError);
+          const minimalVr = new twilio.twiml.VoiceResponse();
+          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "I didn't catch that. Please try calling again.");
+          minimalVr.hangup();
+          return res.type("text/xml").send(minimalVr.toString());
+        }
+      }
+
+      // Get tenant context
+      let tenantCtx: {
+        id: number;
+        slug: string;
+        clinicName: string;
+        timezone: string;
+        googleMapsUrl?: string;
+        address?: string;
+      } | null = null;
+      
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        if (call?.tenantId) {
+          const tenant = await storage.getTenantById(call.tenantId);
+          if (tenant) {
+            tenantCtx = {
+              id: tenant.id,
+              slug: tenant.slug,
+              clinicName: tenant.clinicName,
+              timezone: tenant.timezone || 'Australia/Brisbane',
+              googleMapsUrl: (tenant as any).googleMapsUrl,  // May not exist in DB yet
+              address: (tenant as any).address
+            };
+          }
+        }
+      } catch (tenantError) {
+        console.error("[VOICE][OPENAI][TENANT LOOKUP ERROR]", tenantError);
+        // Continue with null tenantCtx - handler should work without it
+      }
+
+      // Process conversation with OpenAI
+      try {
+        const { handleOpenAIConversation } = await import("../services/openai-call-handler");
+        const vr = await handleOpenAIConversation({
+          callSid,
+          callerPhone: from,
+          userUtterance: speechResult,
+          tenantId: tenantCtx?.id,
+          clinicName: tenantCtx?.clinicName,
+          timezone: tenantCtx?.timezone || 'Australia/Brisbane',
+          googleMapsUrl: tenantCtx?.googleMapsUrl,
+          clinicAddress: tenantCtx?.address,
+          practitionerName: env.CLINIKO_PRACTITIONER_NAME || undefined  // Use env for now
+        });
+
+        const twimlXml = getTwimlXml(vr);
+        return res.type("text/xml").send(twimlXml);
+      } catch (error) {
+        console.error("[VOICE][OPENAI][CONTINUE ERROR]", error);
+        try {
+          const fallbackVr = new twilio.twiml.VoiceResponse();
+          saySafe(fallbackVr, "I'm having trouble processing that. Let me transfer you to our reception team.");
+          fallbackVr.hangup();
+          const fallbackXml = getTwimlXml(fallbackVr);
+          return res.type("text/xml").send(fallbackXml);
+        } catch (fallbackError) {
+          console.error("[VOICE][OPENAI][FALLBACK ERROR]", fallbackError);
+          // Last resort: return minimal valid TwiML
+          const minimalVr = new twilio.twiml.VoiceResponse();
+          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a problem. Please try again later.");
+          minimalVr.hangup();
+          return res.type("text/xml").send(minimalVr.toString());
+        }
+      }
+    } catch (outerError) {
+      // Catch-all for any errors not caught above
+      console.error("[VOICE][OPENAI][CONTINUE OUTER ERROR]", outerError);
+      if (!res.headersSent) {
+        try {
+          const emergencyVr = new twilio.twiml.VoiceResponse();
+          emergencyVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a technical problem. Please try calling again.");
+          emergencyVr.hangup();
+          return res.type("text/xml").send(emergencyVr.toString());
+        } catch (emergencyError) {
+          console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
+          // Absolute last resort - send raw TwiML
+          if (!res.headersSent) {
+            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
+          }
+        }
+      }
     }
   });
 }
