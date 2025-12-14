@@ -24,7 +24,7 @@ import {
 import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
 import { getTenantContext } from './tenantResolver';
 import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
-import { saySafe } from '../utils/voice-constants';
+import { saySafe, saySafeSSML, ttsGreeting, ttsThinking, ttsBookingConfirmed, ttsDirections, ttsGoodbye } from '../utils/voice-constants';
 import { abs } from '../utils/url';
 import { env } from '../utils/env';
 import dayjs from 'dayjs';
@@ -771,6 +771,9 @@ export async function handleOpenAIConversation(
         context.currentState.smsMapSent = true;
         context.currentState.ml = true; // Also set ml for AI awareness
         console.log('[OpenAICallHandler] ✅ Map link SMS sent');
+        
+        // Override AI response with warm SSML directions message
+        finalResponse.reply = ttsDirections(clinicName || 'Spinalogic');
       } catch (error) {
         console.error('[OpenAICallHandler] ❌ Error sending map link:', error);
       }
@@ -877,10 +880,9 @@ export async function handleOpenAIConversation(
       profanityFilter: false,
       hints: 'yes, no, goodbye, that\'s all, nothing else, thank you, bye, no thanks'
     });
-    saySafe(retryGather, "Are you still there? Is there anything else you'd like to know?");
-
+    // Removed repeated "Are you still there?" - just close gracefully if no response
     // 9. If still no response, close gracefully (not abruptly)
-    saySafe(vr, "Thanks for calling Spinalogic. Have a great day!");
+    saySafeSSML(vr, ttsGoodbye());
     vr.hangup();
 
     return vr;
@@ -914,15 +916,19 @@ export async function handleOpenAIGreeting(
     // Initialize conversation context
     const context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
 
-    // Generate greeting based on whether we know the caller
-    let greeting = `Hi, thanks for calling ${clinicName || 'Spinalogic'}, this is Sarah. How can I help you today?`;
-
-    if (context.knownPatient) {
-      greeting = `Hi, thanks for calling ${clinicName || 'Spinalogic'}, this is Sarah. I think I might recognise this number – are you ${context.knownPatient.firstName}, or someone else? How can I help you today?`;
+    // Generate warm greeting using SSML helper
+    const knownName = context.knownPatient?.firstName;
+    const greeting = ttsGreeting(clinicName || 'Spinalogic', knownName);
+    
+    // For known patients, we still need to ask if it's them or someone else
+    let fullGreeting = greeting;
+    if (context.knownPatient && !knownName) {
+      fullGreeting = `${greeting} <break time="400ms"/> I think I might recognise this number. Is this for you, or someone else?`;
     }
 
-    // Add greeting to history
-    const updatedContext = addTurnToHistory(context, 'assistant', greeting);
+    // Add greeting to history (strip SSML for storage)
+    const greetingText = fullGreeting.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    const updatedContext = addTurnToHistory(context, 'assistant', greetingText);
     await saveConversationContext(callSid, updatedContext);
 
     // Speak greeting and gather response
@@ -933,25 +939,14 @@ export async function handleOpenAIGreeting(
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
       enhanced: true,
+      bargeIn: true,
       hints: 'appointment, booking, reschedule, cancel, question, today, tomorrow, morning, afternoon'
     });
 
-    saySafe(gather, greeting);
+    saySafeSSML(gather, fullGreeting);
 
-    // If no response after greeting, give them another chance
-    const retryGather = vr.gather({
-      input: ['speech'],
-      timeout: 10,
-      speechTimeout: 'auto',
-      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-      method: 'POST',
-      enhanced: true,
-      hints: 'appointment, booking, question, today, tomorrow'
-    });
-    saySafe(retryGather, "Are you still there? How can I help you today?");
-
-    // If still no response, close gracefully
-    saySafe(vr, "Thanks for calling Spinalogic. Feel free to call back anytime.");
+    // If no response, close gracefully (no repeated prompts)
+    saySafeSSML(vr, ttsGoodbye());
 
     return vr;
 

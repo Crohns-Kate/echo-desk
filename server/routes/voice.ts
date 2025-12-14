@@ -11,7 +11,7 @@ import {
   rescheduleAppointment,
   findPatientByPhoneRobust
 } from "../services/cliniko";
-import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME } from "../utils/voice-constants";
+import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME, ttsBookingConfirmed, ttsGoodbye, ttsThinking } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 import { labelForSpeech, AUST_TZ } from "../time";
 import { storage } from "../storage";
@@ -3793,10 +3793,9 @@ export function registerVoice(app: Express) {
 
         console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
-        // Add thinking filler to reduce dead-air pauses
-        const { EMOTIONS } = await import("../utils/voice-constants");
-        const thinkingPhrase = EMOTIONS.thinking();
-        saySafeSSML(vr, thinkingPhrase);
+        // Add warm thinking filler to reduce dead-air pauses during Cliniko lookup
+        const { ttsThinking } = await import("../utils/voice-constants");
+        saySafeSSML(vr, ttsThinking());
         // Add a short pause to allow the phrase to be spoken before API call
         vr.pause({ length: 1 });
 
@@ -4363,26 +4362,14 @@ export function registerVoice(app: Express) {
               method: "POST",
             });
 
-            // Warm, reassuring confirmation messages
-            const confirmationMessages = firstName ? [
-              `${firstName}, ${EMOTIONS.excited("beautiful", "medium")}! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
-              `${firstName}, ${EMOTIONS.excited("perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
-              `${firstName}, ${EMOTIONS.excited("lovely", "medium")}! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
-            ] : [
-              `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
-            ];
-            const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
-            saySafeSSML(g, randomConfirmation);
+            // Warm, reassuring confirmation using SSML helper
+            const confirmation = ttsBookingConfirmed(firstName, spokenTime, "Dr. Michael", lastFourDigits);
+            saySafeSSML(g, confirmation);
             g.pause({ length: 1 });
 
-            // If no response, warm farewell
-            const farewellMessages = [
-              "Lovely! We're looking forward to seeing you. Take care!",
-              "Beautiful! See you at your appointment. Bye for now!",
-              "Perfect! If anything changes, just give us a buzz. See you soon!"
-            ];
-            const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
-            saySafe(vr, randomFarewell);
+            // If no response, warm farewell using SSML helper
+            const { ttsGoodbye } = await import("../utils/voice-constants");
+            saySafeSSML(vr, ttsGoodbye());
             vr.hangup();
             return res.type("text/xml").send(vr.toString());
           } else {
@@ -4561,26 +4548,13 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
 
-          // Warm, reassuring confirmation messages
-          const confirmationMessages = firstName ? [
-            `${firstName}, beautiful! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
-            `${firstName}, perfect! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
-            `${firstName}, lovely! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
-          ] : [
-            `Wonderful! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
-          ];
-          const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
-          saySafeSSML(g, randomConfirmation);
+          // Warm booking confirmation using SSML helper
+          const confirmation = ttsBookingConfirmed(firstName, spokenTime, "Dr. Michael", lastFourDigits);
+          saySafeSSML(g, confirmation);
           g.pause({ length: 1 });
 
-          // If no response, warm farewell
-          const farewellMessages = [
-            "Lovely! We're looking forward to seeing you. Take care!",
-            "Beautiful! See you at your appointment. Bye for now!",
-            "Perfect! If anything changes, just give us a buzz. See you soon!"
-          ];
-          const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
-          saySafe(vr, randomFarewell);
+          // If no response, warm farewell using SSML helper
+          saySafeSSML(vr, ttsGoodbye());
           vr.hangup();
           return res.type("text/xml").send(vr.toString());
         } catch (e: any) {
