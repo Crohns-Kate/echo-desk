@@ -544,9 +544,10 @@ export async function handleOpenAIConversation(
     if (mergedStateForDetection.np === null || mergedStateForDetection.np === undefined) {
       const utteranceLower = userUtterance.toLowerCase();
       const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
-                          utteranceLower.includes('first time') || utteranceLower.includes('haven\'t been') ||
-                          utteranceLower.includes('never been') || utteranceLower.includes('haven\'t been in') ||
-                          utteranceLower.includes('haven\'t been to') || utteranceLower.includes('not been there') ||
+                          utteranceLower.includes('first time') || utteranceLower.includes('never been') ||
+                          utteranceLower.includes('haven\'t been there') || utteranceLower.includes('haven\'t been to') ||
+                          utteranceLower.includes('haven\'t been here') || utteranceLower.includes('haven\'t been before') ||
+                          utteranceLower.includes('haven\'t been in') || utteranceLower.includes('not been there') ||
                           utteranceLower.includes('not been to') || utteranceLower.includes('not been here') ||
                           utteranceLower.includes('not been before') || utteranceLower.includes('have not been there') ||
                           utteranceLower.includes('have not been to') || utteranceLower.includes('have not been here') ||
