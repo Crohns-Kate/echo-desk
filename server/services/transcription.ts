@@ -42,8 +42,8 @@ export async function transcribeRecording(
     throw new Error(`Failed to download recording: ${response.status} ${response.statusText}`);
   }
 
-  const audioBuffer = await response.buffer();
-  console.log('[TRANSCRIPTION] ✅ Downloaded recording:', audioBuffer.length, 'bytes');
+  const audioBuffer = await response.arrayBuffer();
+  console.log('[TRANSCRIPTION] ✅ Downloaded recording:', audioBuffer.byteLength, 'bytes');
 
   // Pass the audio buffer directly to AssemblyAI (avoids auth issues)
   console.log('[TRANSCRIPTION] 🔄 Submitting to AssemblyAI...');
