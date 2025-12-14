@@ -535,67 +535,80 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
-    // 3b. CRITICAL: If AI just set rs=true but we don't have slots yet, fetch them NOW
-    //     and call AI again so it can offer the slots in the same turn
+    // 3b. CRITICAL: Override AI response if it missed detecting new/existing patient status that user mentioned
+    //     This handles cases where AI asks about new/existing even though user already said it
     let finalResponse = response;
-    if (response.state.rs === true && !context.availableSlots) {
-      // Merge the new state so we have tp and np for fetching
-      const mergedState = { ...context.currentState, ...response.state };
-
-      // SAFEGUARD 1: Don't fetch slots if we don't know new/existing patient status
-      if (mergedState.np === null || mergedState.np === undefined) {
-        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but np is null - cannot fetch slots yet');
-        // Check if caller already mentioned new/existing status in their utterance
-        const utteranceLower = userUtterance.toLowerCase();
-        const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
-                            utteranceLower.includes('first time') || utteranceLower.includes('haven\'t been') ||
-                            utteranceLower.includes('never been') || utteranceLower.includes('haven\'t been in');
-        const mentionedExisting = utteranceLower.includes('been before') || utteranceLower.includes('existing') ||
-                                  utteranceLower.includes('been there') || utteranceLower.includes('returning');
-        
-        if (mentionedNew) {
-          // They already said they're new - don't ask again, just acknowledge
-          finalResponse = {
-            reply: "Great, since it's your first visit, let me check what we have available.",
-            state: {
-              ...response.state,
-              np: true,
-              rs: true  // Now we can fetch slots
-            }
-          };
-        } else if (mentionedExisting) {
-          // They already said they're existing - don't ask again, just acknowledge
-          finalResponse = {
-            reply: "Perfect, since you've been here before, let me check what we have available.",
-            state: {
-              ...response.state,
-              np: false,
-              rs: true  // Now we can fetch slots
-            }
-          };
-        } else {
-          // No mention - ask about new/existing patient
-          finalResponse = {
-            reply: "Sure, I can help with that. Have you been to Spinalogic before, or would this be your first visit?",
-            state: {
-              ...response.state,
-              rs: false  // Reset so we properly collect np first
-            }
-          };
-        }
-      }
-      // SAFEGUARD 2: Don't fetch slots if we don't have a time preference
-      else if (!mergedState.tp) {
-        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but tp is null - need time preference first');
-        // Override response to ask for time preference
+    const mergedStateForDetection = { ...context.currentState, ...response.state };
+    
+    // Check if user mentioned new/existing status but AI didn't capture it (np is still null)
+    if (mergedStateForDetection.np === null || mergedStateForDetection.np === undefined) {
+      const utteranceLower = userUtterance.toLowerCase();
+      const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
+                          utteranceLower.includes('first time') || utteranceLower.includes('haven\'t been') ||
+                          utteranceLower.includes('never been') || utteranceLower.includes('haven\'t been in') ||
+                          utteranceLower.includes('haven\'t been to') || utteranceLower.includes('not been') ||
+                          (utteranceLower.includes('haven\'t') && (utteranceLower.includes('before') || utteranceLower.includes('in')));
+      const mentionedExisting = utteranceLower.includes('been before') || utteranceLower.includes('existing') ||
+                                utteranceLower.includes('been there') || utteranceLower.includes('returning') ||
+                                utteranceLower.includes('been here') || utteranceLower.includes('i\'ve been');
+      
+      if (mentionedNew) {
+        console.log('[OpenAICallHandler] ✅ User mentioned being new but AI missed it - overriding response');
+        console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+        console.log('[OpenAICallHandler]   - AI had np:', response.state.np);
+        // Override the AI's response since it asked about new/existing even though user already said it
         finalResponse = {
-          reply: "When would you like to come in? I can check what we have available.",
+          reply: "Great, since it's your first visit, let me check what we have available.",
           state: {
             ...response.state,
-            rs: false  // Reset so we properly collect tp first
+            np: true,
+            rs: true  // Now we can fetch slots if we have tp
+          }
+        };
+      } else if (mentionedExisting) {
+        console.log('[OpenAICallHandler] ✅ User mentioned being existing but AI missed it - overriding response');
+        console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+        console.log('[OpenAICallHandler]   - AI had np:', response.state.np);
+        // Override the AI's response since it asked about new/existing even though user already said it
+        finalResponse = {
+          reply: "Perfect, since you've been here before, let me check what we have available.",
+          state: {
+            ...response.state,
+            np: false,
+            rs: true  // Now we can fetch slots if we have tp
           }
         };
       } else {
+        console.log('[OpenAICallHandler] ℹ️  np is null, checking for new/existing mentions...');
+        console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+      }
+    }
+
+    // 3c. CRITICAL: If AI just set rs=true (or we overrode it above) but we don't have slots yet, fetch them NOW
+    //     and call AI again so it can offer the slots in the same turn
+    if (finalResponse.state.rs === true && !context.availableSlots) {
+      // Merge the new state so we have tp and np for fetching (use finalResponse which may have been overridden above)
+      let mergedState = { ...context.currentState, ...finalResponse.state };
+
+      // SAFEGUARD 1: Don't fetch slots if we don't know new/existing patient status
+      // (Note: This should rarely trigger now since we check above, but keeping as a safety net)
+      if (mergedState.np === null || mergedState.np === undefined) {
+        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but np is still null - cannot fetch slots yet');
+        // Reset rs since we can't fetch slots without knowing new/existing status
+        finalResponse = {
+          reply: "Sure, I can help with that. Have you been to Spinalogic before, or would this be your first visit?",
+          state: {
+            ...finalResponse.state,
+            rs: false  // Reset so we properly collect np first
+          }
+        };
+        mergedState = { ...mergedState, ...finalResponse.state };
+      }
+      
+      // SAFEGUARD 2: Don't fetch slots if we don't have a time preference
+      // Check if we should fetch slots (have np, have tp, rs is true)
+      if (finalResponse.state.rs === true && mergedState.np !== null && mergedState.np !== undefined && mergedState.tp) {
+        // All required info is available - fetch slots now
         console.log('[OpenAICallHandler] 🔄 AI set rs=true - fetching slots now...');
         
         // Add thinking filler during Cliniko API lookup to prevent dead-air
@@ -634,13 +647,24 @@ export async function handleOpenAIConversation(
           finalResponse = {
             reply: "I'm sorry, we don't have any appointments available at that time. Would a different time work for you? I can check mornings or later in the afternoon.",
             state: {
-              ...response.state,
+              ...finalResponse.state,
               rs: false,  // Reset so we can try again with a new time preference
               tp: null    // Clear the time preference so user can give a new one
             }
           };
         }
+      } else if (finalResponse.state.rs === true && (mergedState.tp === null || mergedState.tp === undefined)) {
+        // We have np but missing tp - ask for time preference
+        console.log('[OpenAICallHandler] ⚠️ AI set rs=true but tp is null - need time preference first');
+        finalResponse = {
+          reply: "When would you like to come in? I can check what we have available.",
+          state: {
+            ...finalResponse.state,
+            rs: false  // Reset so we properly collect tp first
+          }
+        };
       }
+      // If rs is false, we've already handled it above (asked about np or tp)
     }
 
     // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
@@ -956,10 +980,13 @@ export async function handleOpenAIConversation(
       'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
       'no thank you', 'no more', 'nothing more'
     ];
-    const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
+    const matchedPhrase = goodbyePhrases.find(phrase => userUtteranceLower.includes(phrase));
+    const wantsToEndCall = !!matchedPhrase;
 
     if (wantsToEndCall) {
-      console.log('[OpenAICallHandler] Caller wants to end call - hanging up gracefully');
+      console.log('[OpenAICallHandler] ⚠️  Caller wants to end call - hanging up gracefully');
+      console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+      console.log('[OpenAICallHandler]   - Matched phrase:', matchedPhrase);
       // Use deterministic SSML goodbye template
       saySafeSSML(vr, ttsGoodbye());
       vr.hangup();
