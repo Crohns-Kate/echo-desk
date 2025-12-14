@@ -3793,8 +3793,12 @@ export function registerVoice(app: Express) {
 
         console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
-        // Add thinking filler
-        saySafeSSML(vr, `Thanks for waiting... Let me just pull up the schedule.`);
+        // Add thinking filler to reduce dead-air pauses
+        const { EMOTIONS } = await import("../utils/voice-constants");
+        const thinkingPhrase = EMOTIONS.thinking();
+        saySafeSSML(vr, thinkingPhrase);
+        // Add a short pause to allow the phrase to be spoken before API call
+        vr.pause({ length: 1 });
 
         let slots: Array<{ startISO: string; endISO?: string; label?: string }> = [];
         try {
@@ -3814,6 +3818,7 @@ export function registerVoice(app: Express) {
           const tenant = await getTenantForCall(callSid);
           const tenantCtx = tenant ? getTenantContext(await storage.getTenantById(tenant.id) as any) : undefined;
 
+          // Fetch availability - this may take a moment
           const result = await getAvailability({
             fromISO: fromDate,
             toISO: toDate,
@@ -5284,19 +5289,24 @@ export function registerVoice(app: Express) {
     console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
     console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
 
-    // If no speech, prompt again
+    // If no speech, prompt again with improved settings
     if (!speechResult || speechResult.trim() === "") {
       const vr = new twilio.twiml.VoiceResponse();
       const gather = vr.gather({
         input: ['speech'],
-        timeout: 5,
+        timeout: 8, // Longer timeout for background noise
         speechTimeout: 'auto',
         action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
         method: 'POST',
-        enhanced: true
+        enhanced: true,
+        bargeIn: true,
+        profanityFilter: false, // Allow natural speech
+        hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
       });
       saySafe(gather, "I didn't catch that. What can I help you with?");
-      saySafe(vr, "Are you still there?");
+      // Final fallback after retry
+      saySafe(vr, "Thanks for calling. Have a great day!");
+      vr.hangup();
       return res.type("text/xml").send(vr.toString());
     }
 

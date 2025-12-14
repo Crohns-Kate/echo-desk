@@ -825,6 +825,30 @@ export async function handleOpenAIConversation(
     // 6. Save context to database
     await saveConversationContext(callSid, context);
 
+    // 6b. Check if caller wants to end the call (goodbye detection)
+    const userUtteranceLower = (userUtterance || '').toLowerCase().trim();
+    const goodbyePhrases = [
+      'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+      'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+      'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
+      'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
+      'no thank you', 'no more', 'nothing more'
+    ];
+    const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
+
+    if (wantsToEndCall) {
+      console.log('[OpenAICallHandler] Caller wants to end call - hanging up gracefully');
+      const goodbyeMessages = [
+        "Perfect! We'll be in touch soon. Have a lovely day!",
+        "Beautiful! Talk to you soon. Take care!",
+        "Lovely! We'll get back to you shortly. Bye for now!"
+      ];
+      const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
+      saySafe(vr, randomGoodbye);
+      vr.hangup();
+      return vr;
+    }
+
     // 7. Gather next user input with barge-in enabled (Say INSIDE Gather)
     const gather = vr.gather({
       input: ['speech'],
@@ -833,13 +857,15 @@ export async function handleOpenAIConversation(
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
       enhanced: true,
-      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
+      bargeIn: true,
+      profanityFilter: false, // Allow natural speech patterns
+      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
     });
 
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
     saySafe(gather, finalResponse.reply);
 
-    // 8. If no response after gather times out, give them another chance
+    // 8. If no response after gather times out, check once more (but detect goodbye)
     const retryGather = vr.gather({
       input: ['speech'],
       timeout: 10,  // Longer timeout for the retry
@@ -847,12 +873,15 @@ export async function handleOpenAIConversation(
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
       enhanced: true,
-      hints: 'yes, no, goodbye, that\'s all, nothing else, thank you'
+      bargeIn: true,
+      profanityFilter: false,
+      hints: 'yes, no, goodbye, that\'s all, nothing else, thank you, bye, no thanks'
     });
     saySafe(retryGather, "Are you still there? Is there anything else you'd like to know?");
 
     // 9. If still no response, close gracefully (not abruptly)
     saySafe(vr, "Thanks for calling Spinalogic. Have a great day!");
+    vr.hangup();
 
     return vr;
 
