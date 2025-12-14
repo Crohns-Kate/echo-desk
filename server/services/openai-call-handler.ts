@@ -971,10 +971,21 @@ export async function handleOpenAIConversation(
 
   } catch (error) {
     console.error('[OpenAICallHandler] Error processing conversation:', error);
+    console.error('[OpenAICallHandler] Error stack:', error instanceof Error ? error.stack : 'No stack');
 
-    // Fallback error handling
-    saySafe(vr, "I'm having a bit of trouble with my system. Let me transfer you to our reception team.");
-    vr.hangup();
+    // Graceful error handling - don't hang up, give user a chance to continue
+    try {
+      saySafe(vr, "Sorry — I had a small hiccup there. Let me try again.");
+      // Redirect back to continue the conversation instead of hanging up
+      vr.redirect({ method: "POST" }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}&retry=true`));
+    } catch (fallbackError) {
+      console.error('[OpenAICallHandler] Fallback error handling also failed:', fallbackError);
+      // Last resort: simple message
+      const emergencyVr = new twilio.twiml.VoiceResponse();
+      emergencyVr.say({ voice: 'Polly.Olivia-Neural' }, "Sorry, there was a technical problem. Please try calling again.");
+      emergencyVr.hangup();
+      return emergencyVr;
+    }
 
     return vr;
   }
@@ -1035,8 +1046,22 @@ export async function handleOpenAIGreeting(
 
   } catch (error) {
     console.error('[OpenAICallHandler] Error in greeting:', error);
-    saySafe(vr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
-    vr.hangup();
+    console.error('[OpenAICallHandler] Error stack:', error instanceof Error ? error.stack : 'No stack');
+    
+    try {
+      // Graceful error handling - don't hang up immediately
+      saySafe(vr, "Sorry — I had a small hiccup there. Let me try again.");
+      // Redirect back to greeting to retry
+      vr.redirect({ method: "POST" }, abs(`/api/voice/openai-incoming?callSid=${encodeURIComponent(callSid)}&retry=true`));
+    } catch (fallbackError) {
+      console.error('[OpenAICallHandler] Fallback error handling also failed:', fallbackError);
+      // Last resort: simple message
+      const emergencyVr = new twilio.twiml.VoiceResponse();
+      emergencyVr.say({ voice: 'Polly.Olivia-Neural' }, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
+      emergencyVr.hangup();
+      return emergencyVr;
+    }
+    
     return vr;
   }
 }
