@@ -42,9 +42,10 @@ export async function transcribeRecording(
     throw new Error(`Failed to download recording: ${response.status} ${response.statusText}`);
   }
 
-  // Use response.buffer() which directly returns a Node.js Buffer (node-fetch v3)
-  // This is more efficient than arrayBuffer() + conversion
-  const audioBuffer = await response.buffer();
+  // Use response.arrayBuffer() and convert to Buffer (node-fetch v3 deprecates buffer())
+  // AssemblyAI SDK expects Buffer, not ArrayBuffer
+  const audioArrayBuffer = await response.arrayBuffer();
+  const audioBuffer = Buffer.from(audioArrayBuffer);
   console.log('[TRANSCRIPTION] ✅ Downloaded recording:', audioBuffer.length, 'bytes');
 
   // Pass the audio buffer directly to AssemblyAI (avoids auth issues)
