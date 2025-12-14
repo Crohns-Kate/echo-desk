@@ -566,6 +566,11 @@ export async function handleOpenAIConversation(
         };
       } else {
         console.log('[OpenAICallHandler] 🔄 AI set rs=true - fetching slots now...');
+        
+        // Add thinking filler during Cliniko API lookup to prevent dead-air
+        const thinkingFiller = ttsThinking();
+        // Note: We can't inject this into the response here, but we'll add it before the gather
+        
         const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
 
         if (slots.length > 0) {
@@ -749,6 +754,13 @@ export async function handleOpenAIConversation(
           // Save booked slot time for reference in FAQ answers
           context.bookedSlotTime = selectedSlot.speakable;
 
+          // Override AI response with deterministic SSML booking confirmation
+          const patientName = finalResponse.state.nm;
+          const appointmentTimeSpeakable = selectedSlot.speakable || formattedDate;
+          const practitionerName = selectedSlot.practitionerDisplayName;
+          const lastFourDigits = callerPhone.slice(-4);
+          finalResponse.reply = ttsBookingConfirmed(patientName, appointmentTimeSpeakable, practitionerName, lastFourDigits);
+
         } catch (error) {
           console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
         }
@@ -865,23 +877,22 @@ export async function handleOpenAIConversation(
       hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
     });
 
-    // Say response INSIDE gather to enable barge-in (caller can interrupt)
-    saySafe(gather, finalResponse.reply);
+    // Add thinking filler if we just fetched slots (to cover API lookup time)
+    if (response.state.rs === true && context.availableSlots && !context.currentState.slotsOffered) {
+      saySafeSSML(vr, ttsThinking());
+      context.currentState.slotsOffered = true;
+    }
 
-    // 8. If no response after gather times out, check once more (but detect goodbye)
-    const retryGather = vr.gather({
-      input: ['speech'],
-      timeout: 10,  // Longer timeout for the retry
-      speechTimeout: 'auto',
-      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-      method: 'POST',
-      enhanced: true,
-      bargeIn: true,
-      profanityFilter: false,
-      hints: 'yes, no, goodbye, that\'s all, nothing else, thank you, bye, no thanks'
-    });
-    // Removed repeated "Are you still there?" - just close gracefully if no response
-    // 9. If still no response, close gracefully (not abruptly)
+    // Say response INSIDE gather to enable barge-in (caller can interrupt)
+    // Use SSML if reply looks like SSML (contains tags), otherwise plain text
+    if (finalResponse.reply.includes('<speak>') || finalResponse.reply.includes('<break') || finalResponse.reply.includes('<prosody')) {
+      saySafeSSML(gather, finalResponse.reply);
+    } else {
+      saySafe(gather, finalResponse.reply);
+    }
+
+    // 8. If no response, close gracefully with single goodbye (no repeated prompts)
+    // 9. Final fallback: single warm goodbye and hangup
     saySafeSSML(vr, ttsGoodbye());
     vr.hangup();
 

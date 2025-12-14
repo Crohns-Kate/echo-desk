@@ -97,8 +97,37 @@ export function pause(node: any, secs = 1) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Post-process TwiML XML to unescape SSML for Polly
+ * Call this on the final TwiML string before sending to Twilio
+ */
+export function unescapeSSMLInTwiml(twimlXml: string): string {
+  // Twilio SDK escapes SSML as &lt;speak&gt;, &lt;break&gt;, etc.
+  // Unescape only within <Say> tags for Polly voices
+  
+  // Match Say tags with Polly voices (voice attribute can be in any order)
+  return twimlXml.replace(
+    /<Say([^>]*voice="Polly\.[^"]*"[^>]*|[^>]*voice='Polly\.[^']*'[^>]*)>([\s\S]*?)<\/Say>/g,
+    (fullMatch, sayAttributes, content) => {
+      // Unescape all XML entities in the content (SSML tags)
+      // Order matters: unescape &amp; last to avoid double-unescaping
+      let unescaped = content
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&'); // Do this last
+      
+      // Reconstruct the Say tag with unescaped SSML content
+      return `<Say${sayAttributes}>${unescaped}</Say>`;
+    }
+  );
+}
+
+/**
  * Say function that properly supports SSML with Amazon Polly
- * Wraps SSML content in <speak> tags for Twilio/Polly compatibility
+ * CRITICAL: Twilio's Node SDK escapes SSML tags in say() content.
+ * Solution: Parse SSML, extract breaks/prosody, use Twilio Pause verbs and natural speech
+ * Then post-process TwiML to unescape SSML for Polly voices
  */
 export function saySafeSSML(node: any, ssmlText?: string, voice?: any) {
   if (!ssmlText || ssmlText.trim().length === 0) {
@@ -110,33 +139,124 @@ export function saySafeSSML(node: any, ssmlText?: string, voice?: any) {
   const isPollyVoice = (voiceName: string) => String(voiceName).toLowerCase().includes('polly');
   const isPrimary = isPollyVoice(v);
 
-  // Ensure SSML is wrapped in <speak> tags (Twilio/Polly requirement)
+  if (!isPrimary) {
+    // For non-Polly voices, strip SSML and use plain text
+    const cleanedText = ssmlText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    saySafe(node, cleanedText, FALLBACK_VOICE);
+    return;
+  }
+
+  // Ensure SSML is wrapped in <speak> tags
   let ssml = ssmlText.trim();
   if (!ssml.startsWith('<speak>')) {
     ssml = `<speak>${ssml}</speak>`;
   }
 
-  // Clean SSML: remove any non-SSML characters that might break parsing
-  // But preserve valid SSML tags and content
-  ssml = ssml.replace(/[\x00-\x1F\x7F]/g, ''); // Remove control characters
+  // Clean SSML: remove control characters
+  ssml = ssml.replace(/[\x00-\x1F\x7F]/g, '');
 
   console.log(`[VOICE][saySafeSSML] voice="${v}" ssml="${ssml.substring(0, 150)}..."`);
 
   try {
-    if (isPrimary) {
-      // For Polly voices, pass SSML directly (Twilio handles it)
-      node.say({ voice: v }, ssml);
-    } else {
-      // For non-Polly voices, strip SSML and use plain text
-      const cleanedText = ssml.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      node.say({ voice: v, language: "en-AU" }, cleanedText);
-    }
+    // CRITICAL: Pass SSML directly to node.say() - it will be escaped by Twilio SDK
+    // Then getTwimlXml() will unescape it before sending to Twilio
+    // This allows true SSML support with Polly
+    node.say({ voice: v }, ssml);
   } catch (err) {
-    console.error("[VOICE] SSML Say failed with primary voice:", err);
-    // Fallback: strip SSML and use plain text
-    const cleanedText = ssml.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-    saySafe(node, cleanedText, FALLBACK_VOICE);
+    console.error("[VOICE] SSML Say failed, falling back to parsed format:", err);
+    // Fallback: Parse SSML and convert to Twilio-native format
+    try {
+      const parsed = parseSSMLToTwilioFormat(ssml);
+      
+      // Speak each segment with appropriate pauses
+      for (let i = 0; i < parsed.segments.length; i++) {
+        const segment = parsed.segments[i];
+        
+        // Add pause before segment if specified
+        if (segment.pauseBefore > 0) {
+          const pauseSecs = Math.min(Math.ceil(segment.pauseBefore / 1000), 10);
+          node.pause({ length: pauseSecs });
+        }
+        
+        // Speak the text (with prosody handling via natural speech patterns)
+        if (segment.text.trim()) {
+          // For prosody effects, use natural word choice and punctuation
+          const textToSpeak = segment.slow ? segment.text.replace(/\./g, '...').replace(/!/g, '!') : segment.text;
+          const cleaned = ttsClean(textToSpeak);
+          if (cleaned) {
+            node.say({ voice: v }, cleaned);
+          }
+        }
+      }
+    } catch (parseErr) {
+      console.error("[VOICE] SSML parsing also failed, using plain text:", parseErr);
+      // Final fallback: strip SSML and use plain text
+      const cleanedText = ssml.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      saySafe(node, cleanedText, v);
+    }
   }
+}
+
+/**
+ * Parse SSML and convert to Twilio-native format (text + Pause verbs)
+ */
+interface SSMLSegment {
+  text: string;
+  pauseBefore: number; // milliseconds
+  slow: boolean; // prosody rate="slow"
+}
+
+function parseSSMLToTwilioFormat(ssml: string): { segments: SSMLSegment[] } {
+  const segments: SSMLSegment[] = [];
+  
+  // Remove speak wrapper
+  ssml = ssml.replace(/<\/?speak>/g, '');
+  
+  // Split by break tags first
+  const parts = ssml.split(/<break\s+time=["'](\d+)(ms|s)["']\s*\/?>/);
+  
+  let currentPause = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    
+    // Check if next part is a break time value
+    if (i + 2 < parts.length && /^\d+$/.test(parts[i + 1]) && /^(ms|s)$/.test(parts[i + 2])) {
+      const value = parseInt(parts[i + 1], 10);
+      const unit = parts[i + 2];
+      currentPause = unit === 's' ? value * 1000 : value;
+      i += 2; // Skip the break value parts
+    }
+    
+    if (!part.trim()) continue;
+    
+    // Extract prosody tags
+    let text = part;
+    let slow = false;
+    
+    // Check for prosody rate="slow"
+    if (part.includes('rate="slow"') || part.includes("rate='slow'")) {
+      slow = true;
+    }
+    
+    // Remove all SSML tags
+    text = text
+      .replace(/<prosody[^>]*>/g, '')
+      .replace(/<\/prosody>/g, '')
+      .replace(/<break[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    if (text) {
+      segments.push({
+        text,
+        pauseBefore: currentPause,
+        slow
+      });
+      currentPause = 0; // Reset pause after using it
+    }
+  }
+  
+  return { segments };
 }
 
 /**
