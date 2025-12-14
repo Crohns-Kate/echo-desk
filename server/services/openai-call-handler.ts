@@ -964,11 +964,9 @@ export async function handleOpenAIConversation(
       saySafe(gather, finalResponse.reply);
     }
 
-    // Fallback: Only if gather completely fails (action URL unreachable, etc.)
-    // Normal timeout will redirect to action URL, which handles goodbye in openai-continue route
-    saySafe(vr, "Thanks for calling. Goodbye.");
-    vr.hangup();
-
+    // With actionOnEmptyResult: true, gather timeout will always redirect to action URL
+    // The action URL (openai-continue) handles all timeout cases, so no fallback needed here
+    // Return TwiML with just the gather - no goodbye/hangup after it
     return vr;
 
   } catch (error) {
@@ -1030,11 +1028,9 @@ export async function handleOpenAIGreeting(
 
     saySafeSSML(gather, fullGreeting);
 
-    // Fallback: Only if gather completely fails (action URL unreachable, etc.)
-    // Normal timeout will redirect to action URL, which handles goodbye in openai-continue route
-    saySafe(vr, "Thanks for calling. Goodbye.");
-    vr.hangup();
-
+    // With actionOnEmptyResult: true, gather timeout will always redirect to action URL
+    // The action URL (openai-continue) handles all timeout cases, so no fallback needed here
+    // Return TwiML with just the gather - no goodbye/hangup after it
     return vr;
 
   } catch (error) {
