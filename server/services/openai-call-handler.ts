@@ -1069,9 +1069,16 @@ export async function handleOpenAIConversation(
             const lastFourDigits = callerPhone.slice(-4);
             const bookingConfirmation = ttsBookingConfirmed(patientName, appointmentTimeSpeakable, practitionerName, lastFourDigits);
             
-            // After booking, always ask if they need anything else
-            finalResponse.reply = `${bookingConfirmation} Before you go — do you need the price, directions, or our website?`;
-            finalResponse.expect_user_reply = true; // This is a question expecting a reply
+            // After booking, always ask if they need anything else (ONCE per call)
+            if (!context.postBookingPrompted) {
+              finalResponse.reply = `${bookingConfirmation} Before you go — do you need the price, directions, or our website?`;
+              finalResponse.expect_user_reply = true; // This is a question expecting a reply
+              context.postBookingPrompted = true; // Mark as shown to prevent repetition
+              await saveConversationContext(callSid, context);
+            } else {
+              // Already shown - use AI's response (which should handle any follow-up)
+              finalResponse.reply = bookingConfirmation;
+            }
           } else {
             // Disambiguation pending - don't create appointment yet
             console.log('[OpenAICallHandler] ⏸️  Booking paused - disambiguation in progress');

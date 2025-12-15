@@ -855,6 +855,9 @@ export interface ConversationContext {
   /** Count of consecutive empty speech results (for handling timeouts) */
   emptyCount?: number;
 
+  /** Whether post-booking prompt has been shown (prevents repetition) */
+  postBookingPrompted?: boolean;
+
   /** Name disambiguation context (when phone matches but name differs) */
   nameDisambiguation?: {
     existingName: string;
