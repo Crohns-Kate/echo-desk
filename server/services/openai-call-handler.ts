@@ -562,20 +562,20 @@ export async function handleOpenAIConversation(
       if (saidYes) {
         // Confirmed - use existing patient, don't update name
         console.log('[OpenAICallHandler] ✅ Name confirmed - using existing patient without name update');
+        // Store existing name BEFORE clearing disambiguation
+        // We know nameDisambiguation exists because we're inside the if block
+        const existingName = context.nameDisambiguation.existingName;
         context.nameDisambiguation = undefined; // Clear disambiguation
         await saveConversationContext(callSid, context);
         // Proceed with booking using existing patient (name won't be updated)
         // Update state to use existing patient name
-        const existingName = context.nameDisambiguation?.existingName;
-        if (existingName) {
-          finalResponse = {
-            ...response,
-            state: {
-              ...response.state,
-              nm: existingName // Use existing name, not spoken name
-            }
-          };
-        }
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            nm: existingName // Use existing name, not spoken name
+          }
+        };
       } else if (saidNo) {
         // Different person - need to handle differently
         console.log('[OpenAICallHandler] ⚠️  Different person - setting handoff needed');
