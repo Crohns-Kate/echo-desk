@@ -173,6 +173,9 @@ export async function processHandoff(
     reason
   });
   
+  // Get call record for tenant info
+  const call = await storage.getCallByCallSid(callSid);
+  
   // Update call log with handoff info
   await storage.updateCall(callSid, {
     handoffTriggered: true,
@@ -183,7 +186,6 @@ export async function processHandoff(
   });
   
   // Create alert for handoff
-  const call = await storage.getCallByCallSid(callSid);
   if (call) {
     await storage.createAlert({
       tenantId: call.tenantId || undefined,
@@ -219,7 +221,7 @@ export async function processHandoff(
       
     case 'sms_only':
       // Send SMS notification
-      if (tenant && config.smsTemplate) {
+      if (tenant && config.smsTemplate && fromNumber) {
         const smsText = config.smsTemplate.replace('{{clinic_name}}', tenant.clinicName || 'our clinic');
         try {
           await sendSMS(fromNumber, smsText, tenant.id);
