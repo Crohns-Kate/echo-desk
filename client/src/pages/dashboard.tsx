@@ -23,6 +23,16 @@ export default function Dashboard() {
     queryKey: ["/api/alerts", "recent"],
   });
 
+  // Fetch callback requests (alerts with reason 'callback_requested')
+  const { data: callbackRequests, isLoading: callbacksLoading } = useQuery<Alert[]>({
+    queryKey: ["/api/alerts", "callback"],
+    queryFn: async () => {
+      const response = await fetch("/api/alerts?reason=callback_requested&limit=10");
+      if (!response.ok) return [];
+      return response.json();
+    },
+  });
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-7xl mx-auto p-6 space-y-8">
@@ -146,7 +156,22 @@ export default function Dashboard() {
                                 Transcribed
                               </Badge>
                             )}
+                            {call.handoffTriggered && (
+                              <Badge 
+                                variant="destructive" 
+                                className="text-xs"
+                                data-testid={`badge-handoff-${call.id}`}
+                              >
+                                <AlertCircle className="h-3 w-3 mr-1" />
+                                HANDOFF {call.handoffStatus ? `(${call.handoffStatus})` : ''}
+                              </Badge>
+                            )}
                           </div>
+                          {call.handoffTriggered && call.handoffReason && (
+                            <p className="text-xs text-muted-foreground italic" data-testid={`text-handoff-reason-${call.id}`}>
+                              Reason: {call.handoffReason}
+                            </p>
+                          )}
                           {call.summary && (
                             <p className="text-sm text-muted-foreground" data-testid={`text-summary-${call.id}`}>
                               {call.summary}
@@ -240,6 +265,75 @@ export default function Dashboard() {
                     </CardContent>
                   </Card>
                 ))
+              )}
+            </div>
+          </div>
+
+          {/* Callback Queue - Below Recent Alerts */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">Callback Requests</h2>
+              {callbackRequests && callbackRequests.length > 0 && (
+                <Badge variant="secondary">{callbackRequests.length}</Badge>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              {callbacksLoading ? (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center justify-center h-24">
+                      <div className="animate-pulse text-sm text-muted-foreground">Loading callbacks...</div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : !callbackRequests || callbackRequests.length === 0 ? (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex flex-col items-center justify-center h-24 space-y-2">
+                      <Phone className="h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">No callback requests</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                callbackRequests.slice(0, 5).map((alert) => {
+                  const payload = alert.payload as any;
+                  return (
+                    <Card 
+                      key={alert.id} 
+                      className="hover-elevate border-l-4 border-blue-500"
+                      data-testid={`card-callback-${alert.id}`}
+                    >
+                      <CardContent className="p-4">
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <Badge variant="default" className="bg-blue-500">
+                              Callback Requested
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(alert.createdAt!).toLocaleTimeString('en-AU', {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium">{payload?.fromNumber || 'Unknown number'}</p>
+                          {payload?.callbackPreference && (
+                            <p className="text-xs text-muted-foreground">
+                              Preferred time: {payload.callbackPreference}
+                            </p>
+                          )}
+                          {payload?.reason && (
+                            <p className="text-xs text-muted-foreground italic">
+                              Reason: {payload.reason}
+                            </p>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
               )}
             </div>
           </div>

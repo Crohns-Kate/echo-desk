@@ -59,7 +59,7 @@ export interface IStorage {
 
   // Alerts
   createAlert(data: InsertAlert): Promise<Alert>;
-  listAlerts(tenantId?: number, limit?: number): Promise<Alert[]>;
+  listAlerts(tenantId?: number, limit?: number, reason?: string): Promise<Alert[]>;
   dismissAlert(id: number): Promise<Alert | undefined>;
 
   // Appointments
@@ -253,16 +253,22 @@ export class DatabaseStorage implements IStorage {
     return alert;
   }
 
-  async listAlerts(tenantId?: number, limit: number = 50): Promise<Alert[]> {
+  async listAlerts(tenantId?: number, limit: number = 50, reason?: string): Promise<Alert[]> {
+    let query = db.select().from(alerts);
+    
+    const conditions = [];
     if (tenantId) {
-      return db
-        .select()
-        .from(alerts)
-        .where(eq(alerts.tenantId, tenantId))
-        .orderBy(desc(alerts.createdAt))
-        .limit(limit);
+      conditions.push(eq(alerts.tenantId, tenantId));
     }
-    return db.select().from(alerts).orderBy(desc(alerts.createdAt)).limit(limit);
+    if (reason) {
+      conditions.push(eq(alerts.reason, reason));
+    }
+    
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+    
+    return query.orderBy(desc(alerts.createdAt)).limit(limit);
   }
 
   async dismissAlert(id: number): Promise<Alert | undefined> {
