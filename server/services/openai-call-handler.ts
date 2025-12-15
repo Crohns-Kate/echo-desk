@@ -550,7 +550,7 @@ export async function handleOpenAIConversation(
 
     // 2c. HANDOFF DETECTION: Check for handoff triggers BEFORE calling AI
     //     This allows us to bypass AI and go straight to handoff if needed
-    const tenant = tenantId ? await storage.getTenantById(tenantId) : null;
+    const tenant = tenantId ? (await storage.getTenantById(tenantId)) ?? null : null;
     const handoffDetection = detectHandoffTrigger(
       userUtterance,
       context.history || [],
@@ -566,7 +566,7 @@ export async function handleOpenAIConversation(
     if (handoffDetection.shouldTrigger && 
         (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity')) {
       console.log('[OpenAICallHandler] 🚨 Handoff trigger detected:', handoffDetection.trigger, handoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger, handoffDetection.reason || '');
+      await processHandoff(vr, callSid, callerPhone, tenant ?? null, handoffDetection.trigger, handoffDetection.reason || '');
       return vr;
     }
 
@@ -883,7 +883,7 @@ export async function handleOpenAIConversation(
         postAIHandoffDetection.trigger !== 'explicit_request' && 
         postAIHandoffDetection.trigger !== 'profanity') {
       console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger, postAIHandoffDetection.reason || '');
+      await processHandoff(vr, callSid, callerPhone, tenant ?? null, postAIHandoffDetection.trigger, postAIHandoffDetection.reason || '');
       return vr;
     }
 
