@@ -571,8 +571,9 @@ export async function getAvailability(opts?: {
  */
 export interface EnrichedSlot {
   startISO: string;
-  speakable: string;               // e.g., "3:45 PM"
+  speakable: string;               // e.g., "3:45 PM" (rounded to nearest 5 min)
   speakableWithPractitioner: string; // e.g., "3:45 PM with Dr Sarah"
+  spokenTime?: string;              // Natural spoken format: "three forty-five p m" (for AI responses)
   clinikoPractitionerId: string;
   practitionerDisplayName: string;
   appointmentTypeId: string;
@@ -670,10 +671,15 @@ export async function getMultiPractitionerAvailability(
           successCount++;
 
           // Enrich slots with practitioner info
+          // Import time formatter once per batch
+          const { formatSlotTime, formatSpokenTime } = await import('../utils/time-formatter');
+          
           return rawSlots.map(slot => ({
             startISO: slot.startISO,
-            speakable: dayjs(slot.startISO).tz(tz).format('h:mm A'),
-            speakableWithPractitioner: `${dayjs(slot.startISO).tz(tz).format('h:mm A')} with ${practitioner.name}`,
+            // Use time formatter for rounded, natural times
+            speakable: formatSlotTime(slot.startISO, tz),
+            speakableWithPractitioner: `${formatSlotTime(slot.startISO, tz)} with ${practitioner.name}`,
+            spokenTime: formatSpokenTime(slot.startISO, tz),
             clinikoPractitionerId: practitioner.clinikoPractitionerId!,
             practitionerDisplayName: practitioner.name,
             appointmentTypeId: appointmentTypeId || opts.tenantCtx?.cliniko?.standardApptTypeId || '',

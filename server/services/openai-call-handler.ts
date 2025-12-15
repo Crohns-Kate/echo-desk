@@ -319,6 +319,13 @@ async function fetchAvailableSlots(
       );
 
       if (slots.length > 0) {
+        // Ensure all slots have spokenTime (add if missing from multi-practitioner fetch)
+        const { formatSpokenTime } = await import('../utils/time-formatter');
+        for (const slot of slots) {
+          if (!slot.spokenTime) {
+            slot.spokenTime = formatSpokenTime(slot.startISO, timezone);
+          }
+        }
         console.log('[OpenAICallHandler] Found', slots.length, 'slots across practitioners:',
           slots.map(s => s.speakableWithPractitioner).join(', '));
         return slots;
@@ -397,14 +404,19 @@ async function fetchAvailableSlots(
       ? (env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID || '')
       : (env.CLINIKO_APPT_TYPE_ID || '');
 
+    // Import time formatting utilities
+    const { formatSlotTime, formatSpokenTime } = await import('../utils/time-formatter');
+    
     const slots: EnrichedSlot[] = slotsToUse.slice(0, 3).map((slot: { startISO: string }) => {
-      const slotTime = dayjs(slot.startISO).tz(timezone);
-      const speakable = slotTime.format('h:mm A'); // e.g., "2:15 PM"
+      // Round to nearest 5 minutes and format naturally
+      const speakable = formatSlotTime(slot.startISO, timezone); // e.g., "2:15 PM" (rounded)
+      const spokenTime = formatSpokenTime(slot.startISO, timezone); // e.g., "two fifteen p m" for natural speech
 
       return {
         startISO: slot.startISO,
-        speakable,
+        speakable, // Rounded time for display: "9:45 AM"
         speakableWithPractitioner: `${speakable} with ${fallbackPractitionerName}`,
+        spokenTime, // Natural spoken format: "nine forty-five a m" (for AI to use in responses)
         clinikoPractitionerId: fallbackPractitionerId,
         practitionerDisplayName: fallbackPractitionerName,
         appointmentTypeId: fallbackApptTypeId
@@ -540,9 +552,66 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
+    // 3a. Handle name disambiguation response if pending
+    let finalResponse = response;
+    if (context.nameDisambiguation) {
+      const userLower = userUtterance.toLowerCase().trim();
+      const saidYes = /^(yes|yeah|yep|yup|correct|that's me|that's right|right)$/i.test(userLower);
+      const saidNo = /^(no|nope|nah|that's not me|wrong)$/i.test(userLower);
+      
+      if (saidYes) {
+        // Confirmed - use existing patient, don't update name
+        console.log('[OpenAICallHandler] ✅ Name confirmed - using existing patient without name update');
+        // Store existing name BEFORE clearing disambiguation
+        // We know nameDisambiguation exists because we're inside the if block
+        const existingName = context.nameDisambiguation.existingName;
+        context.nameDisambiguation = undefined; // Clear disambiguation
+        await saveConversationContext(callSid, context);
+        // Proceed with booking using existing patient (name won't be updated)
+        // Update state to use existing patient name
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            nm: existingName // Use existing name, not spoken name
+          }
+        };
+      } else if (saidNo) {
+        // Different person - need to handle differently
+        console.log('[OpenAICallHandler] ⚠️  Different person - setting handoff needed');
+        finalResponse = {
+          reply: "I'll have our reception team call you back shortly to help with that.",
+          expect_user_reply: false,
+          handoff_needed: true,
+          alert_category: 'TRICKY',
+          state: {
+            ...response.state,
+            bc: false
+          }
+        };
+        context.nameDisambiguation = undefined;
+        await saveConversationContext(callSid, context);
+        // Don't proceed with booking
+      } else {
+        // Unclear response - ask again
+        finalResponse = {
+          reply: `Just to confirm — are you ${context.nameDisambiguation.existingName}?`,
+          expect_user_reply: true,
+          state: {
+            ...response.state,
+            bc: false
+          }
+        };
+        // Don't proceed with booking yet
+      }
+    }
+
     // 3b. CRITICAL: Override AI response if it missed detecting new/existing patient status that user mentioned
     //     This handles cases where AI asks about new/existing even though user already said it
-    let finalResponse = response;
+    // Note: finalResponse may already be set by disambiguation handler above
+    if (!finalResponse) {
+      finalResponse = response;
+    }
     const mergedStateForDetection = { ...context.currentState, ...response.state };
     
     // Check if user mentioned new/existing status but AI didn't capture it (np is still null)
@@ -655,7 +724,12 @@ export async function handleOpenAIConversation(
           if (responseWithSlots.state.bc === true && responseWithSlots.state.si === undefined) {
             console.log('[OpenAICallHandler] ⚠️ AI tried to book without slot selection - forcing slot offer');
             finalResponse = {
-              reply: `I have ${slotsToOffer.length} option${slotsToOffer.length > 1 ? 's' : ''} for you. ${slotsToOffer.map((s, i) => `Option ${i + 1}, ${s.speakableWithPractitioner || s.speakable}`).join('. ')}. Which one works best?`,
+              reply: `I have ${slotsToOffer.length} option${slotsToOffer.length > 1 ? 's' : ''} for you. ${slotsToOffer.map((s, i) => {
+                // Use natural spoken time if available, otherwise use speakable
+                const timeToSpeak = s.spokenTime || s.speakable;
+                const practitioner = s.practitionerDisplayName ? ` with ${s.practitionerDisplayName}` : '';
+                return `Option ${i + 1}, ${timeToSpeak}${practitioner}`;
+              }).join('. ')}. Which one works best?`,
               state: {
                 ...responseWithSlots.state,
                 bc: false, // Reset booking confirmed
@@ -847,74 +921,129 @@ export async function handleOpenAIConversation(
             isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT'
           });
 
-          // Create appointment in Cliniko
-          const appointment = await createAppointmentForPatient(callerPhone, {
-            practitionerId,
-            appointmentTypeId,
-            startsAt: selectedSlot.startISO,
-            fullName: finalResponse.state.nm,
-            notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
-            tenantCtx
-          });
-
-          console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);
-
-          // Format appointment date for SMS
-          const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
-          const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
-
-          // Send SMS confirmation (only if not already sent)
-          // Include: time, practitioner name, address, and map link
-          if (!context.currentState.smsConfirmSent) {
-            const includeMapUrl = googleMapsUrl || undefined;
-            await sendAppointmentConfirmation({
-              to: callerPhone,
-              appointmentDate: formattedDate,
-              clinicName: clinicName || 'Spinalogic',
-              practitionerName: selectedSlot.practitionerDisplayName || undefined,
-              address: clinicAddress || context.tenantInfo?.address,
-              mapUrl: includeMapUrl
-            });
-            context.currentState.smsConfirmSent = true;
-            // Track if map was included in confirmation SMS
-            if (includeMapUrl) {
-              context.currentState.confirmSmsIncludedMap = true;
-              context.currentState.smsMapSent = true; // Map already sent via confirmation
+          // CRITICAL: Check for existing patient and name mismatch before creating appointment
+          // This prevents overwriting existing patient data
+          const { shouldDisambiguateName } = await import('../utils/name-matcher');
+          const existingPatient = await findPatientByPhoneRobust(callerPhone);
+          
+          // Skip disambiguation if already handled in previous turn
+          if (!context.nameDisambiguation && existingPatient && finalResponse.state.nm) {
+            const existingFullName = `${existingPatient.first_name || ''} ${existingPatient.last_name || ''}`.trim();
+            const newFullName = finalResponse.state.nm.trim();
+            
+            if (shouldDisambiguateName(existingFullName, newFullName)) {
+              console.log('[OpenAICallHandler] ⚠️  Name mismatch detected - asking for disambiguation');
+              console.log('[OpenAICallHandler]   - Existing patient:', existingFullName);
+              console.log('[OpenAICallHandler]   - Spoken name:', newFullName);
+              
+              // Store disambiguation context
+              context.nameDisambiguation = {
+                existingName: existingFullName,
+                spokenName: newFullName,
+                patientId: existingPatient.id.toString()
+              };
+              await saveConversationContext(callSid, context);
+              
+              // Override response to ask for confirmation
+              finalResponse = {
+                reply: `This number is already on file — are you ${existingFullName}?`,
+                expect_user_reply: true,
+                state: {
+                  ...finalResponse.state,
+                  bc: false // Don't book yet - need confirmation
+                }
+              };
+              
+              // Don't create appointment yet - wait for confirmation
+              console.log('[OpenAICallHandler] ⚠️  Booking paused - waiting for name confirmation');
+            } else {
+              // Names match or are similar enough - proceed with existing patient
+              console.log('[OpenAICallHandler] ✅ Name matches existing patient - proceeding with booking');
             }
-            console.log('[OpenAICallHandler] ✅ SMS confirmation sent (mapIncluded:', !!includeMapUrl, ')');
-          } else {
-            console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
           }
-
-          // For NEW patients, send the intake form link (only if not already sent)
-          // Use context.currentState.np (accumulated state) since np was set early in conversation
-          if (isNewPatient && !context.currentState.smsIntakeSent) {
-            // Generate form token using callSid
-            const formToken = `form_${callSid}`;
-
-            await sendNewPatientForm({
-              to: callerPhone,
-              token: formToken,
-              clinicName: clinicName || 'Spinalogic'
+          
+          // Only create appointment if booking is confirmed and no disambiguation pending
+          if (finalResponse.state.bc === true && !context.nameDisambiguation) {
+            // Create appointment in Cliniko
+            // CRITICAL: If existing patient confirmed via disambiguation, use existing name (not spoken name) to prevent overwrite
+            // Note: nameDisambiguation is cleared after confirmation, so we use the nm field which was updated above
+            const nameToUse = finalResponse.state.nm || undefined;
+            
+            const appointment = await createAppointmentForPatient(callerPhone, {
+              practitionerId,
+              appointmentTypeId,
+              startsAt: selectedSlot.startISO,
+              fullName: nameToUse, // Use existing name if disambiguation confirmed
+              notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
+              tenantCtx
             });
-            context.currentState.smsIntakeSent = true;
-            console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
-          } else if (isNewPatient) {
-            console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
+
+            console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);
+
+            // Format appointment date for SMS
+            const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
+            const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
+
+            // Send SMS confirmation (only if not already sent)
+            // Include: time, practitioner name, address, and map link
+            if (!context.currentState.smsConfirmSent) {
+              const includeMapUrl = googleMapsUrl || undefined;
+              await sendAppointmentConfirmation({
+                to: callerPhone,
+                appointmentDate: formattedDate,
+                clinicName: clinicName || 'Spinalogic',
+                practitionerName: selectedSlot.practitionerDisplayName || undefined,
+                address: clinicAddress || context.tenantInfo?.address,
+                mapUrl: includeMapUrl
+              });
+              context.currentState.smsConfirmSent = true;
+              // Track if map was included in confirmation SMS
+              if (includeMapUrl) {
+                context.currentState.confirmSmsIncludedMap = true;
+                context.currentState.smsMapSent = true; // Map already sent via confirmation
+              }
+              console.log('[OpenAICallHandler] ✅ SMS confirmation sent (mapIncluded:', !!includeMapUrl, ')');
+            } else {
+              console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
+            }
+
+            // For NEW patients, send the intake form link (only if not already sent)
+            // Use context.currentState.np (accumulated state) since np was set early in conversation
+            if (isNewPatient && !context.currentState.smsIntakeSent) {
+              // Generate form token using callSid
+              const formToken = `form_${callSid}`;
+
+              await sendNewPatientForm({
+                to: callerPhone,
+                token: formToken,
+                clinicName: clinicName || 'Spinalogic'
+              });
+              context.currentState.smsIntakeSent = true;
+              console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+            } else if (isNewPatient) {
+              console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
+            }
+
+            // Mark appointment as created to prevent duplicates
+            context.currentState.appointmentCreated = true;
+
+            // Save booked slot time for reference in FAQ answers
+            context.bookedSlotTime = selectedSlot.speakable;
+
+            // Override AI response with deterministic SSML booking confirmation
+            const patientName = finalResponse.state.nm ?? undefined;
+            const appointmentTimeSpeakable = selectedSlot.speakable || formattedDate;
+            const practitionerName = selectedSlot.practitionerDisplayName;
+            const lastFourDigits = callerPhone.slice(-4);
+            const bookingConfirmation = ttsBookingConfirmed(patientName, appointmentTimeSpeakable, practitionerName, lastFourDigits);
+            
+            // After booking, always ask if they need anything else
+            finalResponse.reply = `${bookingConfirmation} Before you go — do you need the price, directions, or our website?`;
+            finalResponse.expect_user_reply = true; // This is a question expecting a reply
+          } else {
+            // Disambiguation pending - don't create appointment yet
+            console.log('[OpenAICallHandler] ⏸️  Booking paused - disambiguation in progress');
           }
-
-          // Mark appointment as created to prevent duplicates
-          context.currentState.appointmentCreated = true;
-
-          // Save booked slot time for reference in FAQ answers
-          context.bookedSlotTime = selectedSlot.speakable;
-
-          // Override AI response with deterministic SSML booking confirmation
-          const patientName = finalResponse.state.nm;
-          const appointmentTimeSpeakable = selectedSlot.speakable || formattedDate;
-          const practitionerName = selectedSlot.practitionerDisplayName;
-          const lastFourDigits = callerPhone.slice(-4);
-          finalResponse.reply = ttsBookingConfirmed(patientName, appointmentTimeSpeakable, practitionerName, lastFourDigits);
 
         } catch (error) {
           console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
@@ -1020,47 +1149,77 @@ export async function handleOpenAIConversation(
     });
     const wantsToEndCall = !!matchedPhrase;
 
+    // 7. Build TwiML response based on expect_user_reply flag
+    // CRITICAL: Only include <Gather> when expecting user reply (asking a question)
+    // If informational/confirmation only, return <Say> only (or <Say> + <Hangup> if closing)
+    
+    // Determine if we should expect a reply
+    // Default to true if not specified (backward compatibility), but check goodbye first
+    const expectsReply = wantsToEndCall ? false : (finalResponse.expect_user_reply !== false);
+    
     if (wantsToEndCall) {
       console.log('[OpenAICallHandler] ⚠️  Caller wants to end call - hanging up gracefully');
       console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
       console.log('[OpenAICallHandler]   - Matched phrase:', matchedPhrase);
       // Use deterministic SSML goodbye template
+      saySafeSSML(vr, finalResponse.reply || ttsGoodbye());
       saySafeSSML(vr, ttsGoodbye());
       vr.hangup();
       return vr;
     }
+    
+    if (expectsReply) {
+      // Asking a question - include Gather
+      const gather = vr.gather({
+        input: ['speech'],
+        timeout: 8,
+        speechTimeout: 'auto',
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+        method: 'POST',
+        enhanced: true,
+        speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
+        bargeIn: true,
+        actionOnEmptyResult: true, // Call action even on timeout (empty result)
+        profanityFilter: false, // Allow natural speech patterns
+        hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
+      });
 
-    // 7. Gather next user input with barge-in enabled (Say INSIDE Gather)
-    const gather = vr.gather({
-      input: ['speech'],
-      timeout: 8,
-      speechTimeout: 'auto',
-      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-      method: 'POST',
-      enhanced: true,
-      speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
-      bargeIn: true,
-      actionOnEmptyResult: true, // Call action even on timeout (empty result)
-      profanityFilter: false, // Allow natural speech patterns
-      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
-    });
+      // Note: Removed thinking filler - slots are fetched proactively, so no delay needed
+      // If there's actual API delay, the gather will handle it naturally
 
-    // Add thinking filler INSIDE gather (before response) if we just fetched slots
-    // This plays during the gather and covers API lookup time
-    if (response.state.rs === true && context.availableSlots && context.availableSlots.length > 0) {
-      saySafeSSML(gather, ttsThinking());
+      // Say response INSIDE gather to enable barge-in (caller can interrupt)
+      // REGRESSION SAFETY: Always use saySafeSSML which converts SSML to Twilio-native format
+      // This ensures no SSML tags reach Twilio <Say> element (prevents error 13520)
+      // saySafeSSML handles both SSML and plain text safely
+      saySafeSSML(gather, finalResponse.reply);
+
+      // CRITICAL: Never include Hangup when Gather is present
+      // Return TwiML with just the gather - no goodbye/hangup after it
+      return vr;
+    } else {
+      // Informational/confirmation only - Say without Gather
+      saySafeSSML(vr, finalResponse.reply);
+      
+      // If AI explicitly set expect_user_reply=false and caller said "no" after booking, close politely
+      if (finalResponse.expect_user_reply === false && context.currentState.appointmentCreated) {
+        const noPhrases = ['no', 'nope', 'nah', "that's it", "that's all", 'nothing else', 'no thanks'];
+        const saidNo = noPhrases.some(phrase => {
+          if (phrase.length <= 3 && /^\w+$/.test(phrase)) {
+            const regex = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return regex.test(userUtteranceLower);
+          }
+          return userUtteranceLower.includes(phrase);
+        });
+        
+        if (saidNo) {
+          saySafeSSML(vr, ttsGoodbye());
+          vr.hangup();
+        }
+      }
+      
+      // CRITICAL: Never include both Gather and Hangup
+      return vr;
     }
-
-    // Say response INSIDE gather to enable barge-in (caller can interrupt)
-    // REGRESSION SAFETY: Always use saySafeSSML which converts SSML to Twilio-native format
-    // This ensures no SSML tags reach Twilio <Say> element (prevents error 13520)
-    // saySafeSSML handles both SSML and plain text safely
-    saySafeSSML(gather, finalResponse.reply);
-
-    // With actionOnEmptyResult: true, gather timeout will always redirect to action URL
-    // The action URL (openai-continue) handles all timeout cases, so no fallback needed here
-    // Return TwiML with just the gather - no goodbye/hangup after it
-    return vr;
 
   } catch (error) {
     console.error('[OpenAICallHandler] Error processing conversation:', error);
