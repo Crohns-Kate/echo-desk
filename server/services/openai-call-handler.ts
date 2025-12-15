@@ -562,20 +562,25 @@ export async function handleOpenAIConversation(
       if (saidYes) {
         // Confirmed - use existing patient, don't update name
         console.log('[OpenAICallHandler] ✅ Name confirmed - using existing patient without name update');
-        // Store existing name BEFORE clearing disambiguation
+        // Store existing name and preserved booking state BEFORE clearing disambiguation
         // We know nameDisambiguation exists because we're inside the if block
         const existingName = context.nameDisambiguation.existingName;
+        const preservedBc = context.nameDisambiguation.preservedBc;
+        const preservedSi = context.nameDisambiguation.preservedSi;
         context.nameDisambiguation = undefined; // Clear disambiguation
         await saveConversationContext(callSid, context);
         // Proceed with booking using existing patient (name won't be updated)
-        // Update state to use existing patient name
+        // CRITICAL: Restore bc and si values that were preserved before disambiguation
         finalResponse = {
           ...response,
           state: {
             ...response.state,
-            nm: existingName // Use existing name, not spoken name
+            nm: existingName, // Use existing name, not spoken name
+            bc: preservedBc !== undefined ? preservedBc : response.state.bc, // Restore preserved booking_confirmed
+            si: preservedSi !== undefined ? preservedSi : response.state.si // Restore preserved selected_slot_index
           }
         };
+        console.log('[OpenAICallHandler] 📋 Restored booking state:', { bc: preservedBc, si: preservedSi });
       } else if (saidNo) {
         // Different person - need to handle differently
         console.log('[OpenAICallHandler] ⚠️  Different person - setting handoff needed');
@@ -617,15 +622,31 @@ export async function handleOpenAIConversation(
     // Check if user mentioned new/existing status but AI didn't capture it (np is still null)
     if (mergedStateForDetection.np === null || mergedStateForDetection.np === undefined) {
       const utteranceLower = userUtterance.toLowerCase();
-      const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
-                          utteranceLower.includes('first time') || utteranceLower.includes('never been') ||
-                          utteranceLower.includes('haven\'t been there') || utteranceLower.includes('haven\'t been to') ||
-                          utteranceLower.includes('haven\'t been here') || utteranceLower.includes('haven\'t been before') ||
-                          utteranceLower.includes('haven\'t been in') || utteranceLower.includes('haven\'t been in before') ||
-                          utteranceLower.includes('not been there') || utteranceLower.includes('not been to') ||
-                          utteranceLower.includes('not been here') || utteranceLower.includes('not been before') ||
-                          utteranceLower.includes('have not been there') || utteranceLower.includes('have not been to') ||
-                          utteranceLower.includes('have not been here') || utteranceLower.includes('have not been before');
+      // Comprehensive patterns for detecting "new patient" / "first visit" mentions
+      // Check for variations including apostrophes and contractions
+      const mentionedNew = 
+        utteranceLower.includes('new patient') || 
+        utteranceLower.includes('first visit') || 
+        utteranceLower.includes('first time') || 
+        utteranceLower.includes('never been') ||
+        utteranceLower.includes("haven't been there") || utteranceLower.includes("havent been there") ||
+        utteranceLower.includes("haven't been to") || utteranceLower.includes("havent been to") ||
+        utteranceLower.includes("haven't been here") || utteranceLower.includes("havent been here") ||
+        utteranceLower.includes("haven't been before") || utteranceLower.includes("havent been before") ||
+        utteranceLower.includes("haven't been in") || utteranceLower.includes("havent been in") ||
+        utteranceLower.includes("haven't been in before") || utteranceLower.includes("havent been in before") ||
+        utteranceLower.includes("i haven't been") || utteranceLower.includes("i havent been") ||
+        utteranceLower.includes('not been there') ||
+        utteranceLower.includes('not been to') ||
+        utteranceLower.includes('not been here') ||
+        utteranceLower.includes('not been before') ||
+        utteranceLower.includes('have not been there') ||
+        utteranceLower.includes('have not been to') ||
+        utteranceLower.includes('have not been here') ||
+        utteranceLower.includes('have not been before') ||
+        utteranceLower.includes('i have not been') ||
+        utteranceLower.includes('new to the clinic') ||
+        utteranceLower.includes('new here');
       // More specific patterns to avoid false positives:
       // - 'been there' alone could match "I've been there for 5 years" (not patient-related)
       // - 'been here' alone could match "I've been here since 9am" (not patient-related)
@@ -674,6 +695,12 @@ export async function handleOpenAIConversation(
       } else {
         console.log('[OpenAICallHandler] ℹ️  np is null, checking for new/existing mentions...');
         console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+        console.log('[OpenAICallHandler]   - Lowercase utterance:', utteranceLower);
+        // Debug: Log key pattern checks to help diagnose detection issues
+        console.log('[OpenAICallHandler]   - Pattern checks: "haven\'t been in"=', utteranceLower.includes("haven't been in"), 
+                    ', "havent been in"=', utteranceLower.includes('havent been in'), 
+                    ', "i haven\'t been"=', utteranceLower.includes("i haven't been"),
+                    ', "i havent been"=', utteranceLower.includes("i havent been"));
       }
     }
 
@@ -937,10 +964,15 @@ export async function handleOpenAIConversation(
               console.log('[OpenAICallHandler]   - Spoken name:', newFullName);
               
               // Store disambiguation context
+              // CRITICAL: Preserve bc and si values so they can be restored after confirmation
               context.nameDisambiguation = {
                 existingName: existingFullName,
                 spokenName: newFullName,
-                patientId: existingPatient.id.toString()
+                patientId: existingPatient.id.toString(),
+                preservedBc: finalResponse.state.bc === true, // Save original booking_confirmed state
+                preservedSi: finalResponse.state.si !== undefined && finalResponse.state.si !== null 
+                  ? finalResponse.state.si 
+                  : undefined // Save original selected_slot_index
               };
               await saveConversationContext(callSid, context);
               

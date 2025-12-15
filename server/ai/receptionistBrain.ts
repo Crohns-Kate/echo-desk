@@ -860,6 +860,9 @@ export interface ConversationContext {
     existingName: string;
     spokenName: string;
     patientId: string;
+    /** Preserved booking state (restored after confirmation) */
+    preservedBc?: boolean;
+    preservedSi?: number;
   };
 }
 
