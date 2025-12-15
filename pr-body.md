@@ -22,8 +22,10 @@ This PR addresses critical production issues found in recent calls to improve ca
 - Created `name-matcher.ts` with `shouldDisambiguateName()` and `calculateNameSimilarity()` functions
 - Before booking: Checks for existing patient by phone
 - If name mismatch detected: Asks "This number is already on file — are you [existing name]?"
-- If yes: Uses existing patient without updating name
+- If yes: Uses existing patient without updating name (preserves `bc` and `si` booking state)
 - If no: Triggers handoff (doesn't overwrite)
+- Improved "no" detection to catch phrases like "No, I'm doing it for somebody else"
+- Handoff properly ends call after message (no booking attempted)
 - `checkAndUpdatePatient()` already prevents name updates (existing protection)
 
 ## C) Time Formatting / Rounding (UX)
@@ -61,12 +63,13 @@ Created comprehensive test suite (`callflow-production-fixes.test.ts`) covering:
 
 ## Files Changed
 
-- `server/ai/receptionistBrain.ts` - Added `expect_user_reply` field and guidance
-- `server/services/openai-call-handler.ts` - TwiML builder logic, name disambiguation, post-booking UX
+- `server/ai/receptionistBrain.ts` - Added `expect_user_reply`, `postBookingPrompted`, `preservedBc/Si` fields
+- `server/services/openai-call-handler.ts` - TwiML builder logic, name disambiguation, post-booking UX, improved "no" detection, handoff flow
 - `server/services/cliniko.ts` - Time formatting in slot creation
 - `server/utils/time-formatter.ts` - New utility for time rounding and natural formatting
 - `server/utils/name-matcher.ts` - New utility for name similarity checking
 - `server/tests/callflow-production-fixes.test.ts` - Comprehensive test suite
+- `ECHO_DESK_FIXES_VERIFICATION.md` - Verification document confirming all requirements met
 
 ## Testing
 
@@ -82,3 +85,5 @@ node --import tsx server/tests/callflow-production-fixes.test.ts
 - ✅ Natural, rounded times improve call experience
 - ✅ Reduced robotic fillers and improved language
 - ✅ Better post-booking experience with helpful offers
+- ✅ Improved handling of third-party bookings ("booking for someone else")
+- ✅ Booking state preserved during name disambiguation flow

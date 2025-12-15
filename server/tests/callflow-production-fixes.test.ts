@@ -28,6 +28,20 @@ function assert(condition: boolean, testName: string, details?: string) {
   }
 }
 
+// Helper used to mirror name disambiguation yes/no detection logic
+function classifyDisambiguationIntent(utterance: string): 'yes' | 'no' | 'unclear' {
+  const userLower = utterance.toLowerCase().trim();
+  const normalizedUtterance = userLower.replace(/[.,!?]/g, ' ');
+  const saidYes = /\b(yes|yeah|yep|yup|correct|that's me|that's right|right|sure|affirmative|absolutely)\b/i.test(normalizedUtterance);
+  const saidNoExplicit = /^(no|nope|nah|that's not me|wrong)(\b|[.,!?\s]|$)/i.test(normalizedUtterance);
+  const saidNoThirdParty = /\b(for (somebody else|someone else)|booking for (someone|somebody)|calling for (someone|somebody)|on behalf of|for my (mom|mother|dad|father|husband|wife|son|daughter|child|kid|partner|friend)|for (him|her|them))\b/i.test(normalizedUtterance);
+  const saidNo = saidNoExplicit || saidNoThirdParty;
+
+  if (saidYes) return 'yes';
+  if (saidNo) return 'no';
+  return 'unclear';
+}
+
 console.log('\n[Production Call Flow Fixes Verification Tests]\n');
 
 // Test 1: expect_user_reply field logic
@@ -100,6 +114,22 @@ console.log('\nTest 3: Patient name disambiguation');
   
   const shouldDis3 = shouldDisambiguateName('Michael Barnes', 'Mick Jagger');
   assert(shouldDis3 === true, 'Significantly different names trigger disambiguation');
+
+  // Confirm yes/no detection symmetry (yes with context should not be treated as no)
+  const intent1 = classifyDisambiguationIntent("Yes, I'm calling for an appointment");
+  assert(intent1 === 'yes', 'Yes with extra context is treated as confirmation');
+
+  const intent2 = classifyDisambiguationIntent("Yes, I'm calling for my daughter");
+  assert(intent2 === 'yes', 'Explicit yes takes precedence over third-party phrasing');
+
+  const intent3 = classifyDisambiguationIntent("No, I am calling for my daughter");
+  assert(intent3 === 'no', 'Explicit no + third-party is treated as rejection');
+
+  const intent4 = classifyDisambiguationIntent("I'm calling for my daughter");
+  assert(intent4 === 'no', 'Third-party without yes is treated as no');
+
+  const intent5 = classifyDisambiguationIntent("Yes, I'm doing it for health reasons");
+  assert(intent5 === 'yes', 'Non third-party context with yes is treated as confirmation');
 }
 
 // Test 4: Time rounding and formatting

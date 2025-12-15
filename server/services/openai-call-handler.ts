@@ -556,10 +556,13 @@ export async function handleOpenAIConversation(
     let finalResponse = response;
     if (context.nameDisambiguation) {
       const userLower = userUtterance.toLowerCase().trim();
-      const saidYes = /^(yes|yeah|yep|yup|correct|that's me|that's right|right)$/i.test(userLower);
-      // More flexible "no" detection - matches phrases starting with "no" or containing negative phrases
-      const saidNo = /^(no|nope|nah|that's not me|wrong|no,|nope,|nah,)/i.test(userLower) ||
-                     /\b(that's not me|wrong person|different person|not me|for somebody else|doing it for|booking for someone|calling for)\b/i.test(userLower);
+      const normalizedUtterance = userLower.replace(/[.,!?]/g, ' ');
+      // Accept confirmations even when extra context is present (e.g., "yes, I'm calling for an appointment")
+      const saidYes = /\b(yes|yeah|yep|yup|correct|that's me|that's right|right|sure|affirmative|absolutely)\b/i.test(normalizedUtterance);
+      // More precise "no" detection - focused on actual rejections or acting on behalf of someone else (not just any "calling for...")
+      const saidNoExplicit = /^(no|nope|nah|that's not me|wrong)(\b|[.,!?\s]|$)/i.test(normalizedUtterance);
+      const saidNoThirdParty = /\b(for (somebody else|someone else)|booking for (someone|somebody)|calling for (someone|somebody)|on behalf of|for my (mom|mother|dad|father|husband|wife|son|daughter|child|kid|partner|friend)|for (him|her|them))\b/i.test(normalizedUtterance);
+      const saidNo = saidNoExplicit || saidNoThirdParty;
       
       if (saidYes) {
         // Confirmed - use existing patient, don't update name
