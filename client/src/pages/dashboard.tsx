@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Phone, AlertCircle, Clock, TrendingUp, Mic, FileText } from "lucide-react";
 import { Link } from "wouter";
 import type { CallLog, Alert } from "@shared/schema";
+import { getApiHeaders } from "@/lib/queryClient";
 
 export default function Dashboard() {
   const { data: stats, isLoading: statsLoading } = useQuery<{
@@ -27,7 +28,11 @@ export default function Dashboard() {
   const { data: callbackRequests, isLoading: callbacksLoading } = useQuery<Alert[]>({
     queryKey: ["/api/alerts", "callback"],
     queryFn: async () => {
-      const response = await fetch("/api/alerts?reason=callback_requested&limit=10");
+      const headers = getApiHeaders();
+      const response = await fetch("/api/alerts?reason=callback_requested&limit=10", {
+        credentials: "include",
+        headers,
+      });
       if (!response.ok) return [];
       return response.json();
     },

@@ -5498,6 +5498,7 @@ export function registerVoice(app: Express) {
       const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
       const speechResult = req.body?.SpeechResult || "";
       const from = req.body?.From || "";
+      const confidence = req.body?.Confidence ? parseFloat(req.body.Confidence as string) : undefined;
 
       console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
       console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
@@ -5597,6 +5598,7 @@ export function registerVoice(app: Express) {
           callSid,
           callerPhone: from,
           userUtterance: speechResult,
+          confidence: confidence,  // Pass Twilio speech confidence for background noise detection
           tenantId: tenantCtx?.id,
           clinicName: tenantCtx?.clinicName,
           timezone: tenantCtx?.timezone || 'Australia/Brisbane',
