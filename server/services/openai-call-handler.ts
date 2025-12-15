@@ -32,6 +32,7 @@ import timezone from 'dayjs/plugin/timezone.js';
 import utc from 'dayjs/plugin/utc.js';
 import { detectHandoffTrigger } from '../utils/handoff-detector';
 import { processHandoff } from './handoff';
+import type { Tenant } from '@shared/schema';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -550,7 +551,7 @@ export async function handleOpenAIConversation(
 
     // 2c. HANDOFF DETECTION: Check for handoff triggers BEFORE calling AI
     //     This allows us to bypass AI and go straight to handoff if needed
-    const tenant = tenantId ? (await storage.getTenantById(tenantId)) ?? null : null;
+    const tenant: Tenant | null = tenantId ? (await storage.getTenantById(tenantId)) ?? null : null;
     const handoffDetection = detectHandoffTrigger(
       userUtterance,
       context.history || [],
@@ -1302,7 +1303,7 @@ export async function handleOpenAIConversation(
         const handoffReason = finalResponse.alert_category 
           ? `AI detected ${finalResponse.alert_category.toLowerCase()}` 
           : 'AI requested handoff';
-        await processHandoff(vr, callSid, callerPhone, tenant, 'out_of_scope', handoffReason);
+        await processHandoff(vr, callSid, callerPhone, tenant ?? null, 'out_of_scope', handoffReason);
         return vr;
       }
       
