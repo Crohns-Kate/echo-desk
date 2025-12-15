@@ -81,7 +81,12 @@ export function classifyYesNo(speech: string): 'yes' | 'no' | 'unclear' {
   if (!speech) return 'unclear';
   
   const text = speech.toLowerCase().trim();
-  const normalized = text.replace(/[.,!?;:'"]/g, ' ').replace(/\s+/g, ' ');
+  // Remove apostrophes entirely (not replace with space) so contractions work
+  // e.g., "That's me" -> "thats me" (not "that s me")
+  const normalized = text
+    .replace(/[.,!?;:"]/g, ' ')  // Replace punctuation with spaces (but not apostrophes)
+    .replace(/'/g, '')            // Remove apostrophes entirely
+    .replace(/\s+/g, ' ');        // Normalize whitespace
   
   // CRITICAL: Check for multi-word NO phrases FIRST (before single-word patterns)
   // This ensures "absolutely no" matches before "absolutely" alone
