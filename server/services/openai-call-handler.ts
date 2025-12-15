@@ -32,6 +32,7 @@ import timezone from 'dayjs/plugin/timezone.js';
 import utc from 'dayjs/plugin/utc.js';
 import { detectHandoffTrigger } from '../utils/handoff-detector';
 import { processHandoff } from './handoff';
+import type { Tenant } from '@shared/schema';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
