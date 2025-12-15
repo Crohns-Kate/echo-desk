@@ -544,13 +544,32 @@ export async function handleOpenAIConversation(
     if (mergedStateForDetection.np === null || mergedStateForDetection.np === undefined) {
       const utteranceLower = userUtterance.toLowerCase();
       const mentionedNew = utteranceLower.includes('new patient') || utteranceLower.includes('first visit') || 
-                          utteranceLower.includes('first time') || utteranceLower.includes('haven\'t been') ||
-                          utteranceLower.includes('never been') || utteranceLower.includes('haven\'t been in') ||
-                          utteranceLower.includes('haven\'t been to') || utteranceLower.includes('not been') ||
-                          (utteranceLower.includes('haven\'t') && (utteranceLower.includes('before') || utteranceLower.includes('in')));
-      const mentionedExisting = utteranceLower.includes('been before') || utteranceLower.includes('existing') ||
-                                utteranceLower.includes('been there') || utteranceLower.includes('returning') ||
-                                utteranceLower.includes('been here') || utteranceLower.includes('i\'ve been');
+                          utteranceLower.includes('first time') || utteranceLower.includes('never been') ||
+                          utteranceLower.includes('haven\'t been there') || utteranceLower.includes('haven\'t been to') ||
+                          utteranceLower.includes('haven\'t been here') || utteranceLower.includes('haven\'t been before') ||
+                          utteranceLower.includes('haven\'t been in') || utteranceLower.includes('not been there') ||
+                          utteranceLower.includes('not been to') || utteranceLower.includes('not been here') ||
+                          utteranceLower.includes('not been before') || utteranceLower.includes('have not been there') ||
+                          utteranceLower.includes('have not been to') || utteranceLower.includes('have not been here') ||
+                          utteranceLower.includes('have not been before');
+      // More specific patterns to avoid false positives:
+      // - 'been there' alone could match "I've been there for 5 years" (not patient-related)
+      // - 'been here' alone could match "I've been here since 9am" (not patient-related)
+      // - 'existing' alone could match "existing condition" (not patient-related)
+      // - 'i've been' alone could match "I've been having back pain" (not patient-related)
+      // - 'not been' alone could match "It's not been easy" or "It hasn't been long" (not patient-related)
+      // - 'have not been' alone could match "I have not been feeling well" (not patient-related)
+      const mentionedExisting = utteranceLower.includes('been before') || 
+                                utteranceLower.includes('existing patient') ||
+                                utteranceLower.includes('been there before') ||
+                                utteranceLower.includes('been here before') ||
+                                utteranceLower.includes('returning patient') ||
+                                utteranceLower.includes('i\'ve been a patient') ||
+                                utteranceLower.includes('i\'ve been here before') ||
+                                utteranceLower.includes('i\'ve been there before') ||
+                                utteranceLower.includes('i have been a patient') ||
+                                utteranceLower.includes('i have been here before') ||
+                                utteranceLower.includes('i have been there before');
       
       if (mentionedNew) {
         console.log('[OpenAICallHandler] ✅ User mentioned being new but AI missed it - overriding response');
@@ -980,7 +999,20 @@ export async function handleOpenAIConversation(
       'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
       'no thank you', 'no more', 'nothing more'
     ];
-    const matchedPhrase = goodbyePhrases.find(phrase => userUtteranceLower.includes(phrase));
+    
+    // Match phrases with word boundaries for short words to avoid false positives
+    // e.g., "no" should match "no" but not "haven't" or "know"
+    const matchedPhrase = goodbyePhrases.find(phrase => {
+      // For single short words, use word boundary matching to avoid substring matches
+      // This prevents "no" from matching "haven't", "know", "not", etc.
+      if (phrase.length <= 3 && /^\w+$/.test(phrase)) {
+        // Use word boundary regex: \b matches word boundaries
+        const wordBoundaryRegex = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return wordBoundaryRegex.test(userUtteranceLower);
+      }
+      // For longer phrases, use includes() as before
+      return userUtteranceLower.includes(phrase);
+    });
     const wantsToEndCall = !!matchedPhrase;
 
     if (wantsToEndCall) {
