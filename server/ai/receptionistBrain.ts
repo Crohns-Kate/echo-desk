@@ -94,6 +94,8 @@ export interface CompactCallState {
 export interface ReceptionistResponse {
   /** The text to speak via Polly */
   reply: string;
+  /** expect_user_reply: true if asking a question and expecting speech input, false if informational/confirmation */
+  expect_user_reply?: boolean;
   /** handoff_needed: true when caller needs human receptionist (tricky question, non-clinic request, etc.) */
   handoff_needed?: boolean;
   /** alert_category: Category for receptionist alert (BOOKING_HELP, CLINICAL_QUESTION, PRICING, DIRECTIONS, OTHER/TRICKY) */
@@ -171,6 +173,7 @@ No explanations, no commentary, ONLY the JSON object below:
     "rc": true or false (optional - reschedule confirmed),
     "cc": true or false (optional - cancel confirmed)
   },
+  "expect_user_reply": true or false (optional - set to true if you're asking a question and expecting speech input, false if informational/confirmation),
   "handoff_needed": true or false (optional - set to true if caller needs human receptionist),
   "alert_category": "BOOKING_HELP|CLINICAL_QUESTION|PRICING|DIRECTIONS|TRICKY|OTHER" (optional - category for alert)
 }
@@ -187,6 +190,13 @@ Meaning of fields:
 - tp  = time preference from caller, e.g. "today afternoon", "tomorrow at 10am", else null.
 - sym = symptom/complaint description, e.g. "lower back pain", "diabetes", "migraines", else null.
   ⚠️ IMPORTANT: Capture medical conditions mentioned by the caller in the sym field. If they say "I have diabetes" or "Can you note that I have migraines", capture it in sym.
+
+- expect_user_reply = true if you're asking a question and expecting speech input, false if informational/confirmation only.
+  ⚠️ CRITICAL RULES:
+  - Set expect_user_reply = true when: asking questions, offering slots, asking for name/time preference, asking "anything else?"
+  - Set expect_user_reply = false when: confirming booking, providing address/info without asking a question, saying goodbye
+  - After booking confirmation: ALWAYS set expect_user_reply = true and ask "Before you go — do you need the price, directions, or our website?"
+  - If caller says "no/nothing/that's all" after "anything else?", set expect_user_reply = false and close politely
 - faq = list of FAQ topics explicitly asked about in THIS turn (e.g. ["pricing", "treat_kids"] or free-text questions).
 - rs  = ready_to_offer_slots: true only when we know enough for the backend to fetch 3 closest appointment times
         (we know: intent is book, we know new vs existing, and we have some day/time preference).
@@ -508,10 +518,17 @@ After booking (bc = true):
 For NEW patients (np=true):
 "All done! You're booked for [time] with [practitioner]. I'm sending you a quick text with a form to confirm your details — just takes 30 seconds."
 - Set bc = true AND sl = true AND si = [0, 1, or 2]
+- Set expect_user_reply = true (we're asking if they need anything else)
 
 For EXISTING patients (np=false):
 "All done! You're booked for [time] with [practitioner]. We look forward to seeing you!"
 - Set bc = true AND si = [0, 1, or 2]
+- Set expect_user_reply = true (we're asking if they need anything else)
+
+⚠️ CRITICAL: After booking confirmation, ALWAYS ask:
+"Before you go — do you need the price, directions, or our website?"
+- This MUST have expect_user_reply = true (it's a question expecting a reply)
+- If they say no/nothing, then set expect_user_reply = false and close politely
 
 ⛔ NEVER DO THIS:
 - NEVER ask "Shall I confirm?" or "Would you like me to book that?" — just book it!
@@ -561,7 +578,13 @@ If no upcoming appointment found:
 
 For normal clinic questions, answer directly, briefly, and then keep moving the booking or conversation forward.
 
-⚠️ CRITICAL: Do NOT use filler phrases like "Just a moment, let me pull that up" or "Bear with me" for simple FAQ questions that you can answer immediately. These phrases should ONLY be used when actually fetching data (like appointment slots from Cliniko API). For FAQ questions, answer directly without delay.
+⚠️ CRITICAL: Do NOT use filler phrases like "Just a moment, let me pull that up" or "Bear with me" or "One second" for simple FAQ questions that you can answer immediately. These phrases should ONLY be used when actually fetching data (like appointment slots from Cliniko API). For FAQ questions, answer directly without delay.
+
+⚠️ FILLER PHRASE RULES:
+- NEVER say "Just a moment" or "One second" for FAQ questions (pricing, hours, location, etc.)
+- NEVER say "Let me pull that up" for information you already know
+- ONLY use thinking fillers when actually waiting for API responses (slot fetching)
+- Answer FAQ questions immediately and directly
 
 Use safe, simple answers like:
 
@@ -581,8 +604,9 @@ Use safe, simple answers like:
   "Most people find treatment comfortable. Some might feel a little soreness afterward, but it usually passes quickly."
 
 - Pricing / Cost / How much / Consultation cost:
-  "First visits are usually around 80 dollars, and follow-ups about 50. Does that sound okay?"
+  "First visits are usually around 80 dollars, and follow-ups about 50. The team can confirm the exact amount when you arrive."
   ⚠️ CRITICAL: ALWAYS answer pricing questions directly. Never ignore them or respond with "I understand you're just looking for a consultation" - that doesn't answer the question.
+  ⚠️ Do NOT end with "Does that sound okay?" - just provide the information naturally.
 
 - Location / Where are you / Directions / Address:
   ⚠️ CHECK confirmSmsIncludedMap in current_state FIRST:
@@ -830,6 +854,13 @@ export interface ConversationContext {
 
   /** Count of consecutive empty speech results (for handling timeouts) */
   emptyCount?: number;
+
+  /** Name disambiguation context (when phone matches but name differs) */
+  nameDisambiguation?: {
+    existingName: string;
+    spokenName: string;
+    patientId: string;
+  };
 }
 
 // ═══════════════════════════════════════════════
