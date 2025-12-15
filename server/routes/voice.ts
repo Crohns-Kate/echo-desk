@@ -1196,8 +1196,8 @@ export function registerVoice(app: Express) {
             input: ["speech"],
             timeout: 8,
             speechTimeout: "auto",
-            speechModel: "experimental_conversations",
             enhanced: true,
+            speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
@@ -5312,27 +5312,53 @@ export function registerVoice(app: Express) {
       console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
       console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
 
-      // If no speech (timeout or empty result), prompt again with improved settings
+      // If no speech (timeout or empty result), handle with emptyCount tracking
       if (!speechResult || speechResult.trim() === "") {
         try {
+          // Load conversation context to track empty count
+          const { getOrCreateContext, saveConversationContext } = await import("../services/openai-call-handler");
+          const call = await storage.getCallByCallSid(callSid);
+          const tenant = call?.tenantId ? await storage.getTenantById(call.tenantId) : null;
+          const clinicName = tenant?.clinicName || "the clinic";
+          
+          // Load context (will create if doesn't exist)
+          const context = await getOrCreateContext(callSid, from || "", call?.tenantId || undefined, clinicName);
+          
+          // Increment empty count
+          const emptyCount = (context.emptyCount || 0) + 1;
+          context.emptyCount = emptyCount;
+          
+          // Save updated context
+          await saveConversationContext(callSid, context);
+          
+          console.log(`[VOICE][OPENAI][EMPTY SPEECH] Empty count: ${emptyCount}`);
+          
+          // After 3 empty results, politely close and hangup (NO Gather)
+          if (emptyCount >= 3) {
+            const vr = new twilio.twiml.VoiceResponse();
+            saySafe(vr, "I'm having trouble hearing you. Please feel free to call back when you're ready. Thanks for calling!");
+            vr.hangup();
+            const twimlXml = getTwimlXml(vr);
+            return res.type("text/xml").send(twimlXml);
+          }
+          
+          // Otherwise, reprompt with Gather (NO Hangup)
           const vr = new twilio.twiml.VoiceResponse();
           const gather = vr.gather({
             input: ['speech'],
-            timeout: 8, // Longer timeout for background noise
+            timeout: 8,
             speechTimeout: 'auto',
             action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
             method: 'POST',
             enhanced: true,
+            speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
             bargeIn: true,
-            actionOnEmptyResult: true, // Call action even on timeout
-            profanityFilter: false, // Allow natural speech
-            hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
+            actionOnEmptyResult: true,
+            profanityFilter: false,
+            hints: 'yes, no, appointment, booking, question'
           });
           saySafe(gather, "I didn't catch that. What can I help you with?");
-          // Final fallback: Only if action URL completely fails (shouldn't happen)
-          const { ttsGoodbye } = await import("../utils/voice-constants");
-          saySafeSSML(vr, ttsGoodbye());
-          vr.hangup();
+          // CRITICAL: Do NOT add Hangup here - only return Gather
           const twimlXml = getTwimlXml(vr);
           return res.type("text/xml").send(twimlXml);
         } catch (emptySpeechError) {

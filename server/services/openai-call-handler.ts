@@ -41,7 +41,7 @@ dayjs.extend(timezone);
 /**
  * Save conversation context to database
  */
-async function saveConversationContext(
+export async function saveConversationContext(
   callSid: string,
   context: ConversationContext
 ): Promise<void> {
@@ -108,7 +108,7 @@ async function loadConversationContext(
 /**
  * Get or create conversation context for this call
  */
-async function getOrCreateContext(
+export async function getOrCreateContext(
   callSid: string,
   callerPhone: string,
   tenantId?: number,
@@ -453,6 +453,11 @@ export async function handleOpenAIConversation(
   try {
     // 1. Load or create conversation context
     let context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
+    
+    // Reset emptyCount when we receive valid speech
+    if (userUtterance && userUtterance.trim()) {
+      context.emptyCount = 0;
+    }
 
     // DEFENSIVE: Ensure currentState exists
     if (!context.currentState) {
@@ -547,11 +552,11 @@ export async function handleOpenAIConversation(
                           utteranceLower.includes('first time') || utteranceLower.includes('never been') ||
                           utteranceLower.includes('haven\'t been there') || utteranceLower.includes('haven\'t been to') ||
                           utteranceLower.includes('haven\'t been here') || utteranceLower.includes('haven\'t been before') ||
-                          utteranceLower.includes('haven\'t been in') || utteranceLower.includes('not been there') ||
-                          utteranceLower.includes('not been to') || utteranceLower.includes('not been here') ||
-                          utteranceLower.includes('not been before') || utteranceLower.includes('have not been there') ||
-                          utteranceLower.includes('have not been to') || utteranceLower.includes('have not been here') ||
-                          utteranceLower.includes('have not been before');
+                          utteranceLower.includes('haven\'t been in') || utteranceLower.includes('haven\'t been in before') ||
+                          utteranceLower.includes('not been there') || utteranceLower.includes('not been to') ||
+                          utteranceLower.includes('not been here') || utteranceLower.includes('not been before') ||
+                          utteranceLower.includes('have not been there') || utteranceLower.includes('have not been to') ||
+                          utteranceLower.includes('have not been here') || utteranceLower.includes('have not been before');
       // More specific patterns to avoid false positives:
       // - 'been there' alone could match "I've been there for 5 years" (not patient-related)
       // - 'been here' alone could match "I've been here since 9am" (not patient-related)
@@ -1033,10 +1038,11 @@ export async function handleOpenAIConversation(
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
       enhanced: true,
+      speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
       bargeIn: true,
       actionOnEmptyResult: true, // Call action even on timeout (empty result)
       profanityFilter: false, // Allow natural speech patterns
-      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
+      hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow'
     });
 
     // Add thinking filler INSIDE gather (before response) if we just fetched slots
@@ -1119,6 +1125,7 @@ export async function handleOpenAIGreeting(
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
       enhanced: true,
+      speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
       bargeIn: true,
       actionOnEmptyResult: true, // Call action even on timeout (empty result)
       hints: 'appointment, booking, reschedule, cancel, question, today, tomorrow, morning, afternoon'
