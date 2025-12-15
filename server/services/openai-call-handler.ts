@@ -566,7 +566,7 @@ export async function handleOpenAIConversation(
     if (handoffDetection.shouldTrigger && 
         (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity')) {
       console.log('[OpenAICallHandler] 🚨 Handoff trigger detected:', handoffDetection.trigger, handoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger, handoffDetection.reason || '');
+      await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger || 'unknown', handoffDetection.reason || '');
       return vr;
     }
 
