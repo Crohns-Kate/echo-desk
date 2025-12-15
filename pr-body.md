@@ -25,6 +25,7 @@ This PR addresses critical production issues found in recent calls to improve ca
 - If yes: Uses existing patient without updating name (preserves `bc` and `si` booking state)
 - If no: Triggers handoff (doesn't overwrite)
 - Improved "no" detection to catch phrases like "No, I'm doing it for somebody else"
+- **Fixed yes/no detection asymmetry**: Normalized utterances and split detection logic to prevent false positives where confirmations with extra context (e.g., "Yes, I'm calling for an appointment") were incorrectly treated as rejections
 - Handoff properly ends call after message (no booking attempted)
 - `checkAndUpdatePatient()` already prevents name updates (existing protection)
 
