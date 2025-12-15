@@ -30,6 +30,8 @@ import { env } from '../utils/env';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone.js';
 import utc from 'dayjs/plugin/utc.js';
+import { detectHandoffTrigger } from '../utils/handoff-detector';
+import { processHandoff } from './handoff';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -546,6 +548,28 @@ export async function handleOpenAIConversation(
       }
     }
 
+    // 2c. HANDOFF DETECTION: Check for handoff triggers BEFORE calling AI
+    //     This allows us to bypass AI and go straight to handoff if needed
+    const tenant = tenantId ? await storage.getTenantById(tenantId) : null;
+    const handoffDetection = detectHandoffTrigger(
+      userUtterance,
+      context.history || [],
+      {
+        noMatchCount: context.emptyCount || 0,
+        confidence: 1.0, // Will be updated after AI response
+        isOutOfScope: false, // Will be updated after AI response
+        hasClinikoError: false // Will be checked after Cliniko calls
+      }
+    );
+    
+    // If explicit request or profanity detected, trigger handoff immediately
+    if (handoffDetection.shouldTrigger && 
+        (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity')) {
+      console.log('[OpenAICallHandler] 🚨 Handoff trigger detected:', handoffDetection.trigger, handoffDetection.reason);
+      await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger, handoffDetection.reason || '');
+      return vr;
+    }
+
     // 3. Call OpenAI receptionist brain
     const response = await callReceptionistBrain(context, userUtterance);
 
@@ -841,7 +865,29 @@ export async function handleOpenAIConversation(
     context = addTurnToHistory(context, 'assistant', finalResponse.reply);
     context = updateConversationState(context, finalResponse.state);
 
-    // 4b. Detect repeated confusion or handoff requests
+    // 4b. HANDOFF DETECTION: Check for handoff triggers after AI response
+    //     This catches frustration loops, low confidence, out-of-scope, etc.
+    const postAIHandoffDetection = detectHandoffTrigger(
+      userUtterance,
+      context.history || [],
+      {
+        noMatchCount: context.emptyCount || 0,
+        confidence: 0.8, // Assume good confidence if AI responded (could be improved with actual confidence score)
+        isOutOfScope: finalResponse.handoff_needed === true && finalResponse.alert_category === 'OUT_OF_SCOPE',
+        hasClinikoError: false // Will be checked after Cliniko calls
+      }
+    );
+    
+    // If handoff detected (and not already handled), trigger it
+    if (postAIHandoffDetection.shouldTrigger && 
+        postAIHandoffDetection.trigger !== 'explicit_request' && 
+        postAIHandoffDetection.trigger !== 'profanity') {
+      console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
+      await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger, postAIHandoffDetection.reason || '');
+      return vr;
+    }
+
+    // 4c. Detect repeated confusion or handoff requests
     let shouldCreateAlert = false;
     let alertCategory = 'TRICKY';
     let alertSummary = '';
@@ -1250,11 +1296,13 @@ export async function handleOpenAIConversation(
       // Informational/confirmation only - Say without Gather
       saySafeSSML(vr, finalResponse.reply);
       
-      // If handoff is needed, hangup after delivering the message
+      // If handoff is needed, process handoff instead of just hanging up
       if (finalResponse.handoff_needed === true) {
-        console.log('[OpenAICallHandler] 🔄 Handoff needed - hanging up after message');
-        saySafeSSML(vr, ttsGoodbye());
-        vr.hangup();
+        console.log('[OpenAICallHandler] 🔄 Handoff needed - processing handoff');
+        const handoffReason = finalResponse.alert_category 
+          ? `AI detected ${finalResponse.alert_category.toLowerCase()}` 
+          : 'AI requested handoff';
+        await processHandoff(vr, callSid, callerPhone, tenant, 'out_of_scope', handoffReason);
         return vr;
       }
       

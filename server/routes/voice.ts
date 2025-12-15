@@ -406,6 +406,196 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
+  // Handoff status callback (from Twilio Dial)
+  // Called when transfer completes/fails
+  app.post("/api/voice/handoff-status", async (req: Request, res: Response) => {
+    try {
+      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
+      const dialCallStatus = (req.body.DialCallStatus as string) || "unknown";
+      
+      console.log("[HANDOFF_STATUS] 📥 Callback received from Twilio");
+      console.log("[HANDOFF_STATUS]   - Call SID:", callSid);
+      console.log("[HANDOFF_STATUS]   - Dial Status:", dialCallStatus);
+      
+      if (!callSid) {
+        console.warn("[HANDOFF_STATUS] No callSid provided");
+        return res.sendStatus(204);
+      }
+      
+      const { handleTransferStatus } = await import("../services/handoff");
+      await handleTransferStatus(callSid, dialCallStatus);
+      
+      // If transfer failed, redirect to callback capture
+      if (dialCallStatus !== 'completed') {
+        const vr = new twilio.twiml.VoiceResponse();
+        vr.redirect({
+          method: 'POST'
+        }, abs(`/api/voice/handoff-callback?callSid=${callSid}`));
+        return res.type("text/xml").send(vr.toString());
+      }
+      
+      // Transfer succeeded - hangup
+      const vr = new twilio.twiml.VoiceResponse();
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    } catch (e) {
+      console.error("[HANDOFF_STATUS][ERROR]", e);
+      return res.sendStatus(204);
+    }
+  });
+
+  // ───────────────────────────────────────────────
+  // Handoff callback capture (fallback from failed transfer)
+  // Captures callback preference and sends SMS
+  app.post("/api/voice/handoff-callback", async (req: Request, res: Response) => {
+    try {
+      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
+      const speechResult = (req.body.SpeechResult as string) || "";
+      
+      console.log("[HANDOFF_CALLBACK] 📥 Callback capture");
+      console.log("[HANDOFF_CALLBACK]   - Call SID:", callSid);
+      console.log("[HANDOFF_CALLBACK]   - Speech:", speechResult);
+      
+      if (!callSid) {
+        console.warn("[HANDOFF_CALLBACK] No callSid provided");
+        return res.sendStatus(204);
+      }
+      
+      const call = await storage.getCallByCallSid(callSid);
+      if (!call) {
+        console.warn("[HANDOFF_CALLBACK] Call not found:", callSid);
+        return res.sendStatus(204);
+      }
+      
+      const tenant = call.tenantId ? await storage.getTenantById(call.tenantId) : null;
+      
+      // Update call with callback request
+      await storage.updateCall(callSid, {
+        handoffStatus: 'callback_requested',
+        handoffNotes: speechResult ? `Callback preference: ${speechResult}` : 'Callback requested'
+      });
+      
+      // Send SMS confirmation if configured
+      if (tenant && call.fromNumber) {
+        const { getHandoffConfig } = await import("../services/handoff");
+        const config = getHandoffConfig(tenant);
+        if (config.smsTemplate) {
+          const { sendSMS } = await import("../services/sms");
+          const smsText = config.smsTemplate.replace('{{clinic_name}}', tenant.clinicName || 'our clinic');
+          try {
+            await sendSMS(call.fromNumber, smsText, tenant.id);
+            console.log("[HANDOFF_CALLBACK] SMS sent to:", call.fromNumber);
+          } catch (error) {
+            console.error("[HANDOFF_CALLBACK] Failed to send SMS:", error);
+          }
+        }
+      }
+      
+      // Create alert for callback queue
+      if (call.tenantId) {
+        await storage.createAlert({
+          tenantId: call.tenantId,
+          conversationId: call.conversationId || undefined,
+          reason: 'callback_requested',
+          payload: {
+            callSid,
+            fromNumber: call.fromNumber,
+            callbackPreference: speechResult || 'anytime',
+            trigger: 'transfer_failed'
+          },
+          status: 'open'
+        });
+      }
+      
+      const vr = new twilio.twiml.VoiceResponse();
+      saySafe(vr, "Got it. We'll call you back as soon as possible. Have a great day!");
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    } catch (e) {
+      console.error("[HANDOFF_CALLBACK][ERROR]", e);
+      const vr = new twilio.twiml.VoiceResponse();
+      saySafe(vr, "Thanks for calling. We'll be in touch soon.");
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    }
+  });
+
+  // ───────────────────────────────────────────────
+  // Handoff callback capture (from callback mode)
+  // Captures callback preference when in callback mode
+  app.post("/api/voice/handoff-callback-capture", async (req: Request, res: Response) => {
+    try {
+      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
+      const speechResult = (req.body.SpeechResult as string) || "";
+      
+      console.log("[HANDOFF_CALLBACK_CAPTURE] 📥 Callback preference captured");
+      console.log("[HANDOFF_CALLBACK_CAPTURE]   - Call SID:", callSid);
+      console.log("[HANDOFF_CALLBACK_CAPTURE]   - Speech:", speechResult);
+      
+      if (!callSid) {
+        console.warn("[HANDOFF_CALLBACK_CAPTURE] No callSid provided");
+        return res.sendStatus(204);
+      }
+      
+      const call = await storage.getCallByCallSid(callSid);
+      if (!call) {
+        console.warn("[HANDOFF_CALLBACK_CAPTURE] Call not found:", callSid);
+        return res.sendStatus(204);
+      }
+      
+      const tenant = call.tenantId ? await storage.getTenantById(call.tenantId) : null;
+      
+      // Update call with callback request
+      await storage.updateCall(callSid, {
+        handoffStatus: 'callback_requested',
+        handoffNotes: speechResult ? `Callback preference: ${speechResult}` : 'Callback requested'
+      });
+      
+      // Send SMS confirmation if configured
+      if (tenant && call.fromNumber) {
+        const { getHandoffConfig } = await import("../services/handoff");
+        const config = getHandoffConfig(tenant);
+        if (config.smsTemplate) {
+          const { sendSMS } = await import("../services/sms");
+          const smsText = config.smsTemplate.replace('{{clinic_name}}', tenant.clinicName || 'our clinic');
+          try {
+            await sendSMS(call.fromNumber, smsText, tenant.id);
+            console.log("[HANDOFF_CALLBACK_CAPTURE] SMS sent to:", call.fromNumber);
+          } catch (error) {
+            console.error("[HANDOFF_CALLBACK_CAPTURE] Failed to send SMS:", error);
+          }
+        }
+      }
+      
+      // Create alert for callback queue
+      if (call.tenantId) {
+        await storage.createAlert({
+          tenantId: call.tenantId,
+          conversationId: call.conversationId || undefined,
+          reason: 'callback_requested',
+          payload: {
+            callSid,
+            fromNumber: call.fromNumber,
+            callbackPreference: speechResult || 'anytime'
+          },
+          status: 'open'
+        });
+      }
+      
+      const vr = new twilio.twiml.VoiceResponse();
+      saySafe(vr, "Got it. We'll call you back as soon as possible. Have a great day!");
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    } catch (e) {
+      console.error("[HANDOFF_CALLBACK_CAPTURE][ERROR]", e);
+      const vr = new twilio.twiml.VoiceResponse();
+      saySafe(vr, "Thanks for calling. We'll be in touch soon.");
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    }
+  });
+
+  // ───────────────────────────────────────────────
   // Transcription status callback (Twilio posts here)
   // Stores transcription text against the call row.
   app.post("/api/voice/transcription-status", async (req: Request, res: Response) => {

@@ -289,7 +289,9 @@ export function registerApp(app: Express) {
   // Alerts
   app.get('/api/alerts', async (req: Request, res: Response) => {
     try {
-      const alerts = await storage.listAlerts();
+      const reason = req.query.reason as string | undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+      const alerts = await storage.listAlerts(undefined, limit, reason);
 
       // Enrich alerts with recording and transcript from call logs
       const enrichedAlerts = await Promise.all(
