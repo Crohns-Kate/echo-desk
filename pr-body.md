@@ -88,3 +88,4 @@ node --import tsx server/tests/callflow-production-fixes.test.ts
 - ✅ Better post-booking experience with helpful offers
 - ✅ Improved handling of third-party bookings ("booking for someone else")
 - ✅ Booking state preserved during name disambiguation flow
+- ✅ Fixed false positives in name disambiguation (confirmations with context no longer trigger handoff)
