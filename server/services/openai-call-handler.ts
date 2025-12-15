@@ -32,7 +32,6 @@ import timezone from 'dayjs/plugin/timezone.js';
 import utc from 'dayjs/plugin/utc.js';
 import { detectHandoffTrigger } from '../utils/handoff-detector';
 import { processHandoff } from './handoff';
-import type { Tenant } from '@shared/schema';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -567,7 +566,7 @@ export async function handleOpenAIConversation(
     if (handoffDetection.shouldTrigger && 
         (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity')) {
       console.log('[OpenAICallHandler] 🚨 Handoff trigger detected:', handoffDetection.trigger, handoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant ?? null, handoffDetection.trigger, handoffDetection.reason || '');
+      await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger, handoffDetection.reason || '');
       return vr;
     }
 
@@ -884,7 +883,7 @@ export async function handleOpenAIConversation(
         postAIHandoffDetection.trigger !== 'explicit_request' && 
         postAIHandoffDetection.trigger !== 'profanity') {
       console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant ?? null, postAIHandoffDetection.trigger, postAIHandoffDetection.reason || '');
+      await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger || 'unknown', postAIHandoffDetection.reason || '');
       return vr;
     }
 
@@ -1303,7 +1302,7 @@ export async function handleOpenAIConversation(
         const handoffReason = finalResponse.alert_category 
           ? `AI detected ${finalResponse.alert_category.toLowerCase()}` 
           : 'AI requested handoff';
-        await processHandoff(vr, callSid, callerPhone, tenant ?? null, 'out_of_scope', handoffReason);
+        await processHandoff(vr, callSid, callerPhone, tenant, 'out_of_scope', handoffReason);
         return vr;
       }
       
