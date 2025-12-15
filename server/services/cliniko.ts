@@ -747,16 +747,22 @@ export async function createAppointmentForPatient(phone: string, payload: {
   console.log('[createAppointmentForPatient]   - fullName:', payload.fullName);
   console.log('[createAppointmentForPatient]   - email:', payload.email);
 
+  console.log('[createAppointmentForPatient] Calling getOrCreatePatient with:');
+  console.log('[createAppointmentForPatient]   - Phone:', phone);
+  console.log('[createAppointmentForPatient]   - Full name:', payload.fullName || '(not provided)');
+  console.log('[createAppointmentForPatient]   - Email:', payload.email || '(not provided)');
+  
   const patient = await getOrCreatePatient({
     phone,
     fullName: payload.fullName,
     email: payload.email
   });
 
-  console.log('[createAppointmentForPatient] Patient returned from getOrCreatePatient:');
-  console.log('[createAppointmentForPatient]   - ID:', patient.id);
-  console.log('[createAppointmentForPatient]   - Name:', patient.first_name, patient.last_name);
-  console.log('[createAppointmentForPatient]   - Email:', patient.email);
+  console.log('[createAppointmentForPatient] ✅ Patient returned from getOrCreatePatient:');
+  console.log('[createAppointmentForPatient]   - Patient ID (will be used for appointment):', patient.id);
+  console.log('[createAppointmentForPatient]   - Patient name:', patient.first_name, patient.last_name);
+  console.log('[createAppointmentForPatient]   - Patient email:', patient.email);
+  console.log('[createAppointmentForPatient]   ⚠️  IMPORTANT: Appointment will be created under this patient ID');
 
   // Get business ID if not provided
   let businessId = payload.businessId;

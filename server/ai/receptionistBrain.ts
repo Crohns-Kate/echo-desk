@@ -855,6 +855,9 @@ export interface ConversationContext {
   /** Count of consecutive empty speech results (for handling timeouts) */
   emptyCount?: number;
 
+  /** Count of low-confidence speech results (for handling background noise) */
+  noiseCount?: number;
+
   /** Whether post-booking prompt has been shown (prevents repetition) */
   postBookingPrompted?: boolean;
 

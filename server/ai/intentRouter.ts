@@ -283,7 +283,7 @@ function classifyWithKeywords(utterance: string): IntentResult {
 
 /**
  * Main intent classification function
- * Uses LLM when available, falls back to keywords
+ * Uses deterministic overrides first, then LLM when available, falls back to keywords
  */
 export async function classifyIntent(utterance: string): Promise<IntentResult> {
   // First, check safety guardrails
@@ -299,12 +299,77 @@ export async function classifyIntent(utterance: string): Promise<IntentResult> {
     };
   }
 
+  // CRITICAL: Deterministic booking intent override BEFORE LLM
+  // Prevents "shop appointment" hallucinations when user clearly wants to book
+  const text = utterance.toLowerCase().trim();
+  const bookingKeywords = [
+    'appointment', 'book', 'booking', 'come in', 'this afternoon', 
+    'tomorrow', 'today', 'first visit', 'new patient', 'see dr', 
+    'see the doctor', 'see a doctor', 'chiro', 'chiropractor'
+  ];
+  const hasBookingKeyword = bookingKeywords.some(kw => text.includes(kw));
+  
+  // Only allow shop/store intent if user explicitly says shop/store words
+  const shopKeywords = ['shop', 'store', 'buy', 'purchase', 'return', 'order'];
+  const hasShopKeyword = shopKeywords.some(kw => text.includes(kw));
+  
+  // If booking keywords present and NO shop keywords, force booking intent
+  if (hasBookingKeyword && !hasShopKeyword) {
+    const isNew = text.includes('new patient') || 
+                  text.includes('first visit') || 
+                  text.includes('first time') ||
+                  text.includes('never been') ||
+                  text.includes("haven't been") ||
+                  text.includes('havent been') ||
+                  text.includes('new to');
+    
+    console.log('[IntentRouter] 🔒 Forcing booking intent (deterministic override)', { 
+      isNew, 
+      utterance 
+    });
+    
+    return {
+      intent: isNew ? 'booking_new_patient' : 'booking_standard',
+      details: { existingPatient: !isNew },
+      confidence: 0.98,
+      safetyCheck
+    };
+  }
+
   // Try LLM classification if available
   if (isLLMAvailable()) {
     try {
       const result = await classifyWithLLM(utterance);
       if (result.confidence > 0.6) {
         result.safetyCheck = safetyCheck;
+        
+        // CRITICAL: Override LLM if it returns shop/store intent but user said booking keywords
+        // This prevents hallucinations even after LLM classification
+        if ((result.intent === 'irrelevant' || result.intent === 'unknown') && 
+            hasBookingKeyword && 
+            !hasShopKeyword) {
+          const isNew = text.includes('new patient') || 
+                        text.includes('first visit') || 
+                        text.includes('first time') ||
+                        text.includes('never been') ||
+                        text.includes("haven't been") ||
+                        text.includes('havent been') ||
+                        text.includes('new to');
+          
+          console.log('[IntentRouter] 🔒 Overriding LLM result - forcing booking intent', { 
+            llmIntent: result.intent,
+            isNew,
+            utterance 
+          });
+          
+          return {
+            intent: isNew ? 'booking_new_patient' : 'booking_standard',
+            details: { existingPatient: !isNew },
+            confidence: 0.98,
+            safetyCheck
+          };
+        }
+        
         return result;
       }
       console.log('[IntentRouter] LLM confidence too low, using keyword fallback');

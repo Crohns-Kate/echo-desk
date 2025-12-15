@@ -8,11 +8,17 @@
  */
 
 import twilio from 'twilio';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone.js';
+import utc from 'dayjs/plugin/utc.js';
 import { storage } from '../storage';
 import { saySafe } from '../utils/voice-constants';
 import { abs } from '../utils/url';
 import { sendSMS } from './sms';
 import type { Tenant } from '@shared/schema';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 export type HandoffMode = 'transfer' | 'callback' | 'sms_only';
 export type HandoffStatus = 'pending' | 'transferred' | 'failed' | 'callback_requested' | 'completed';
@@ -47,6 +53,7 @@ export function getHandoffConfig(tenant: Tenant | null): HandoffConfig {
 
 /**
  * Check if we should use after-hours mode
+ * Uses tenant's timezone to determine current time, not server time
  */
 export function isAfterHours(tenant: Tenant | null): boolean {
   if (!tenant?.businessHours) return false;
@@ -58,9 +65,16 @@ export function isAfterHours(tenant: Tenant | null): boolean {
     
     if (!businessHours || typeof businessHours !== 'object') return false;
     
-    const now = new Date();
-    const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][now.getDay()];
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    // Get current time in tenant's timezone (defaults to Australia/Brisbane if not set)
+    const tenantTimezone = tenant.timezone || 'Australia/Brisbane';
+    const now = dayjs().tz(tenantTimezone);
+    
+    // Get day of week in tenant timezone (0 = Sunday, 6 = Saturday)
+    const dayOfWeekIndex = now.day();
+    const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][dayOfWeekIndex];
+    
+    // Get current time in HH:MM format in tenant timezone
+    const currentTime = `${now.hour().toString().padStart(2, '0')}:${now.minute().toString().padStart(2, '0')}`;
     
     const dayHours = businessHours[dayOfWeek];
     if (!dayHours || !Array.isArray(dayHours) || dayHours.length === 0) {

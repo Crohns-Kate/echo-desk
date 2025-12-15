@@ -443,6 +443,7 @@ export interface OpenAICallHandlerOptions {
   callSid: string;
   callerPhone: string;
   userUtterance: string;
+  confidence?: number;  // Twilio speech recognition confidence (0.0-1.0)
   tenantId?: number;
   clinicName?: string;
   timezone?: string;
@@ -458,20 +459,83 @@ export interface OpenAICallHandlerOptions {
 export async function handleOpenAIConversation(
   options: OpenAICallHandlerOptions
 ): Promise<twilio.twiml.VoiceResponse> {
-  const { callSid, callerPhone, userUtterance, tenantId, clinicName, timezone = 'Australia/Brisbane', googleMapsUrl, practitionerName, clinicAddress } = options;
+  const { callSid, callerPhone, userUtterance, confidence, tenantId, clinicName, timezone = 'Australia/Brisbane', googleMapsUrl, practitionerName, clinicAddress } = options;
 
   const vr = new twilio.twiml.VoiceResponse();
 
   console.log('[OpenAICallHandler] Processing utterance:', userUtterance);
   console.log('[OpenAICallHandler] Call SID:', callSid);
+  console.log('[OpenAICallHandler] Confidence:', confidence);
 
   try {
     // 1. Load or create conversation context
     let context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
     
+    // 1a. Handle low confidence (background noise)
+    // Track noiseCount separately from emptyCount
+    if (!context.noiseCount) {
+      context.noiseCount = 0;
+    }
+    
+    const isLowConfidence = confidence !== undefined && confidence < 0.55;
+    const hasValidSpeech = userUtterance && userUtterance.trim();
+    
+    if (isLowConfidence && hasValidSpeech) {
+      // Low confidence but got some speech - likely background noise
+      context.noiseCount = (context.noiseCount || 0) + 1;
+      console.log('[OpenAICallHandler] ⚠️ Low confidence detected (background noise?), noiseCount:', context.noiseCount);
+      
+      if (context.noiseCount >= 2) {
+        // After 2 low-confidence turns, offer fallback
+        console.log('[OpenAICallHandler] Multiple low-confidence turns detected, offering fallback');
+        const tenant: Tenant | null = tenantId ? (await storage.getTenantById(tenantId)) ?? null : null;
+        saySafe(vr, "Sorry — I'm getting a lot of background noise. No worries — I can text you a link, or have reception call you back. Which would you prefer?");
+        
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call'
+        });
+        
+        // Reset noiseCount after offering fallback
+        context.noiseCount = 0;
+        await saveConversationContext(callSid, context);
+        
+        return vr; // Return early with TwiML
+      } else {
+        // Reprompt with noise-aware message
+        saySafe(vr, "Sorry — I'm getting a bit of background noise. Could you say that again?");
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call'
+        });
+        
+        await saveConversationContext(callSid, context);
+        return vr; // Return early with TwiML
+      }
+    }
+    
+    // Reset counters when we receive valid speech with good confidence
+    if (hasValidSpeech && !isLowConfidence) {
+      context.emptyCount = 0;
+      context.noiseCount = 0;
+    }
+    
     // Reset emptyCount when we receive valid speech
     if (userUtterance && userUtterance.trim()) {
-      context.emptyCount = 0;
+      // Already handled above for low confidence, but ensure it's reset for good confidence
+      if (!isLowConfidence) {
+        context.emptyCount = 0;
+      }
     }
 
     // DEFENSIVE: Ensure currentState exists
@@ -580,16 +644,18 @@ export async function handleOpenAIConversation(
     // 3a. Handle name disambiguation response if pending
     let finalResponse = response;
     if (context.nameDisambiguation) {
-      const userLower = userUtterance.toLowerCase().trim();
-      const normalizedUtterance = userLower.replace(/[.,!?]/g, ' ');
-      // Accept confirmations even when extra context is present (e.g., "yes, I'm calling for an appointment")
-      const saidYes = /\b(yes|yeah|yep|yup|correct|that's me|that's right|right|sure|affirmative|absolutely)\b/i.test(normalizedUtterance);
-      // More precise "no" detection - focused on actual rejections or acting on behalf of someone else (not just any "calling for...")
-      const saidNoExplicit = /^(no|nope|nah|that's not me|wrong)(\b|[.,!?\s]|$)/i.test(normalizedUtterance);
-      const saidNoThirdParty = /\b(for (somebody else|someone else)|booking for (someone|somebody)|calling for (someone|somebody)|on behalf of|for my (mom|mother|dad|father|husband|wife|son|daughter|child|kid|partner|friend)|for (him|her|them))\b/i.test(normalizedUtterance);
-      const saidNo = saidNoExplicit || saidNoThirdParty;
+      // Use improved yes/no classification with NO-wins precedence
+      const { classifyYesNo } = await import('../utils/speech-helpers');
+      const yesNoResult = classifyYesNo(userUtterance);
       
-      if (saidYes) {
+      console.log('[OpenAICallHandler] Name disambiguation response:', {
+        utterance: userUtterance,
+        yesNoResult,
+        existingName: context.nameDisambiguation.existingName,
+        spokenName: context.nameDisambiguation.spokenName
+      });
+      
+      if (yesNoResult === 'yes') {
         // Confirmed - use existing patient, don't update name
         console.log('[OpenAICallHandler] ✅ Name confirmed - using existing patient without name update');
         // Store existing name and preserved booking state BEFORE clearing disambiguation
@@ -611,25 +677,39 @@ export async function handleOpenAIConversation(
           }
         };
         console.log('[OpenAICallHandler] 📋 Restored booking state:', { bc: preservedBc, si: preservedSi });
-      } else if (saidNo) {
-        // Different person - need to handle differently
-        console.log('[OpenAICallHandler] ⚠️  Different person - setting handoff needed');
+      } else if (yesNoResult === 'no') {
+        // Different person - BLOCK booking and trigger handoff
+        // Store disambiguation info BEFORE clearing it
+        const existingName = context.nameDisambiguation.existingName;
+        const spokenName = context.nameDisambiguation.spokenName;
+        
+        console.log('[OpenAICallHandler] ❌ Different person detected - BLOCKING booking and triggering handoff');
         console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
-        console.log('[OpenAICallHandler]   - Existing name on file:', context.nameDisambiguation.existingName);
-        console.log('[OpenAICallHandler]   - Spoken name:', context.nameDisambiguation.spokenName);
+        console.log('[OpenAICallHandler]   - Existing name on file:', existingName);
+        console.log('[OpenAICallHandler]   - Spoken name:', spokenName);
+        
+        // Clear disambiguation context
+        context.nameDisambiguation = undefined;
+        await saveConversationContext(callSid, context);
+        
+        // Set handoff_needed and prevent booking
         finalResponse = {
-          reply: "I'll have our reception team call you back shortly to help with that.",
+          reply: "Thanks — because this number is already on file under a different name, I'll have reception help finish this booking so we don't mix records. They'll call you back shortly.",
           expect_user_reply: false,
           handoff_needed: true,
           alert_category: 'TRICKY',
           state: {
             ...response.state,
-            bc: false
+            bc: false, // CRITICAL: Block booking
+            si: null // Clear slot selection
           }
         };
-        context.nameDisambiguation = undefined;
-        await saveConversationContext(callSid, context);
-        // Don't proceed with booking
+        
+        // Process handoff immediately
+        await processHandoff(vr, callSid, callerPhone, tenant, 'name_mismatch', `Phone number matches existing patient ${existingName} but caller identified as different person (${spokenName})`);
+        
+        // Return early - don't proceed with booking
+        return vr;
       } else {
         // Unclear response - ask again
         console.log('[OpenAICallHandler] ⚠️  Unclear disambiguation response - asking again');
@@ -639,7 +719,7 @@ export async function handleOpenAIConversation(
           expect_user_reply: true,
           state: {
             ...response.state,
-            bc: false
+            bc: false // Don't allow booking until disambiguation is resolved
           }
         };
         // Don't proceed with booking yet
