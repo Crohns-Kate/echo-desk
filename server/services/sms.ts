@@ -1,37 +1,8 @@
 import twilio from 'twilio';
 import { env } from '../utils/env';
-import { storage } from '../storage';
 
 const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 const fromNumber = env.TWILIO_PHONE_NUMBER;
-
-/**
- * Generic SMS sending function
- * Used for handoff callbacks and other custom messages
- */
-export async function sendSMS(to: string, message: string, tenantId?: number): Promise<void> {
-  try {
-    // If tenantId provided, try to get tenant-specific phone number
-    let from = fromNumber;
-    if (tenantId) {
-      const tenant = await storage.getTenantById(tenantId);
-      if (tenant?.phoneNumber) {
-        from = tenant.phoneNumber;
-      }
-    }
-
-    await client.messages.create({
-      body: message,
-      from: from,
-      to: to
-    });
-
-    console.log('[SMS] Sent message to', to, tenantId ? `(tenant ${tenantId})` : '');
-  } catch (e) {
-    console.error('[SMS] Failed to send message', e);
-    throw e; // Re-throw so caller can handle
-  }
-}
 
 export async function sendAppointmentConfirmation(params: {
   to: string;

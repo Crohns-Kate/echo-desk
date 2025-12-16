@@ -453,11 +453,9 @@ export async function getOrCreatePatient({
     console.log('[Cliniko] getOrCreatePatient: Searching by phone:', phone);
     const p = await findPatientByPhone(phone);
     if (p) {
-      console.log('[Cliniko] ⚠️  Found existing patient by phone:', p.id);
-      console.log('[Cliniko]   - Existing patient ID:', p.id);
+      console.log('[Cliniko] Found existing patient by phone:', p.id);
       console.log('[Cliniko]   - Existing name:', p.first_name, p.last_name);
       console.log('[Cliniko]   - Existing email:', p.email);
-      console.log('[Cliniko]   - Requested name:', fullName || '(not provided)');
 
       // Check if the name matches (if fullName is provided)
       if (fullName && fullName.trim()) {
@@ -466,44 +464,32 @@ export async function getOrCreatePatient({
 
         // If names don't match, this is a different person using the same phone
         if (existingFullName !== newFullName) {
-          console.log('[Cliniko] ⚠️  NAME MISMATCH DETECTED:');
-          console.log('[Cliniko]   - Existing patient name:', existingFullName);
-          console.log('[Cliniko]   - Requested name:', newFullName);
-          console.log('[Cliniko]   - Existing patient ID:', p.id);
-          console.log('[Cliniko]   → Creating NEW patient for different person to prevent data corruption');
-          console.log('[Cliniko]   → Existing patient record will NOT be modified');
+          console.log('[Cliniko] Found patient by phone BUT name mismatch:');
+          console.log('[Cliniko]   Existing:', existingFullName);
+          console.log('[Cliniko]   New:', newFullName);
+          console.log('[Cliniko]   → Creating NEW patient for different person');
           // Don't return p - fall through to create new patient
         } else {
-          console.log('[Cliniko] ✅ Name matches existing patient by phone:', p.id);
-          console.log('[Cliniko]   - Will use existing patient ID:', p.id);
-          console.log('[Cliniko]   - Patient name will NOT be updated (protection against data corruption)');
+          console.log('[Cliniko] Found existing patient by phone with matching name:', p.id);
 
           // Update patient if needed (e.g., email was missing or changed)
-          // CRITICAL: checkAndUpdatePatient does NOT update names, only email
           const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
           if (needsUpdate && phone) {
             // Refetch the updated patient
             const updated = await findPatientByPhone(phone);
             console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
-            console.log('[Cliniko]   - Returning patient ID:', updated?.id || p.id);
             return updated || p;
           }
-          console.log('[Cliniko]   - Returning existing patient ID:', p.id);
           return p;
         }
       } else {
         // No name provided - CANNOT verify if same person
         // To prevent data corruption, create a NEW patient instead of updating existing
-        console.log('[Cliniko] ⚠️  Found patient by phone but NO NAME to verify identity');
-        console.log('[Cliniko]   - Existing patient ID:', p.id);
-        console.log('[Cliniko]   - Existing name:', p.first_name, p.last_name);
+        console.log('[Cliniko] Found patient by phone but NO NAME to verify identity');
         console.log('[Cliniko]   → Creating NEW patient to avoid overwriting existing data');
         console.warn('[Cliniko] ⚠️  WARNING: Multiple people may be using phone:', phone);
         // Don't return p - fall through to create new patient
       }
-    } else {
-      console.log('[Cliniko] ✅ No existing patient found by phone:', phone);
-      console.log('[Cliniko]   → Will create new patient');
     }
   }
 

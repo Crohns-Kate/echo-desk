@@ -71,123 +71,17 @@ export function isNegative(speech: string): boolean {
 }
 
 /**
- * Determine if speech is a clear yes/no response with NO-wins precedence
+ * Determine if speech is a clear yes/no response
  * Returns 'yes', 'no', or 'unclear'
- * 
- * CRITICAL: If any NO token is present, return NO even if YES tokens also exist
- * This handles cases like "absolutely no", "yeah no", "definitely not"
  */
 export function classifyYesNo(speech: string): 'yes' | 'no' | 'unclear' {
-  if (!speech) return 'unclear';
-  
-  const text = speech.toLowerCase().trim();
-  // Remove apostrophes entirely (not replace with space) so contractions work
-  // e.g., "That's me" -> "thats me" (not "that s me")
-  const normalized = text
-    .replace(/[.,!?;:"]/g, ' ')  // Replace punctuation with spaces (but not apostrophes)
-    .replace(/'/g, '')            // Remove apostrophes entirely
-    .replace(/\s+/g, ' ');        // Normalize whitespace
-  
-  // CRITICAL: Check for multi-word NO phrases FIRST (before single-word patterns)
-  // This ensures "absolutely no" matches before "absolutely" alone
-  const noPhrases = [
-    /\babsolutely\s+no\b/,
-    /\bdefinitely\s+not\b/,
-    /\bnot\s+me\b/,
-    /\bthat'?s\s+not\s+me\b/,
-    /\bthat\s+is\s+not\s+me\b/,
-    /\bi'?m\s+not\b/,
-    /\bi\s+am\s+not\b/,
-    /\bdon'?t\s+think\s+so\b/,
-    /\bdifferent\s+person\b/,
-    /\bsomeone\s+else\b/,
-    /\bsomebody\s+else\b/,
-    /\bfor\s+(somebody\s+else|someone\s+else)\b/,
-    /\bbooking\s+for\s+(someone|somebody)\b/,
-    /\bcalling\s+for\s+(someone|somebody)\b/,
-    /\bon\s+behalf\s+of\b/,
-    /\bfor\s+my\s+(mom|mother|dad|father|husband|wife|son|daughter|child|kid|partner|friend)\b/,
-    /\bfor\s+(him|her|them)\b/,
-    /\bno[,\s]+i'?m\s+calling\s+for\s+(someone|somebody|somebody\s+else|someone\s+else)\b/,
-    /\bno[,\s]+i'?m\s+doing\s+it\s+for\s+(someone|somebody)\b/
-  ];
-  
-  // Check for NO phrases first
-  const hasNoPhrase = noPhrases.some(pattern => pattern.test(normalized));
-  if (hasNoPhrase) {
-    console.log('[classifyYesNo] Detected NO phrase:', normalized);
-    return 'no';
-  }
-  
-  // Single-word NO tokens
-  const noTokens = [
-    /\bno\b/,
-    /\bnope\b/,
-    /\bnah\b/,
-    /\bnegative\b/,
-    /\bwrong\b/,
-    /\bincorrect\b/,
-    /\bnot\b/ // Only matches standalone "not", not part of phrases already checked
-  ];
-  
-  // YES tokens/phrases - explicit affirmatives
-  const yesPatterns = [
-    /\byes\b/,
-    /\byeah\b/,
-    /\byep\b/,
-    /\byup\b/,
-    /\bcorrect\b/,
-    /\bthat'?s\s+me\b/,
-    /\bthats\s+me\b/,
-    /\bit'?s\s+me\b/,
-    /\bits\s+me\b/,
-    /\bi\s+am\b/,
-    /\bi'?m\b/,
-    /\bim\b/,
-    /\bsure\b/,
-    /\babsolutely\b/, // Only matches if NOT part of "absolutely no" (already checked above)
-    /\baffirmative\b/,
-    /\bok\b/,
-    /\bokay\b/,
-    /\bthat'?s\s+right\b/,
-    /\bthats\s+right\b/
-  ];
-  
-  // Check for single-word NO tokens
-  const hasNoToken = noTokens.some(pattern => pattern.test(normalized));
-  
-  // Check for YES (but exclude if it's part of a NO phrase)
-  const hasYes = yesPatterns.some(pattern => {
-    const match = normalized.match(pattern);
-    if (!match) return false;
-    
-    // Special case: "absolutely" should NOT count as yes if followed by "no" or "not"
-    // (This is a safety check, but phrases should already be caught above)
-    if (pattern.source === '\\babsolutely\\b') {
-      const index = normalized.indexOf(match[0]);
-      const after = normalized.substring(index + match[0].length).trim();
-      if (after.match(/^(no|not)\b/)) {
-        return false; // "absolutely no" or "absolutely not" = NO
-      }
-    }
-    
-    return true;
-  });
-  
-  // NO wins precedence - if any NO token present, return NO
-  if (hasNoToken) {
-    console.log('[classifyYesNo] Detected NO token:', normalized);
-    return 'no';
-  }
-  
-  // Only return YES if NO is not present
-  if (hasYes) {
-    console.log('[classifyYesNo] Detected YES:', normalized);
-    return 'yes';
-  }
-  
-  console.log('[classifyYesNo] Unclear:', normalized);
-  return 'unclear';
+  const isYes = isAffirmative(speech);
+  const isNo = isNegative(speech);
+
+  // If both or neither, it's unclear
+  if (isYes === isNo) return 'unclear';
+
+  return isYes ? 'yes' : 'no';
 }
 
 /**

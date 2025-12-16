@@ -571,9 +571,8 @@ export async function getAvailability(opts?: {
  */
 export interface EnrichedSlot {
   startISO: string;
-  speakable: string;               // e.g., "3:45 PM" (rounded to nearest 5 min)
+  speakable: string;               // e.g., "3:45 PM"
   speakableWithPractitioner: string; // e.g., "3:45 PM with Dr Sarah"
-  spokenTime?: string;              // Natural spoken format: "three forty-five p m" (for AI responses)
   clinikoPractitionerId: string;
   practitionerDisplayName: string;
   appointmentTypeId: string;
@@ -671,15 +670,10 @@ export async function getMultiPractitionerAvailability(
           successCount++;
 
           // Enrich slots with practitioner info
-          // Import time formatter once per batch
-          const { formatSlotTime, formatSpokenTime } = await import('../utils/time-formatter');
-          
           return rawSlots.map(slot => ({
             startISO: slot.startISO,
-            // Use time formatter for rounded, natural times
-            speakable: formatSlotTime(slot.startISO, tz),
-            speakableWithPractitioner: `${formatSlotTime(slot.startISO, tz)} with ${practitioner.name}`,
-            spokenTime: formatSpokenTime(slot.startISO, tz),
+            speakable: dayjs(slot.startISO).tz(tz).format('h:mm A'),
+            speakableWithPractitioner: `${dayjs(slot.startISO).tz(tz).format('h:mm A')} with ${practitioner.name}`,
             clinikoPractitionerId: practitioner.clinikoPractitionerId!,
             practitionerDisplayName: practitioner.name,
             appointmentTypeId: appointmentTypeId || opts.tenantCtx?.cliniko?.standardApptTypeId || '',
@@ -738,7 +732,6 @@ export async function createAppointmentForPatient(phone: string, payload: {
   notes?: string;
   fullName?: string;
   email?: string;
-  patientId?: string; // Optional: use this patient ID directly (e.g., from shared phone disambiguation)
   tenantCtx?: TenantContext;
 }): Promise<ClinikoAppointment> {
   const { base, headers } = getClinikoConfig(payload.tenantCtx);
@@ -747,49 +740,17 @@ export async function createAppointmentForPatient(phone: string, payload: {
   console.log('[createAppointmentForPatient]   - phone:', phone);
   console.log('[createAppointmentForPatient]   - fullName:', payload.fullName);
   console.log('[createAppointmentForPatient]   - email:', payload.email);
-  console.log('[createAppointmentForPatient]   - patientId:', payload.patientId || '(not provided)');
 
-  let patient: ClinikoPatient;
+  const patient = await getOrCreatePatient({
+    phone,
+    fullName: payload.fullName,
+    email: payload.email
+  });
 
-  // CRITICAL FIX: If patientId is provided (e.g., from shared phone disambiguation),
-  // fetch the patient directly by ID instead of doing a phone lookup.
-  // This ensures we use the exact patient the user confirmed, not just any patient with that phone.
-  if (payload.patientId) {
-    console.log('[createAppointmentForPatient] 🔒 Using confirmed patient ID (shared phone disambiguation):', payload.patientId);
-    console.log('[createAppointmentForPatient]   - Fetching patient directly by ID to ensure correct patient record');
-    
-    try {
-      // Cliniko API returns patient directly (not wrapped) when fetching by ID
-      patient = await clinikoGet<ClinikoPatient>(`/patients/${payload.patientId}`, base, headers);
-      
-      console.log('[createAppointmentForPatient] ✅ Patient fetched by ID:');
-      console.log('[createAppointmentForPatient]   - Patient ID:', patient.id);
-      console.log('[createAppointmentForPatient]   - Patient name:', patient.first_name, patient.last_name);
-      console.log('[createAppointmentForPatient]   - Patient email:', patient.email);
-      console.log('[createAppointmentForPatient]   - ✅ Using confirmed patient record (shared phone disambiguation)');
-    } catch (error: any) {
-      console.error('[createAppointmentForPatient] ❌ Failed to fetch patient by ID:', payload.patientId, error);
-      throw new Error(`Failed to fetch confirmed patient (ID: ${payload.patientId}): ${error.message}`);
-    }
-  } else {
-    // No patientId provided - use existing phone lookup logic
-    console.log('[createAppointmentForPatient] Calling getOrCreatePatient with:');
-    console.log('[createAppointmentForPatient]   - Phone:', phone);
-    console.log('[createAppointmentForPatient]   - Full name:', payload.fullName || '(not provided)');
-    console.log('[createAppointmentForPatient]   - Email:', payload.email || '(not provided)');
-    
-    patient = await getOrCreatePatient({
-      phone,
-      fullName: payload.fullName,
-      email: payload.email
-    });
-
-    console.log('[createAppointmentForPatient] ✅ Patient returned from getOrCreatePatient:');
-    console.log('[createAppointmentForPatient]   - Patient ID (will be used for appointment):', patient.id);
-    console.log('[createAppointmentForPatient]   - Patient name:', patient.first_name, patient.last_name);
-    console.log('[createAppointmentForPatient]   - Patient email:', patient.email);
-    console.log('[createAppointmentForPatient]   ⚠️  IMPORTANT: Appointment will be created under this patient ID');
-  }
+  console.log('[createAppointmentForPatient] Patient returned from getOrCreatePatient:');
+  console.log('[createAppointmentForPatient]   - ID:', patient.id);
+  console.log('[createAppointmentForPatient]   - Name:', patient.first_name, patient.last_name);
+  console.log('[createAppointmentForPatient]   - Email:', patient.email);
 
   // Get business ID if not provided
   let businessId = payload.businessId;

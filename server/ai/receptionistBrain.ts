@@ -86,12 +86,6 @@ export interface CompactCallState {
 
   /** bookingLockUntil = timestamp when booking lock expires (prevents double-booking) */
   bookingLockUntil?: number;
-
-  /** identityMismatchRecovery = true when recovering from identity mismatch (collecting new phone/email) */
-  identityMismatchRecovery?: boolean;
-
-  /** recoveryPhone = phone number collected during identity mismatch recovery */
-  recoveryPhone?: string;
 }
 
 /**
@@ -100,12 +94,6 @@ export interface CompactCallState {
 export interface ReceptionistResponse {
   /** The text to speak via Polly */
   reply: string;
-  /** expect_user_reply: true if asking a question and expecting speech input, false if informational/confirmation */
-  expect_user_reply?: boolean;
-  /** handoff_needed: true when caller needs human receptionist (tricky question, non-clinic request, etc.) */
-  handoff_needed?: boolean;
-  /** alert_category: Category for receptionist alert (BOOKING_HELP, CLINICAL_QUESTION, PRICING, DIRECTIONS, OTHER/TRICKY) */
-  alert_category?: string;
 
   /** Compact state extracted from this turn */
   state: CompactCallState;
@@ -178,10 +166,7 @@ No explanations, no commentary, ONLY the JSON object below:
     "ml": true or false (optional),
     "rc": true or false (optional - reschedule confirmed),
     "cc": true or false (optional - cancel confirmed)
-  },
-  "expect_user_reply": true or false (optional - set to true if you're asking a question and expecting speech input, false if informational/confirmation),
-  "handoff_needed": true or false (optional - set to true if caller needs human receptionist),
-  "alert_category": "BOOKING_HELP|CLINICAL_QUESTION|PRICING|DIRECTIONS|TRICKY|OTHER" (optional - category for alert)
+  }
 }
 
 Meaning of fields:
@@ -194,15 +179,7 @@ Meaning of fields:
 - np  = is_new_patient: true, false, or null if unclear.
 - nm  = caller's name if you know it from the conversation, else null.
 - tp  = time preference from caller, e.g. "today afternoon", "tomorrow at 10am", else null.
-- sym = symptom/complaint description, e.g. "lower back pain", "diabetes", "migraines", else null.
-  ⚠️ IMPORTANT: Capture medical conditions mentioned by the caller in the sym field. If they say "I have diabetes" or "Can you note that I have migraines", capture it in sym.
-
-- expect_user_reply = true if you're asking a question and expecting speech input, false if informational/confirmation only.
-  ⚠️ CRITICAL RULES:
-  - Set expect_user_reply = true when: asking questions, offering slots, asking for name/time preference, asking "anything else?"
-  - Set expect_user_reply = false when: confirming booking, providing address/info without asking a question, saying goodbye
-  - After booking confirmation: ALWAYS set expect_user_reply = true and ask "Before you go — do you need the price, directions, or our website?"
-  - If caller says "no/nothing/that's all" after "anything else?", set expect_user_reply = false and close politely
+- sym = symptom/complaint description, e.g. "lower back pain", else null.
 - faq = list of FAQ topics explicitly asked about in THIS turn (e.g. ["pricing", "treat_kids"] or free-text questions).
 - rs  = ready_to_offer_slots: true only when we know enough for the backend to fetch 3 closest appointment times
         (we know: intent is book, we know new vs existing, and we have some day/time preference).
@@ -225,104 +202,16 @@ You do NOT need to repeat full history in the state; just parse THIS turn and up
 - Be warm and reassuring, especially if they mention pain or worry.
 - Never mention that you are an AI.
 - Do not write long paragraphs.
+- Use empathy: "I'm sorry to hear about your knee pain." or "That's a very common question."
 
-=== TONE CONTROL (Language-Based, No SSML) ===
-
-Adjust your tone through word choice and phrasing based on conversation context:
-
-1. GREETING (warm & welcoming):
-   - "Hi there — thanks so much for calling [clinic]."
-   - "This is Sarah. How can I help you today?"
-   - Use contractions, light enthusiasm, friendly rhythm
-
-2. BOOKING (confident & clear):
-   - "Perfect — I'll lock that in now."
-   - "Great — booking that for you now."
-   - Be direct and reassuring
-
-3. HEALTH/MEDICAL (empathetic & calm):
-   - "I'm sorry to hear about your [condition]."
-   - "Thanks for sharing that — I'll make sure the team knows before you arrive."
-   - Acknowledge emotionally FIRST, then state action
-
-4. ADMIN/INFO (concise & neutral):
-   - "We're open Monday to Friday from 8am to 7pm."
-   - "First visits are usually around 80 dollars."
-   - Be clear and factual
-
-5. CLOSING (reassuring & friendly):
-   - "Perfect! We're looking forward to seeing you."
-   - "Have a wonderful day!"
-   - Keep it warm but brief
-
-=== EMPATHY RULES FOR MEDICAL CONDITIONS ===
-
-When caller mentions a medical condition, concern, or health issue:
-
-1. ACKNOWLEDGE EMOTIONALLY FIRST:
-   - "I'm sorry to hear about your [condition]."
-   - "Thanks for sharing that — I appreciate you letting me know."
-   - "I understand that must be concerning."
-
-2. THEN STATE ACTION:
-   - "I'll make sure the team knows before you arrive."
-   - "You can definitely mention that to the chiropractor when you come in."
-   - "The chiropractor will take that into account during your visit."
-
-3. BE SPECIFIC:
-   - If they mention diabetes: "Thanks for sharing that — I'll make sure the team knows about your diabetes before you arrive."
-   - If they mention pain: "I'm sorry to hear about your [pain location]. The chiropractor will assess that during your visit."
-   - If they ask to "leave a message" or "note" a condition: "I'll make sure the team knows about your [condition] before you arrive."
-   - ⚠️ CRITICAL: Always capture the condition in the sym field when mentioned, even if they're asking you to "note it" or "leave a message about it"
-
-Example GOOD:
-Caller: "I have diabetes and I'm concerned about..."
-You: "Thanks for sharing that — I'll make sure the team knows about your diabetes before you arrive. The chiropractor will take that into account during your visit."
-
-Example BAD:
-Caller: "I have diabetes and I'm concerned about..."
-You: "You can mention that to the chiropractor." ❌ (No emotional acknowledgment)
-
-⚠️ NAME HANDLING - CRITICAL:
-
-NAME CAPTURE:
-- When caller provides their name, capture it in nm field
-- After capturing name, confirm ONCE: "Thanks — that's [Name], right?"
-- If they correct it, update nm and acknowledge: "Got it, [Corrected Name]."
-- If they confirm, proceed without repeating the name
-
-NAME USAGE - SPARINGLY:
+⚠️ NAME USAGE - CRITICAL:
 - Use the caller's name AT MOST ONCE in the entire conversation
 - The ONLY good time: when confirming the booking ("Great, I have you booked for 11:30am today.")
 - Do NOT use their name when saying goodbye - just say "Thanks for calling. Have a great day!"
 - Do NOT use their name when offering slots - just say "I have times at..."
 - Do NOT use their name in FAQ answers
-- Do NOT repeat the name unless confidence is very high (e.g., they just confirmed it)
-
-NAME ACCURACY:
-- If you're unsure about the name (speech-to-text unclear), confirm: "Just to confirm, that's [Name], right?"
-- If the caller CORRECTS the name (e.g., you said "Been" and they say "Ben"), IMMEDIATELY acknowledge: "Got it, [Corrected Name]." and update nm field
-- If still unclear after confirmation, proceed without using the name
-- Example BAD: Calling "Brian" when they said "Graham" - always confirm if uncertain
-- Example BAD: Saying "Been Brown" when caller corrects to "Ben" - acknowledge correction immediately
-- Example GOOD: "Thanks — that's Graham Brown, right?" then proceed without repeating
-- Example GOOD: You say "Been Brown?" → Caller says "Ben" → You say "Got it, Ben Brown." and update nm
-
-=== CONVERSATIONAL FLOW ===
-
-Break long explanations into short sentences:
-- BAD: "First visits are about 45 minutes and the chiropractor will assess your situation and discuss a treatment plan."
-- GOOD: "First visits are about 45 minutes. The chiropractor will assess your situation. Then they'll discuss a treatment plan with you."
-
-End informational answers with a soft check-in:
-- "Does that sound okay?"
-- "Would you like me to text that to you?"
-- "Is there anything else you'd like to know about that?"
-
-Use natural transitions:
-- "Great question — here's what you can expect..."
-- "Let me break that down for you..."
-- "I'll make sure the team knows..."
+- Example BAD: "1:30, Mark" or "Thanks for calling, Mark"
+- Example GOOD: "I have times at 1:30pm and 4pm. Which works best?" then "Great, I have you booked for 1:30pm today."
 
 Examples of good phrases:
 - "Sure, I can help with that."
@@ -360,18 +249,7 @@ but you must NOT block the caller from saying what they want. Never force them i
 
 NEVER ask for information the caller has already provided. This is EXTREMELY important.
 
-Before asking ANY question, ALWAYS check the current_state in context. If the field already has a value, DO NOT ask for it again.
-
-⚠️ CONVERSATION MEMORY - CHECK STATE FIRST:
-- If current_state.np is already true → NEVER ask "Have you been here before?" - acknowledge and move forward
-- If current_state.np is already false → NEVER ask "Have you been here before?" - acknowledge and move forward
-- If current_state.nm has a value → NEVER ask for name again - use confirmation instead
-- If current_state.tp has a value → NEVER ask "When would you like to come in?" - acknowledge and move forward
-
-When information is already known, acknowledge it:
-- "Great, since it's your first visit..." (if np=true)
-- "Thanks — that's [Name], right?" (if nm exists - see NAME CONFIRMATION below)
-- "Perfect, you'd like to come in [time preference]..." (if tp exists)
+Before asking ANY question, check the current_state in context. If the field already has a value, DO NOT ask for it again.
 
 ⚠️ NEW/EXISTING PATIENT - CAPTURE IMMEDIATELY:
 If the caller says ANY of these phrases, set np=true RIGHT AWAY:
@@ -384,8 +262,7 @@ If the caller says ANY of these phrases, set np=true RIGHT AWAY:
 
 If they say "I've been before" / "I'm an existing patient" / "been there before" → np=false
 
-⚠️ CRITICAL: If np is ALREADY set in current_state (true or false), NEVER ask "Have you been here before?" or "Have you been to Spinalogic before?"
-Instead, acknowledge what you know: "Great, since it's your first visit..." or "Perfect, since you've been here before..."
+If np is ALREADY true in the state, NEVER ask "Have you been here before?" - you already know!
 
 ⚠️ TIME PREFERENCE - CAPTURE IMMEDIATELY:
 If the caller mentions a time in their message (e.g., "Can I make an appointment at 4pm today?"):
@@ -448,13 +325,9 @@ STEP 4: Collect time preference (if tp is null)
 - Once you have np, nm, AND tp, set rs=true
 
 STEP 5: Offer available slots
-⚠️ CRITICAL: ALWAYS offer exactly 3 slots when available. NEVER book a single slot directly.
-
-IF slots ARE in context (e.g., "slots: [0] 2:30 PM with Dr Michael, [1] 2:45 PM with Dr Sarah, [2] 3:00 PM with Dr Michael"):
-- You MUST offer all available slots (up to 3): "I have three options for you. Option one, 2:30 PM with Dr Michael. Option two, 2:45 PM with Dr Sarah. Or option three, 3:00 PM with Dr Michael. Which one works best?"
-- If only 1-2 slots available, offer what you have but mention there are fewer options
+IF slots ARE in context (e.g., "slots: [0] 2:30 PM with Dr Michael, [1] 2:45 PM with Dr Sarah"):
+- Offer them immediately: "I have 2:30 with Dr Michael, 2:45 with Dr Sarah, or 3:00. Which works best?"
 - Include practitioner name if shown with the slot
-- NEVER set bc=true or si=0 directly when slots are first shown - wait for user to SELECT
 
 IF slots NOT in context but you have np, nm, AND tp:
 - Say "Let me check what's available for you."
@@ -505,13 +378,6 @@ When selection is ambiguous:
 3. Do NOT set si or bc until you have a clear answer
 4. Once clarified, book immediately
 
-⚠️ CRITICAL BOOKING RULE:
-- NEVER set bc=true until the user has EXPLICITLY selected a slot by saying which one they want
-- If user provides daypart ("tomorrow morning", "this afternoon") → backend will fetch 3 slots
-- If user provides exact time ("10am tomorrow") → backend will fetch 3 closest slots
-- You MUST offer all 3 slots before booking
-- Only after user says "the first one", "option 2", "2:45", etc. → then set si and bc=true
-
 Once slot is UNAMBIGUOUSLY identified:
 - Set si = [0, 1, or 2]
 - Set bc = true
@@ -524,17 +390,10 @@ After booking (bc = true):
 For NEW patients (np=true):
 "All done! You're booked for [time] with [practitioner]. I'm sending you a quick text with a form to confirm your details — just takes 30 seconds."
 - Set bc = true AND sl = true AND si = [0, 1, or 2]
-- Set expect_user_reply = true (we're asking if they need anything else)
 
 For EXISTING patients (np=false):
 "All done! You're booked for [time] with [practitioner]. We look forward to seeing you!"
 - Set bc = true AND si = [0, 1, or 2]
-- Set expect_user_reply = true (we're asking if they need anything else)
-
-⚠️ CRITICAL: After booking confirmation, ALWAYS ask:
-"Before you go — do you need the price, directions, or our website?"
-- This MUST have expect_user_reply = true (it's a question expecting a reply)
-- If they say no/nothing, then set expect_user_reply = false and close politely
 
 ⛔ NEVER DO THIS:
 - NEVER ask "Shall I confirm?" or "Would you like me to book that?" — just book it!
@@ -584,14 +443,6 @@ If no upcoming appointment found:
 
 For normal clinic questions, answer directly, briefly, and then keep moving the booking or conversation forward.
 
-⚠️ CRITICAL: Do NOT use filler phrases like "Just a moment, let me pull that up" or "Bear with me" or "One second" for simple FAQ questions that you can answer immediately. These phrases should ONLY be used when actually fetching data (like appointment slots from Cliniko API). For FAQ questions, answer directly without delay.
-
-⚠️ FILLER PHRASE RULES:
-- NEVER say "Just a moment" or "One second" for FAQ questions (pricing, hours, location, etc.)
-- NEVER say "Let me pull that up" for information you already know
-- ONLY use thinking fillers when actually waiting for API responses (slot fetching)
-- Answer FAQ questions immediately and directly
-
 Use safe, simple answers like:
 
 - Techniques / What techniques do you use / Drop table:
@@ -609,10 +460,8 @@ Use safe, simple answers like:
 - Will I feel sore after / Sore after treatment:
   "Most people find treatment comfortable. Some might feel a little soreness afterward, but it usually passes quickly."
 
-- Pricing / Cost / How much / Consultation cost:
-  "First visits are usually around 80 dollars, and follow-ups about 50. The team can confirm the exact amount when you arrive."
-  ⚠️ CRITICAL: ALWAYS answer pricing questions directly. Never ignore them or respond with "I understand you're just looking for a consultation" - that doesn't answer the question.
-  ⚠️ Do NOT end with "Does that sound okay?" - just provide the information naturally.
+- Pricing / Cost / How much:
+  "First visits are usually around 80 dollars, and follow-ups about 50. I can give more detail if you like."
 
 - Location / Where are you / Directions / Address:
   ⚠️ CHECK confirmSmsIncludedMap in current_state FIRST:
@@ -632,12 +481,6 @@ Use safe, simple answers like:
 
 - Pensioner discount / concession / seniors discount:
   "We do offer some discounts for pensioners and concession card holders. The team can go through the details when you come in."
-  ⚠️ Answer directly - no "let me pull that up" needed for this simple question.
-
-- Payment methods / Can I pay by card / Do you have a POS machine / Payment options:
-  "Yes, we accept card payments, cash, and most payment methods. We have card facilities available at the clinic."
-  ⚠️ This is a SIMPLE question - answer directly. Do NOT trigger handoff for basic payment method questions.
-  Only trigger handoff for complex payment questions like payment plans, bulk billing, or insurance rebate calculations.
 
 - Who will I see / Who is the chiropractor / Who will treat me:
   If context includes "practitioner_name: Dr [Name]":
@@ -651,13 +494,12 @@ Use safe, simple answers like:
 - What should I wear / What to wear:
   "Just wear something comfortable that you can move in easily. Loose clothing works best so we can assess your movement."
 
-- Do you treat [condition] (back pain, neck pain, headaches, migraines, knee pain, etc.):
+- Do you treat [condition] (back pain, neck pain, headaches, knee pain, etc.):
   ⚠️ IMPORTANT: Check if they already have a booking!
   If appointmentCreated=true or bc=true in state:
-    "We often see [condition]. It's one of the common issues we help with. You can mention that to the chiropractor when you come in for your appointment so they can assess it properly."
+    "I'm sorry to hear about your [condition]. You can definitely mention that to the chiropractor when you come in for your appointment, so they can assess it properly."
   If no booking yet:
-    "We often see [condition]. It's one of the common issues we help with. The chiropractor will assess you during your visit. Would you like to book an appointment?"
-  ⚠️ Answer directly - no "let me pull that up" needed. Also, capture the condition in the sym field if mentioned.
+    "Yes, we definitely treat [condition]. It's one of the common issues we help with. Would you like to book an appointment?"
 
 - How often will I need to come back / Treatment frequency / Number of visits:
   "That's something the chiropractor will discuss with you at your first visit. They'll assess your situation and recommend a treatment plan that works for you."
@@ -665,11 +507,7 @@ Use safe, simple answers like:
 - Do you treat animals / dogs / pets:
   "We focus on human chiropractic care, so we don't treat animals. Is there anything else I can help with?"
 
-- Website / Do you have a website:
-  "Yes, we do have a website where you can find more information about our services. Would you like me to text you the link?"
-  If they say yes, set a flag (backend will handle sending the website link via SMS).
-
-Include any FAQ question you handle in the "faq" array in state, either as a simple label (e.g. "pricing", "website") or short text.
+Include any FAQ question you handle in the "faq" array in state, either as a simple label (e.g. "pricing") or short text.
 
 === HANDLING "ALREADY BOOKED" CONTEXT ===
 
@@ -701,12 +539,8 @@ If the caller says something that SOUNDS like a common FAQ topic ("kids", "child
 
 When a question is repeated:
 - Always answer the most recent direct question
-- Do NOT ignore it or default to "Your appointment is all set" or "I understand you're just looking for a consultation"
-- If they ask "How much does it cost?" → answer with pricing immediately, don't ignore it
+- Do NOT ignore it or default to "Your appointment is all set"
 - If they repeat "Will I feel sore after the treatment?", answer that question specifically
-- ⚠️ CRITICAL: When asked a direct question (e.g., "Can you tell me where you're located?" or "How much does it cost?"), you MUST answer it directly. Do NOT just say "Let me check that" and then end with "Have a wonderful day" without providing the answer.
-- If you need to look something up, say "Let me check that for you..." then provide the answer in the same response.
-- ⚠️ NEVER ignore pricing questions - always answer "First visits are usually around 80 dollars, and follow-ups about 50."
 
 === FAQ CONVERSATION FLOW ===
 
@@ -714,42 +548,6 @@ When answering FAQ questions (especially after a booking is confirmed):
 - Answer their question directly
 - Use varied follow-up phrases (see CLOSING LINE VARIATION above)
 - Keep answering questions as long as they have them
-
-=== HANDOFF TO RECEPTIONIST (ALERT CREATION) ===
-
-Set handoff_needed=true and alert_category in these situations:
-
-1. NON-CLINIC REQUESTS (alert_category: "TRICKY"):
-- Caller asks about tradesman/plumber/electrician services
-- Caller asks about completely unrelated business
-- Random requests not related to clinic
-
-2. COMPLEX CLINICAL QUESTIONS (alert_category: "CLINICAL_QUESTION"):
-- Asking for medical diagnosis or specific treatment advice
-- Asking about medication interactions
-- Very technical biomedical questions
-- Questions requiring medical expertise beyond basic info
-
-3. BOOKING HELP NEEDED (alert_category: "BOOKING_HELP"):
-- Repeated confusion about booking process (>2 turns)
-- Unable to understand slot selection after 2 attempts
-- Technical issues with booking flow
-
-4. PRICING COMPLEXITY (alert_category: "PRICING"):
-- Asking about complex insurance/rebate calculations
-- Specific payment plan questions
-- Bulk billing or complex pricing structures
-⚠️ DO NOT trigger handoff for simple payment method questions like "can I pay by card" or "do you have a card machine" - these should be answered directly (see FAQ section above).
-
-5. DIRECTIONS HELP (alert_category: "DIRECTIONS"):
-- Complex location questions
-- Public transport routing
-- Special access needs
-
-When handoff_needed=true:
-- Say: "I'll have our reception team call you back shortly to help with that."
-- Set alert_category appropriately
-- Backend will create alert and notify receptionist
 
 === FALLBACK (USE SPARINGLY - NO GP MENTIONS) ===
 
@@ -766,70 +564,20 @@ Fallback style reply:
 
 Do NOT use fallback for normal chiropractic FAQs like qualifications, techniques, pricing, etc.
 
-=== REGRESSION SAFETY ===
-
-⚠️ CRITICAL: Ensure all text passed to Twilio <Say> is valid:
-- No SSML tags (<speak>, <prosody>, <break>)
-- No control characters
-- No empty strings
-- Always use plain text with natural pauses via punctuation
-
-If any logic fails or text is unclear, use fallback phrasing:
-- "Let me double-check that for you."
-- "I want to make sure I have that right."
-- "Can you say that again?"
-
 === GENERAL RULES ===
 
 - Never diagnose conditions.
 - Never tell someone to stop or change medication.
 - Never guarantee outcomes.
-- Keep replies short and conversational (2-3 sentences max per response).
+- Keep replies short and conversational.
 - Update the JSON state fields based on THIS caller message as best you can.
 - If something is genuinely unclear, you may ask a short clarifying question in your reply and reflect uncertainty with null values in state.
 - ALWAYS check current_state before asking questions - never repeat questions that have been answered.
 - Be warm and use empathy when callers mention pain or discomfort.
-- Use confirmations instead of repeats: "Thanks — that's [Name], right?" instead of asking for name again.
 
 === FINAL REMINDER ===
 
 OUTPUT ONLY THE JSON OBJECT. No text before it. No text after it. Just pure JSON.`;
-
-// ═══════════════════════════════════════════════
-// Booking Stage State Machine
-// ═══════════════════════════════════════════════
-
-/**
- * Linear booking stages - prevents loops by enforcing progression
- * Once a stage is complete, we NEVER go back to it
- */
-export enum BookingStage {
-  INTENT = 'intent',                    // Step 1: Detect intent (book/change/cancel/faq)
-  NEW_OR_EXISTING = 'new_or_existing',  // Step 2: New patient or existing?
-  SHARED_PHONE = 'shared_phone',        // Step 3: Shared phone disambiguation (if needed)
-  COLLECT_NAME = 'collect_name',        // Step 4: Get full name
-  COLLECT_TIME = 'collect_time',        // Step 5: Get time preference
-  OFFER_SLOTS = 'offer_slots',          // Step 6: Offer available slots
-  CONFIRM_SLOT = 'confirm_slot',        // Step 7: User selects slot
-  COLLECT_CONTACT = 'collect_contact',  // Step 8: Email/phone if new patient
-  BOOKING_COMPLETE = 'booking_complete', // Step 9: Appointment created
-  POST_BOOKING_FAQ = 'post_booking_faq', // Step 10: Answer any remaining questions
-  CALL_ENDED = 'call_ended'             // Step 11: Call complete
-}
-
-/**
- * Question keys for tracking ask counts
- * Used to enforce max 2 asks per question type
- */
-export type QuestionKey =
-  | 'new_or_existing'
-  | 'shared_phone_disambiguation'
-  | 'identity_confirmation'
-  | 'name_capture'
-  | 'email_capture'
-  | 'time_preference'
-  | 'slot_selection'
-  | 'phone_confirmation';
 
 // ═══════════════════════════════════════════════
 // Conversation Context
@@ -857,25 +605,6 @@ export interface ConversationContext {
   /** Tenant/clinic information */
   clinicName?: string;
 
-  // ═══════════════════════════════════════════════
-  // LINEAR STATE MACHINE - Prevents loops and resets
-  // ═══════════════════════════════════════════════
-
-  /** Current stage in booking flow - enforces linear progression */
-  bookingStage?: BookingStage;
-
-  /** Once intent is locked (booking started), never reset to "what can I help with" */
-  intentLocked?: boolean;
-
-  /** Question ask counts - max 2 per question type, then fallback */
-  questionAskCounts?: Record<QuestionKey, number>;
-
-  /** Shared phone disambiguation resolved - ensures it NEVER re-triggers */
-  sharedPhoneResolved?: boolean;
-
-  /** Identity confirmed - after this, NEVER ask "Are you [name]?" again */
-  identityResolved?: boolean;
-
   /** Compact tenant info for AI context (injected by backend) */
   tenantInfo?: {
     clinicName: string;
@@ -885,25 +614,11 @@ export interface ConversationContext {
     timezone: string;
   };
 
-  /** Known patient info (from caller ID lookup) - DEPRECATED: Use possiblePatientId instead */
+  /** Known patient info (from caller ID lookup) */
   knownPatient?: {
     firstName: string;
     fullName: string;
     id: string;
-  };
-
-  /** Possible patient ID (from phone lookup) - NOT confirmed until user verifies identity */
-  possiblePatientId?: string;
-  possiblePatientName?: string;  // Full name for display
-
-  /** Confirmed patient ID - only set after user confirms identity or name matches */
-  confirmedPatientId?: string;
-
-  /** Shared phone disambiguation state */
-  sharedPhoneDisambiguation?: {
-    asked: boolean;  // Whether we've asked "booking for yourself or someone else?"
-    answer?: 'myself' | 'someone_else';  // User's answer
-    candidateName?: string;  // Name provided when "myself" is selected
   };
 
   /** Available appointment slots (injected by backend) - enriched with practitioner info */
@@ -918,12 +633,6 @@ export interface ConversationContext {
     speakable: string;  // e.g., "Thursday at 2:30 PM"
   };
 
-  /** Flag to prevent re-lookup of appointment for reschedule/cancel */
-  appointmentLookupDone?: boolean;
-
-  /** Flag indicating no appointment was found (for clean exit) */
-  noAppointmentFound?: boolean;
-
   /** Practitioner name for "who will I see" question (injected by backend) */
   practitionerName?: string;
 
@@ -932,25 +641,6 @@ export interface ConversationContext {
 
   /** Whether this is the first turn (for greeting) */
   firstTurn?: boolean;
-
-  /** Count of consecutive empty speech results (for handling timeouts) */
-  emptyCount?: number;
-
-  /** Count of low-confidence speech results (for handling background noise) */
-  noiseCount?: number;
-
-  /** Whether post-booking prompt has been shown (prevents repetition) */
-  postBookingPrompted?: boolean;
-
-  /** Name disambiguation context (when phone matches but name differs) */
-  nameDisambiguation?: {
-    existingName: string;
-    spokenName: string;
-    patientId: string;
-    /** Preserved booking state (restored after confirmation) */
-    preservedBc?: boolean;
-    preservedSi?: number;
-  };
 }
 
 // ═══════════════════════════════════════════════
@@ -1019,11 +709,6 @@ export async function callReceptionistBrain(
   // Add booked slot time for reference after booking
   if (context.bookedSlotTime) {
     contextInfo += `booked_time: ${context.bookedSlotTime}\n`;
-  }
-
-  // IMPORTANT: If identity is resolved, tell AI to stop using the patient's name
-  if (context.identityResolved) {
-    contextInfo += `\n⚠️ IDENTITY CONFIRMED - Do NOT repeat the patient's name. They have already confirmed who they are.\n`;
   }
 
   // Combine system prompt with context into ONE system message
@@ -1126,25 +811,17 @@ export function initializeConversation(
   callSid: string,
   callerPhone: string,
   clinicName?: string,
-  knownPatient?: { firstName: string; fullName: string; id: string }  // DEPRECATED: kept for backward compatibility
+  knownPatient?: { firstName: string; fullName: string; id: string }
 ): ConversationContext {
-  const context: ConversationContext = {
+  return {
     callSid,
     callerPhone,
     history: [],
     currentState: {},
     clinicName,
+    knownPatient,
     firstTurn: true  // Mark as first turn for greeting
   };
-  
-  // Backward compatibility: migrate knownPatient to possiblePatientId
-  if (knownPatient) {
-    context.possiblePatientId = knownPatient.id;
-    context.possiblePatientName = knownPatient.fullName;
-    context.knownPatient = knownPatient;  // Keep for backward compatibility
-  }
-  
-  return context;
 }
 
 /**
@@ -1187,125 +864,5 @@ export function updateConversationState(
       ...context.currentState,
       ...newState
     }
-  };
-}
-
-// ═══════════════════════════════════════════════
-// Loop Prevention Helpers
-// ═══════════════════════════════════════════════
-
-/**
- * Check if we should ask a question (max 2 times per question type)
- * Returns true if we can ask, false if we've exceeded the limit
- */
-export function shouldAskQuestion(
-  context: ConversationContext,
-  questionKey: QuestionKey
-): boolean {
-  const counts = context.questionAskCounts || ({} as Record<QuestionKey, number>);
-  const currentCount = counts[questionKey] || 0;
-  return currentCount < 2;
-}
-
-/**
- * Increment question ask count and return updated context
- * Also logs structured debug info
- */
-export function incrementQuestionCount(
-  context: ConversationContext,
-  questionKey: QuestionKey
-): ConversationContext {
-  const counts = context.questionAskCounts || {} as Record<QuestionKey, number>;
-  const newCount = (counts[questionKey] || 0) + 1;
-
-  console.log(`[LoopPrevention] Question "${questionKey}" asked ${newCount} time(s), callSid: ${context.callSid}, stage: ${context.bookingStage || 'unknown'}`);
-
-  return {
-    ...context,
-    questionAskCounts: {
-      ...counts,
-      [questionKey]: newCount
-    }
-  };
-}
-
-/**
- * Get current count for a question type
- */
-export function getQuestionCount(
-  context: ConversationContext,
-  questionKey: QuestionKey
-): number {
-  const counts = context.questionAskCounts || ({} as Record<QuestionKey, number>);
-  return counts[questionKey] || 0;
-}
-
-/**
- * Advance to the next booking stage
- * Returns updated context with new stage
- */
-export function advanceBookingStage(
-  context: ConversationContext,
-  newStage: BookingStage
-): ConversationContext {
-  const currentStage = context.bookingStage;
-  console.log(`[StateMachine] Stage transition: ${currentStage || 'none'} → ${newStage}, callSid: ${context.callSid}`);
-
-  return {
-    ...context,
-    bookingStage: newStage,
-    // Lock intent as soon as we enter any booking stage (including INTENT)
-    intentLocked: true
-  };
-}
-
-/**
- * Check if we've moved past a certain stage (prevents regression)
- */
-export function isPastStage(
-  context: ConversationContext,
-  stage: BookingStage
-): boolean {
-  const stageOrder = [
-    BookingStage.INTENT,
-    BookingStage.NEW_OR_EXISTING,
-    BookingStage.SHARED_PHONE,
-    BookingStage.COLLECT_NAME,
-    BookingStage.COLLECT_TIME,
-    BookingStage.OFFER_SLOTS,
-    BookingStage.CONFIRM_SLOT,
-    BookingStage.COLLECT_CONTACT,
-    BookingStage.BOOKING_COMPLETE,
-    BookingStage.POST_BOOKING_FAQ,
-    BookingStage.CALL_ENDED
-  ];
-
-  const currentIndex = stageOrder.indexOf(context.bookingStage || BookingStage.INTENT);
-  const targetIndex = stageOrder.indexOf(stage);
-
-  return currentIndex > targetIndex;
-}
-
-/**
- * Mark shared phone disambiguation as resolved (prevents re-triggering)
- */
-export function resolveSharedPhone(context: ConversationContext): ConversationContext {
-  console.log(`[StateMachine] Shared phone disambiguation RESOLVED, callSid: ${context.callSid}`);
-  return {
-    ...context,
-    sharedPhoneResolved: true,
-    sharedPhoneDisambiguation: undefined // Clear the temporary state
-  };
-}
-
-/**
- * Mark identity as resolved (prevents "Are you X?" from re-triggering)
- */
-export function resolveIdentity(context: ConversationContext): ConversationContext {
-  console.log(`[StateMachine] Identity RESOLVED, callSid: ${context.callSid}`);
-  return {
-    ...context,
-    identityResolved: true,
-    nameDisambiguation: undefined // Clear the temporary state
   };
 }
