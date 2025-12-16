@@ -126,26 +126,31 @@ export async function getOrCreateContext(
   // Create new context
   console.log('[OpenAICallHandler] Creating new conversation context for call:', callSid);
 
-  // Check if caller matches existing patient
-  let knownPatient: { firstName: string; fullName: string; id: string } | undefined;
+  // Check if caller phone matches existing patient - but DO NOT assume identity
+  // Store as possiblePatientId and ask user to confirm
+  let possiblePatientId: string | undefined;
+  let possiblePatientName: string | undefined;
   if (tenantId) {
     try {
       const patient = await findPatientByPhoneRobust(callerPhone);
       if (patient) {
         const fullName = `${patient.first_name || ''} ${patient.last_name || ''}`.trim();
-        knownPatient = {
-          firstName: patient.first_name || '',
-          fullName: fullName || 'Unknown',
-          id: patient.id.toString()
-        };
-        console.log('[OpenAICallHandler] Matched caller to patient:', knownPatient.fullName);
+        possiblePatientId = patient.id.toString();
+        possiblePatientName = fullName || 'Unknown';
+        console.log('[OpenAICallHandler] Found possible patient by phone (NOT assuming identity):', possiblePatientName);
+        console.log('[OpenAICallHandler]   - Will ask user to confirm if booking for themselves or someone else');
       }
     } catch (error) {
       console.warn('[OpenAICallHandler] Error looking up patient:', error);
     }
   }
 
-  return initializeConversation(callSid, callerPhone, clinicName, knownPatient);
+  const context = initializeConversation(callSid, callerPhone, clinicName);
+  if (possiblePatientId) {
+    context.possiblePatientId = possiblePatientId;
+    context.possiblePatientName = possiblePatientName;
+  }
+  return context;
 }
 
 // ═══════════════════════════════════════════════
@@ -641,8 +646,143 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
-    // 3a. Handle name disambiguation response if pending
+    // 3a-0. Handle shared phone disambiguation (booking for yourself or someone else)
     let finalResponse = response;
+    if (context.possiblePatientId && !context.confirmedPatientId && !context.sharedPhoneDisambiguation?.answer) {
+      // We have a possible patient but haven't asked yet - ask now
+      if (!context.sharedPhoneDisambiguation?.asked) {
+        console.log('[OpenAICallHandler] 📞 Shared phone detected - asking if booking for themselves or someone else');
+        console.log('[OpenAICallHandler]   - Possible patient:', context.possiblePatientName, '(ID:', context.possiblePatientId, ')');
+        
+        context.sharedPhoneDisambiguation = {
+          asked: true
+        };
+        await saveConversationContext(callSid, context);
+        
+        finalResponse = {
+          reply: `I see this number in our system — are you booking for yourself, or for someone else, like a child or family member?`,
+          expect_user_reply: true,
+          state: {
+            ...response.state,
+            bc: false // Don't book yet - need identity confirmation
+          }
+        };
+      } else {
+        // We've asked but haven't gotten an answer yet - parse the response
+        const utteranceLower = userUtterance.toLowerCase().trim();
+        
+        // Check for "myself" / "me" / "yes" (for myself)
+        const isMyself = utteranceLower.includes('myself') || 
+                         utteranceLower.includes('for me') ||
+                         utteranceLower.includes('yes') && (utteranceLower.includes('me') || utteranceLower.includes('myself')) ||
+                         utteranceLower.includes("i'm") && utteranceLower.includes('booking') ||
+                         utteranceLower.includes('i am') && utteranceLower.includes('booking');
+        
+        // Check for "someone else" / "child" / "daughter" / "son" / "no" (for someone else)
+        const isSomeoneElse = utteranceLower.includes('someone else') ||
+                              utteranceLower.includes('for someone') ||
+                              utteranceLower.includes('child') ||
+                              utteranceLower.includes('daughter') ||
+                              utteranceLower.includes('son') ||
+                              utteranceLower.includes('kid') ||
+                              utteranceLower.includes('family member') ||
+                              utteranceLower.includes('my ') && (utteranceLower.includes('child') || utteranceLower.includes('daughter') || utteranceLower.includes('son')) ||
+                              (utteranceLower.includes('no') && !utteranceLower.includes('yes'));
+        
+        if (isMyself) {
+          console.log('[OpenAICallHandler] ✅ User confirmed booking for themselves');
+          context.sharedPhoneDisambiguation.answer = 'myself';
+          await saveConversationContext(callSid, context);
+          
+          // Ask for full name to confirm against candidate patient
+          finalResponse = {
+            reply: `Thanks for confirming. What's your full name?`,
+            expect_user_reply: true,
+            state: {
+              ...response.state,
+              bc: false // Don't book yet - need name confirmation
+            }
+          };
+        } else if (isSomeoneElse) {
+          console.log('[OpenAICallHandler] ✅ User confirmed booking for someone else');
+          context.sharedPhoneDisambiguation.answer = 'someone_else';
+          // Clear possiblePatientId since it's not the caller
+          context.possiblePatientId = undefined;
+          context.possiblePatientName = undefined;
+          await saveConversationContext(callSid, context);
+          
+          // Ask for the patient's full name
+          finalResponse = {
+            reply: `No worries. What's the full name of the person you're booking for?`,
+            expect_user_reply: true,
+            state: {
+              ...response.state,
+              np: true, // Treat as new patient unless clear match found
+              bc: false // Don't book yet - need name
+            }
+          };
+        } else {
+          // Unclear response - ask again
+          console.log('[OpenAICallHandler] ⚠️  Unclear shared phone response - asking again');
+          finalResponse = {
+            reply: `Just to confirm — are you booking for yourself, or for someone else?`,
+            expect_user_reply: true,
+            state: {
+              ...response.state,
+              bc: false
+            }
+          };
+        }
+      }
+    } else if (context.sharedPhoneDisambiguation?.answer === 'myself' && !context.confirmedPatientId && response.state.nm) {
+      // User said "myself" and provided name - check if it matches possible patient
+      const providedName = response.state.nm.trim();
+      const possibleName = context.possiblePatientName || '';
+      
+      console.log('[OpenAICallHandler] 🔍 Checking name match for "myself" booking:');
+      console.log('[OpenAICallHandler]   - Provided name:', providedName);
+      console.log('[OpenAICallHandler]   - Possible patient name:', possibleName);
+      
+      const { calculateNameSimilarity } = await import('../utils/name-matcher');
+      const similarity = calculateNameSimilarity(providedName, possibleName);
+      
+      if (similarity >= 0.7) {
+        // Names match - confirm identity
+        console.log('[OpenAICallHandler] ✅ Name matches possible patient - confirming identity');
+        context.confirmedPatientId = context.possiblePatientId;
+        context.sharedPhoneDisambiguation = undefined; // Clear disambiguation
+        await saveConversationContext(callSid, context);
+        
+        // Continue with booking as existing patient
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            np: false, // Existing patient
+            bc: response.state.bc // Preserve booking state
+          }
+        };
+      } else {
+        // Names don't match - different person
+        console.log('[OpenAICallHandler] ❌ Name mismatch - treating as new patient');
+        context.possiblePatientId = undefined;
+        context.possiblePatientName = undefined;
+        context.sharedPhoneDisambiguation = undefined;
+        await saveConversationContext(callSid, context);
+        
+        // Continue as new patient
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            np: true, // New patient
+            bc: response.state.bc
+          }
+        };
+      }
+    }
+
+    // 3a. Handle name disambiguation response if pending
     if (context.nameDisambiguation) {
       // Use improved yes/no classification with NO-wins precedence
       const { classifyYesNo } = await import('../utils/speech-helpers');
@@ -739,10 +879,17 @@ export async function handleOpenAIConversation(
       const utteranceLower = userUtterance.toLowerCase();
       
       // Check for "same number" or phone number patterns
+      // Also check if phone was already collected in a previous turn
       let phoneProvided = false;
       let newPhone: string | undefined = undefined;
       
-      if (utteranceLower.includes('same number') || utteranceLower.includes('same') || utteranceLower.includes('this number')) {
+      // First, check if phone was already collected from previous turn
+      if (context.currentState.pc === true) {
+        phoneProvided = true;
+        // Use recoveryPhone if set, otherwise use callerPhone
+        newPhone = (context.currentState as any).recoveryPhone || callerPhone;
+        console.log('[OpenAICallHandler]   - Phone already collected from previous turn:', newPhone);
+      } else if (utteranceLower.includes('same number') || utteranceLower.includes('same') || utteranceLower.includes('this number')) {
         phoneProvided = true;
         newPhone = callerPhone; // Use current caller phone
         console.log('[OpenAICallHandler]   - User said "same number" - using caller phone:', callerPhone);
@@ -794,6 +941,13 @@ export async function handleOpenAIConversation(
       } else if (phoneProvided && newPhone) {
         // Have phone but need email
         console.log('[OpenAICallHandler]   - Phone collected, still need email');
+        // CRITICAL: Persist pc to context before saving so it's available on next turn
+        context.currentState.pc = true;
+        if (newPhone !== callerPhone) {
+          (context.currentState as any).recoveryPhone = newPhone;
+        }
+        await saveConversationContext(callSid, context);
+        
         finalResponse = {
           reply: "Great, I've got your number. What email should I use for your confirmation?",
           expect_user_reply: true,
@@ -804,10 +958,37 @@ export async function handleOpenAIConversation(
             identityMismatchRecovery: true // Keep flag until email collected
           }
         };
-        if (newPhone !== callerPhone) {
-          (context.currentState as any).recoveryPhone = newPhone;
-        }
+      } else if (context.currentState.pc === true && emailProvided && extractedEmail) {
+        // Phone was already collected from previous turn, now we have email
+        console.log('[OpenAICallHandler] ✅ Phone already collected, email now provided - clearing recovery flag');
+        context.currentState.identityMismatchRecovery = false;
+        context.currentState.em = extractedEmail;
         await saveConversationContext(callSid, context);
+        
+        // Continue with booking - AI should proceed normally now
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            np: true, // Ensure marked as new patient
+            pc: true,
+            em: extractedEmail,
+            identityMismatchRecovery: false
+          }
+        };
+      } else if (context.currentState.pc === true) {
+        // Phone already collected, but still need email
+        console.log('[OpenAICallHandler]   - Phone already collected, still need email');
+        finalResponse = {
+          reply: "What email should I use for your confirmation?",
+          expect_user_reply: true,
+          state: {
+            ...response.state,
+            np: true,
+            pc: true,
+            identityMismatchRecovery: true // Keep flag until email collected
+          }
+        };
       } else {
         // Still need phone (and possibly email)
         console.log('[OpenAICallHandler]   - Still need phone and email');
@@ -1045,24 +1226,31 @@ export async function handleOpenAIConversation(
 
     // 4b. HANDOFF DETECTION: Check for handoff triggers after AI response
     //     This catches frustration loops, low confidence, out-of-scope, etc.
-    const postAIHandoffDetection = detectHandoffTrigger(
-      userUtterance,
-      context.history || [],
-      {
-        noMatchCount: context.emptyCount || 0,
-        confidence: 0.8, // Assume good confidence if AI responded (could be improved with actual confidence score)
-        isOutOfScope: finalResponse.handoff_needed === true && finalResponse.alert_category === 'OUT_OF_SCOPE',
-        hasClinikoError: false // Will be checked after Cliniko calls
-      }
-    );
+    //     CRITICAL: NEVER trigger handoff during shared phone disambiguation
+    const isSharedPhoneDisambiguation = context.sharedPhoneDisambiguation && !context.confirmedPatientId;
     
-    // If handoff detected (and not already handled), trigger it
-    if (postAIHandoffDetection.shouldTrigger && 
-        postAIHandoffDetection.trigger !== 'explicit_request' && 
-        postAIHandoffDetection.trigger !== 'profanity') {
-      console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
-      await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger || 'unknown', postAIHandoffDetection.reason || '');
-      return vr;
+    if (!isSharedPhoneDisambiguation) {
+      const postAIHandoffDetection = detectHandoffTrigger(
+        userUtterance,
+        context.history || [],
+        {
+          noMatchCount: context.emptyCount || 0,
+          confidence: 0.8, // Assume good confidence if AI responded (could be improved with actual confidence score)
+          isOutOfScope: finalResponse.handoff_needed === true && finalResponse.alert_category === 'OUT_OF_SCOPE',
+          hasClinikoError: false // Will be checked after Cliniko calls
+        }
+      );
+      
+      // If handoff detected (and not already handled), trigger it
+      if (postAIHandoffDetection.shouldTrigger && 
+          postAIHandoffDetection.trigger !== 'explicit_request' && 
+          postAIHandoffDetection.trigger !== 'profanity') {
+        console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
+        await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger || 'unknown', postAIHandoffDetection.reason || '');
+        return vr;
+      }
+    } else {
+      console.log('[OpenAICallHandler] ⏸️  Skipping handoff detection during shared phone disambiguation');
     }
 
     // 4c. Detect repeated confusion or handoff requests
@@ -1185,47 +1373,57 @@ export async function handleOpenAIConversation(
 
           // CRITICAL: Check for existing patient and name mismatch before creating appointment
           // This prevents overwriting existing patient data
-          const { shouldDisambiguateName } = await import('../utils/name-matcher');
-          const existingPatient = await findPatientByPhoneRobust(callerPhone);
-          
-          // Skip disambiguation if already handled in previous turn
-          if (!context.nameDisambiguation && existingPatient && finalResponse.state.nm) {
-            const existingFullName = `${existingPatient.first_name || ''} ${existingPatient.last_name || ''}`.trim();
-            const newFullName = finalResponse.state.nm.trim();
+          // BUT: Skip if identity is already confirmed via shared phone disambiguation
+          let existingPatient = null;
+          if (context.confirmedPatientId) {
+            // Identity already confirmed - use confirmed patient ID
+            console.log('[OpenAICallHandler] ✅ Using confirmed patient ID:', context.confirmedPatientId);
+            // We'll use confirmedPatientId when creating the appointment
+            existingPatient = { id: context.confirmedPatientId };
+          } else {
+            // Check for existing patient by phone (legacy flow)
+            const { shouldDisambiguateName } = await import('../utils/name-matcher');
+            existingPatient = await findPatientByPhoneRobust(callerPhone);
             
-            if (shouldDisambiguateName(existingFullName, newFullName)) {
-              console.log('[OpenAICallHandler] ⚠️  Name mismatch detected - asking for disambiguation');
-              console.log('[OpenAICallHandler]   - Existing patient:', existingFullName);
-              console.log('[OpenAICallHandler]   - Spoken name:', newFullName);
+            // Skip disambiguation if already handled in previous turn OR if shared phone disambiguation is active
+            if (!context.nameDisambiguation && !context.sharedPhoneDisambiguation && existingPatient && finalResponse.state.nm) {
+              const existingFullName = `${existingPatient.first_name || ''} ${existingPatient.last_name || ''}`.trim();
+              const newFullName = finalResponse.state.nm.trim();
               
-              // Store disambiguation context
-              // CRITICAL: Preserve bc and si values so they can be restored after confirmation
-              context.nameDisambiguation = {
-                existingName: existingFullName,
-                spokenName: newFullName,
-                patientId: existingPatient.id.toString(),
-                preservedBc: finalResponse.state.bc === true, // Save original booking_confirmed state
-                preservedSi: finalResponse.state.si !== undefined && finalResponse.state.si !== null 
-                  ? finalResponse.state.si 
-                  : undefined // Save original selected_slot_index
-              };
-              await saveConversationContext(callSid, context);
-              
-              // Override response to ask for confirmation
-              finalResponse = {
-                reply: `This number is already on file — are you ${existingFullName}?`,
-                expect_user_reply: true,
-                state: {
-                  ...finalResponse.state,
-                  bc: false // Don't book yet - need confirmation
-                }
-              };
-              
-              // Don't create appointment yet - wait for confirmation
-              console.log('[OpenAICallHandler] ⚠️  Booking paused - waiting for name confirmation');
-            } else {
-              // Names match or are similar enough - proceed with existing patient
-              console.log('[OpenAICallHandler] ✅ Name matches existing patient - proceeding with booking');
+              if (shouldDisambiguateName(existingFullName, newFullName)) {
+                console.log('[OpenAICallHandler] ⚠️  Name mismatch detected - asking for disambiguation');
+                console.log('[OpenAICallHandler]   - Existing patient:', existingFullName);
+                console.log('[OpenAICallHandler]   - Spoken name:', newFullName);
+                
+                // Store disambiguation context
+                // CRITICAL: Preserve bc and si values so they can be restored after confirmation
+                context.nameDisambiguation = {
+                  existingName: existingFullName,
+                  spokenName: newFullName,
+                  patientId: existingPatient.id.toString(),
+                  preservedBc: finalResponse.state.bc === true, // Save original booking_confirmed state
+                  preservedSi: finalResponse.state.si !== undefined && finalResponse.state.si !== null 
+                    ? finalResponse.state.si 
+                    : undefined // Save original selected_slot_index
+                };
+                await saveConversationContext(callSid, context);
+                
+                // Override response to ask for confirmation
+                finalResponse = {
+                  reply: `This number is already on file — are you ${existingFullName}?`,
+                  expect_user_reply: true,
+                  state: {
+                    ...finalResponse.state,
+                    bc: false // Don't book yet - need confirmation
+                  }
+                };
+                
+                // Don't create appointment yet - wait for confirmation
+                console.log('[OpenAICallHandler] ⚠️  Booking paused - waiting for name confirmation');
+              } else {
+                // Names match or are similar enough - proceed with existing patient
+                console.log('[OpenAICallHandler] ✅ Name matches existing patient - proceeding with booking');
+              }
             }
           }
           
@@ -1240,6 +1438,13 @@ export async function handleOpenAIConversation(
             const phoneToUse = (context.currentState as any).recoveryPhone || callerPhone;
             if ((context.currentState as any).recoveryPhone) {
               console.log('[OpenAICallHandler] 🔄 Using recovery phone for patient creation:', phoneToUse);
+            }
+            
+            // CRITICAL: If we have a confirmedPatientId from shared phone disambiguation, 
+            // getOrCreatePatient will find it by phone and use it (preventing duplicate creation)
+            // The confirmedPatientId ensures we're using the right patient record
+            if (context.confirmedPatientId) {
+              console.log('[OpenAICallHandler] ✅ Using confirmed patient ID for appointment:', context.confirmedPatientId);
             }
             
             const appointment = await createAppointmentForPatient(phoneToUse, {
