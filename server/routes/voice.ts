@@ -11,8 +11,7 @@ import {
   rescheduleAppointment,
   findPatientByPhoneRobust
 } from "../services/cliniko";
-import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME, ttsBookingConfirmed, ttsGoodbye, ttsThinking } from "../utils/voice-constants";
-import { getTwimlXml } from "../utils/twiml-helper";
+import { saySafe, saySafeSSML, EMOTIONS, VOICE_NAME } from "../utils/voice-constants";
 import { abs } from "../utils/url";
 import { labelForSpeech, AUST_TZ } from "../time";
 import { storage } from "../storage";
@@ -406,196 +405,6 @@ export function registerVoice(app: Express) {
   });
 
   // ───────────────────────────────────────────────
-  // Handoff status callback (from Twilio Dial)
-  // Called when transfer completes/fails
-  app.post("/api/voice/handoff-status", async (req: Request, res: Response) => {
-    try {
-      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
-      const dialCallStatus = (req.body.DialCallStatus as string) || "unknown";
-      
-      console.log("[HANDOFF_STATUS] 📥 Callback received from Twilio");
-      console.log("[HANDOFF_STATUS]   - Call SID:", callSid);
-      console.log("[HANDOFF_STATUS]   - Dial Status:", dialCallStatus);
-      
-      if (!callSid) {
-        console.warn("[HANDOFF_STATUS] No callSid provided");
-        return res.sendStatus(204);
-      }
-      
-      const { handleTransferStatus } = await import("../services/handoff");
-      await handleTransferStatus(callSid, dialCallStatus);
-      
-      // If transfer failed, redirect to callback capture
-      if (dialCallStatus !== 'completed') {
-        const vr = new twilio.twiml.VoiceResponse();
-        vr.redirect({
-          method: 'POST'
-        }, abs(`/api/voice/handoff-callback?callSid=${callSid}`));
-        return res.type("text/xml").send(vr.toString());
-      }
-      
-      // Transfer succeeded - hangup
-      const vr = new twilio.twiml.VoiceResponse();
-      vr.hangup();
-      return res.type("text/xml").send(vr.toString());
-    } catch (e) {
-      console.error("[HANDOFF_STATUS][ERROR]", e);
-      return res.sendStatus(204);
-    }
-  });
-
-  // ───────────────────────────────────────────────
-  // Handoff callback capture (fallback from failed transfer)
-  // Captures callback preference and sends SMS
-  app.post("/api/voice/handoff-callback", async (req: Request, res: Response) => {
-    try {
-      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
-      const speechResult = (req.body.SpeechResult as string) || "";
-      
-      console.log("[HANDOFF_CALLBACK] 📥 Callback capture");
-      console.log("[HANDOFF_CALLBACK]   - Call SID:", callSid);
-      console.log("[HANDOFF_CALLBACK]   - Speech:", speechResult);
-      
-      if (!callSid) {
-        console.warn("[HANDOFF_CALLBACK] No callSid provided");
-        return res.sendStatus(204);
-      }
-      
-      const call = await storage.getCallByCallSid(callSid);
-      if (!call) {
-        console.warn("[HANDOFF_CALLBACK] Call not found:", callSid);
-        return res.sendStatus(204);
-      }
-      
-      const tenant = call.tenantId ? await storage.getTenantById(call.tenantId) : null;
-      
-      // Update call with callback request
-      await storage.updateCall(callSid, {
-        handoffStatus: 'callback_requested',
-        handoffNotes: speechResult ? `Callback preference: ${speechResult}` : 'Callback requested'
-      });
-      
-      // Send SMS confirmation if configured
-      if (tenant && call.fromNumber) {
-        const { getHandoffConfig } = await import("../services/handoff");
-        const config = getHandoffConfig(tenant);
-        if (config.smsTemplate) {
-          const { sendSMS } = await import("../services/sms");
-          const smsText = config.smsTemplate.replace('{{clinic_name}}', tenant.clinicName || 'our clinic');
-          try {
-            await sendSMS(call.fromNumber, smsText, tenant.id);
-            console.log("[HANDOFF_CALLBACK] SMS sent to:", call.fromNumber);
-          } catch (error) {
-            console.error("[HANDOFF_CALLBACK] Failed to send SMS:", error);
-          }
-        }
-      }
-      
-      // Create alert for callback queue
-      if (call.tenantId) {
-        await storage.createAlert({
-          tenantId: call.tenantId,
-          conversationId: call.conversationId || undefined,
-          reason: 'callback_requested',
-          payload: {
-            callSid,
-            fromNumber: call.fromNumber,
-            callbackPreference: speechResult || 'anytime',
-            trigger: 'transfer_failed'
-          },
-          status: 'open'
-        });
-      }
-      
-      const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, "Got it. We'll call you back as soon as possible. Have a great day!");
-      vr.hangup();
-      return res.type("text/xml").send(vr.toString());
-    } catch (e) {
-      console.error("[HANDOFF_CALLBACK][ERROR]", e);
-      const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, "Thanks for calling. We'll be in touch soon.");
-      vr.hangup();
-      return res.type("text/xml").send(vr.toString());
-    }
-  });
-
-  // ───────────────────────────────────────────────
-  // Handoff callback capture (from callback mode)
-  // Captures callback preference when in callback mode
-  app.post("/api/voice/handoff-callback-capture", async (req: Request, res: Response) => {
-    try {
-      const callSid = (req.query.callSid as string) || (req.body.CallSid as string) || "";
-      const speechResult = (req.body.SpeechResult as string) || "";
-      
-      console.log("[HANDOFF_CALLBACK_CAPTURE] 📥 Callback preference captured");
-      console.log("[HANDOFF_CALLBACK_CAPTURE]   - Call SID:", callSid);
-      console.log("[HANDOFF_CALLBACK_CAPTURE]   - Speech:", speechResult);
-      
-      if (!callSid) {
-        console.warn("[HANDOFF_CALLBACK_CAPTURE] No callSid provided");
-        return res.sendStatus(204);
-      }
-      
-      const call = await storage.getCallByCallSid(callSid);
-      if (!call) {
-        console.warn("[HANDOFF_CALLBACK_CAPTURE] Call not found:", callSid);
-        return res.sendStatus(204);
-      }
-      
-      const tenant = call.tenantId ? await storage.getTenantById(call.tenantId) : null;
-      
-      // Update call with callback request
-      await storage.updateCall(callSid, {
-        handoffStatus: 'callback_requested',
-        handoffNotes: speechResult ? `Callback preference: ${speechResult}` : 'Callback requested'
-      });
-      
-      // Send SMS confirmation if configured
-      if (tenant && call.fromNumber) {
-        const { getHandoffConfig } = await import("../services/handoff");
-        const config = getHandoffConfig(tenant);
-        if (config.smsTemplate) {
-          const { sendSMS } = await import("../services/sms");
-          const smsText = config.smsTemplate.replace('{{clinic_name}}', tenant.clinicName || 'our clinic');
-          try {
-            await sendSMS(call.fromNumber, smsText, tenant.id);
-            console.log("[HANDOFF_CALLBACK_CAPTURE] SMS sent to:", call.fromNumber);
-          } catch (error) {
-            console.error("[HANDOFF_CALLBACK_CAPTURE] Failed to send SMS:", error);
-          }
-        }
-      }
-      
-      // Create alert for callback queue
-      if (call.tenantId) {
-        await storage.createAlert({
-          tenantId: call.tenantId,
-          conversationId: call.conversationId || undefined,
-          reason: 'callback_requested',
-          payload: {
-            callSid,
-            fromNumber: call.fromNumber,
-            callbackPreference: speechResult || 'anytime'
-          },
-          status: 'open'
-        });
-      }
-      
-      const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, "Got it. We'll call you back as soon as possible. Have a great day!");
-      vr.hangup();
-      return res.type("text/xml").send(vr.toString());
-    } catch (e) {
-      console.error("[HANDOFF_CALLBACK_CAPTURE][ERROR]", e);
-      const vr = new twilio.twiml.VoiceResponse();
-      saySafe(vr, "Thanks for calling. We'll be in touch soon.");
-      vr.hangup();
-      return res.type("text/xml").send(vr.toString());
-    }
-  });
-
-  // ───────────────────────────────────────────────
   // Transcription status callback (Twilio posts here)
   // Stores transcription text against the call row.
   app.post("/api/voice/transcription-status", async (req: Request, res: Response) => {
@@ -765,7 +574,7 @@ export function registerVoice(app: Express) {
       "We're sorry. The number you have dialed is no longer in service. Please check the number and try again."
     );
     vr.hangup();
-    res.type("text/xml").send(getTwimlXml(vr));
+    res.type("text/xml").send(vr.toString());
   });
 
   // Quarantine handler for SMS
@@ -798,7 +607,7 @@ export function registerVoice(app: Express) {
       console.log("[VOICE][INCOMING] 🤖 OpenAI Conversation Mode ENABLED - redirecting to OpenAI handler");
       // Redirect to OpenAI handler (which will do its own logging)
       vr.redirect({ method: "POST" }, abs(`/api/voice/openai-incoming`));
-      return res.type("text/xml").send(getTwimlXml(vr));
+      return res.type("text/xml").send(vr.toString());
     }
 
     // FSM mode: Log call start and load conversation memory
@@ -972,7 +781,7 @@ export function registerVoice(app: Express) {
     console.log("[VOICE][INCOMING] Using FSM-based call flow");
     vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=greeting`));
 
-    return res.type("text/xml").send(getTwimlXml(vr));
+    return res.type("text/xml").send(vr.toString());
   });
 
   // ───────────────────────────────────────────────
@@ -1017,7 +826,7 @@ export function registerVoice(app: Express) {
         ];
         const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
         saySafeSSML(vr, randomFarewell);
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // ANYTHING-ELSE → Handle response to "Is there anything else I can help you with?"
@@ -1035,7 +844,7 @@ export function registerVoice(app: Express) {
           const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
           saySafe(vr, randomGoodbye);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Check if they're asking a FAQ question using the new FAQ detection
@@ -1071,7 +880,7 @@ export function registerVoice(app: Express) {
             // Fallback if no response
             saySafe(vr, "Perfect! See you soon. Bye!");
             vr.hangup();
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
         }
 
@@ -1083,20 +892,20 @@ export function registerVoice(app: Express) {
         if (intent === "book" || intent === "reschedule" || intent === "cancel") {
           // They want to manage appointments
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Unknown - say goodbye
         saySafe(vr, "No worries! Feel free to call us back anytime. Have a great day!");
         vr.hangup();
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CAPTURE-QUESTION → This route is now obsolete and redirects to anything-else
       if (route === "capture-question") {
         console.log("[CAPTURE-QUESTION] Redirecting to anything-else route");
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=anything-else&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // FINAL-ANYTHING-ELSE → Handle final response after capturing question
@@ -1106,11 +915,11 @@ export function registerVoice(app: Express) {
 
         if (sayingNo) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=final-goodbye&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // They have another question
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=capture-question&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1124,7 +933,7 @@ export function registerVoice(app: Express) {
         const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
         saySafe(vr, randomGoodbye);
         vr.hangup();
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CONFIRM-CALLER-IDENTITY → Handle identity confirmation for known phone numbers
@@ -1167,7 +976,7 @@ export function registerVoice(app: Express) {
           saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (denied) {
           // Identity not confirmed - ask for correct name warmly
           const g = vr.gather({
@@ -1187,7 +996,7 @@ export function registerVoice(app: Express) {
           saySafe(g, randomApology);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
           const g = vr.gather({
@@ -1201,7 +1010,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Am I speaking with " + knownName + "? Please say yes or no.");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1318,7 +1127,7 @@ export function registerVoice(app: Express) {
           // Natural open question - let them speak freely, NLU will classify
           saySafe(g, `<speak>Thanks, ${firstName}. <break time="200ms"/> How can I help you today?</speak>`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (isNew) {
           // They said "no" or "new patient" - they're not the known patient
           // First ask for their intent before collecting details
@@ -1378,7 +1187,7 @@ export function registerVoice(app: Express) {
           // Natural open question - let them speak freely, NLU will classify
           saySafe(g, `<speak>No problem. <break time="200ms"/> How can I help you today?</speak>`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again with clearer yes/no prompt (NO "Just say Mary" language)
           const firstName = extractFirstName(knownName);
@@ -1386,8 +1195,8 @@ export function registerVoice(app: Express) {
             input: ["speech"],
             timeout: 8,
             speechTimeout: "auto",
+            speechModel: "experimental_conversations",
             enhanced: true,
-            speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
             actionOnEmptyResult: true,
             action: abs(`/api/voice/handle?route=confirm-existing-or-new&callSid=${encodeURIComponent(callSid)}&knownName=${encodeURIComponent(knownName)}`),
             method: "POST",
@@ -1397,7 +1206,7 @@ export function registerVoice(app: Express) {
           saySafe(g, `I didn't catch that. Are you ${firstName}? You can say yes or no.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1433,7 +1242,7 @@ export function registerVoice(app: Express) {
 
               if (patientId) {
                 vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=reschedule-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`));
-                return res.type("text/xml").send(getTwimlXml(vr));
+                return res.type("text/xml").send(vr.toString());
               }
             }
           } catch (err) {
@@ -1443,7 +1252,7 @@ export function registerVoice(app: Express) {
           // Fallback if no patient ID
           saySafe(vr, "I'm having trouble finding your details. Let me transfer you to our reception.");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (wantsToCancel) {
           // Route to cancel flow
           console.log("[EXISTING-PATIENT-INTENT] Routing to cancel flow");
@@ -1458,7 +1267,7 @@ export function registerVoice(app: Express) {
 
               if (patientId) {
                 vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId)}`));
-                return res.type("text/xml").send(getTwimlXml(vr));
+                return res.type("text/xml").send(vr.toString());
               }
             }
           } catch (err) {
@@ -1468,7 +1277,7 @@ export function registerVoice(app: Express) {
           // Fallback if no patient ID
           saySafe(vr, "I'm having trouble finding your details. Let me transfer you to our reception.");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (wantsToBook) {
           // Route to booking flow - ask for day/time preference EARLY
           console.log("[EXISTING-PATIENT-INTENT] Routing to booking flow");
@@ -1485,13 +1294,13 @@ export function registerVoice(app: Express) {
           saySafe(g, `Do you have a particular day and time in mind? I'll try to find something as close as I can to that.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (hasQuestion) {
           // Route to FAQ/question answering flow
           console.log("[EXISTING-PATIENT-INTENT] Routing to FAQ flow");
           // Redirect to FSM handler with FAQ step
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear - redirect to NLU-powered flow for classification
           console.log("[EXISTING-PATIENT-INTENT] Unclear response, redirecting to NLU flow");
@@ -1507,7 +1316,7 @@ export function registerVoice(app: Express) {
           // Natural retry prompt
           saySafe(g, `<speak>I didn't quite catch that. <break time="200ms"/> How can I help you today?</speak>`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1532,7 +1341,7 @@ export function registerVoice(app: Express) {
           console.log("[NEW-PATIENT-INTENT] Transferring to reception for appointment change");
           saySafe(vr, "Let me transfer you to our reception team who can help with that.");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (wantsToBook) {
           // Route to new patient booking flow - ask for day/time preference EARLY
           console.log("[NEW-PATIENT-INTENT] Routing to new patient booking flow");
@@ -1549,13 +1358,13 @@ export function registerVoice(app: Express) {
           saySafe(g, `Do you have a particular day and time in mind? I'll try to find something as close as I can to that.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (hasQuestion) {
           // Route to FAQ/question answering flow
           console.log("[NEW-PATIENT-INTENT] Routing to FAQ flow");
           // Redirect to FSM handler with FAQ step
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=faq`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear - redirect to NLU-powered flow for classification
           console.log("[NEW-PATIENT-INTENT] Unclear response, redirecting to NLU flow");
@@ -1571,7 +1380,7 @@ export function registerVoice(app: Express) {
           // Natural retry prompt
           saySafe(g, `<speak>I didn't quite catch that. <break time="200ms"/> How can I help you today?</speak>`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=patient_type`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1684,7 +1493,7 @@ export function registerVoice(app: Express) {
           saySafe(g, `Perfect! Is this appointment for you, or is it for someone else?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // New patient - collect their name
           const g = vr.gather({
@@ -1704,7 +1513,7 @@ export function registerVoice(app: Express) {
           saySafeSSML(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1753,12 +1562,12 @@ export function registerVoice(app: Express) {
 
             // Redirect directly to availability search with the collected day/time
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=get-availability-specific-day&callSid=${encodeURIComponent(callSid)}&returning=1&day=${encodeURIComponent(requestedDay)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           } else {
             // No preference stored, proceed to normal flow
             console.log("[CHECK-APPOINTMENT-FOR] No stored preference, proceeding to start route");
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
         } else if (forOther) {
           // Appointment is for someone else - ask for their name
@@ -1774,7 +1583,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "No worries. What's the name of the person the appointment is for?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
           console.log("[CHECK-APPOINTMENT-FOR] Unclear response, asking again");
@@ -1790,7 +1599,7 @@ export function registerVoice(app: Express) {
           saySafe(g, `Sorry, I didn't catch that. Is this appointment for you, or for someone else?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1844,7 +1653,7 @@ export function registerVoice(app: Express) {
           saySafeSSML(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // No name captured - ask again
           console.log("[CAPTURE-OTHER-PERSON-NAME] No name captured, asking again");
@@ -1859,7 +1668,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Could you please spell out the full name for me?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -1932,7 +1741,7 @@ export function registerVoice(app: Express) {
         saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // ASK-OTHER-PERSON-PHONE → Ask for phone number of person appointment is for
@@ -1982,7 +1791,7 @@ export function registerVoice(app: Express) {
         saySafe(vr, randomAck);
         vr.pause({ length: 0.5 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CAPTURE-CALLER-NAME → Capture name when identity wasn't confirmed
@@ -2018,7 +1827,7 @@ export function registerVoice(app: Express) {
         saySafe(vr, randomGreeting);
         vr.pause({ length: 0.5 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 1) START → detect intent and route accordingly
@@ -2053,50 +1862,50 @@ export function registerVoice(app: Express) {
           if (!isReturningPatient) {
             saySafe(vr, "I don't see an existing appointment for your number. Would you like to book a new appointment instead?");
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=reschedule-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId!)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         if (intent === "cancel") {
           if (!isReturningPatient) {
             saySafe(vr, "I don't see an existing appointment for your number. Is there anything else I can help you with?");
             vr.hangup();
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=cancel-start&callSid=${encodeURIComponent(callSid)}&patientId=${encodeURIComponent(patientId!)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         if (intent === "info") {
           // Asking about what happens in first visit
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-info&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         if (intent === "fees") {
           // Asking about cost/fees
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-fees&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // FAQ intents - use knowledge service for answers
         if (intent === "faq_parking" || intent === "faq_hours" || intent === "faq_location" || intent === "faq_services") {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         if (intent === "book" || intent === "unknown") {
           // For booking intent, ask if they've been to the office before
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Escalation for operator requests or complex questions
         if (intent === "operator") {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=escalate&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Default fallback
@@ -2111,7 +1920,7 @@ export function registerVoice(app: Express) {
         saySafe(g, "I can help you book, reschedule, or cancel an appointment. What would you like to do?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 2) CHECK-BEEN-BEFORE → Ask if they've been to the office before
@@ -2136,7 +1945,7 @@ export function registerVoice(app: Express) {
           // Skip the question - we already know they're returning
           console.log("[CHECK-BEEN-BEFORE] Skipping - patient already identified as returning");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-identity&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const g = vr.gather({
@@ -2150,7 +1959,7 @@ export function registerVoice(app: Express) {
         saySafe(g, "Have you been to our office before?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 3) PROCESS-BEEN-BEFORE → Determine if new or returning, ask for name if needed
@@ -2189,11 +1998,11 @@ export function registerVoice(app: Express) {
           saySafeSSML(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (isReturning) {
           // Returning patient - confirm identity first
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-identity&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
           const g = vr.gather({
@@ -2207,7 +2016,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Have you visited our office before? Please say yes or no.");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -2240,7 +2049,7 @@ export function registerVoice(app: Express) {
         saySafeSSML(g, "If that sounds good, I can grab your details and find a time that suits you. Would you like to book your first visit now?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 3b) EXPLAIN-NEW-PATIENT-FEES → Explain fees and costs
@@ -2272,7 +2081,7 @@ export function registerVoice(app: Express) {
         saySafeSSML(g, "If that sounds good, I can grab your details and find a time that suits you. Would you like to book a visit?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 3c) ANSWER-FAQ → Answer FAQ questions using knowledge service
@@ -2395,7 +2204,7 @@ export function registerVoice(app: Express) {
         saySafeSSML(g, "Is there anything else I can help you with?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 3d) PROCESS-INFO-RESPONSE → Handle response after explaining info/fees
@@ -2406,12 +2215,12 @@ export function registerVoice(app: Express) {
         if (wantsBooking) {
           // Proceed to booking flow
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (doesntWantToBook) {
           // Thank them and hang up
           saySafeSSML(vr, "No worries! Feel free to give us a call anytime when you're ready. Have a great day!");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Check if they're asking another FAQ question
           const intentResult = await classifyIntent(speechRaw);
@@ -2422,7 +2231,7 @@ export function registerVoice(app: Express) {
             // Another FAQ question - route to answer-faq
             console.log("[PROCESS-INFO-RESPONSE] Routing to answer-faq for:", intent);
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=answer-faq&callSid=${encodeURIComponent(callSid)}&faqType=${encodeURIComponent(intent)}&question=${encodeURIComponent(speechRaw)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           // Unclear - ask again
@@ -2437,7 +2246,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Did you have another question?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -2475,7 +2284,7 @@ export function registerVoice(app: Express) {
           // We already have their name - skip to booking
           console.log("[CONFIRM-IDENTITY] Name already confirmed, proceeding to booking for:", recognizedName);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // No recognized name - ask for name
           const g = vr.gather({
@@ -2489,7 +2298,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "May I have your full name please?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -2501,7 +2310,7 @@ export function registerVoice(app: Express) {
         if (confirmed) {
           // Identity confirmed - proceed to week selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (denied) {
           // Identity not confirmed - ask for correct name
           const g = vr.gather({
@@ -2515,7 +2324,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "I apologize. May I have your full name please?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
           const g = vr.gather({
@@ -2529,7 +2338,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Please say yes or no.");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -2556,7 +2365,7 @@ export function registerVoice(app: Express) {
 
         // Proceed to week selection
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 5) ASK-NAME-NEW → Collect name for new patient
@@ -2590,7 +2399,7 @@ export function registerVoice(app: Express) {
           // Redirect to NEW FSM flow which properly handles form submission and waiting
           saySafe(vr, "Perfect! Let me send you a form link to fill in your details. I'll wait right here.");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=send_form`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const firstName = extractFirstName(name);
@@ -2645,7 +2454,7 @@ export function registerVoice(app: Express) {
         const randomMsg = formMessages[Math.floor(Math.random() * formMessages.length)];
         saySafe(vr, randomMsg);
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle-flow?callSid=${encodeURIComponent(callSid)}&step=send_form`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 5a) ASK-EMAIL-NEW → Collect email for new patient
@@ -2713,7 +2522,7 @@ export function registerVoice(app: Express) {
           }
 
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Normalize spoken email using helper function
@@ -2741,7 +2550,7 @@ export function registerVoice(app: Express) {
           }
           // Move to phone confirmation
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (emailRaw && emailRaw.length > 0) {
           // Email was provided but didn't normalize - ask again with specific error feedback
           console.log("[ASK-EMAIL-NEW] ⚠️  Email normalization failed, asking again");
@@ -2771,7 +2580,7 @@ export function registerVoice(app: Express) {
             const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
             saySafe(vr, randomSkip);
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           // Build specific error feedback based on error type
@@ -2805,7 +2614,7 @@ export function registerVoice(app: Express) {
           g.pause({ length: 1 });
           // If timeout, re-ask for email instead of restarting
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // No email captured from speech - ask again instead of skipping
           console.log("[ASK-EMAIL-NEW] ⚠️  No speech captured, asking for email again");
@@ -2834,7 +2643,7 @@ export function registerVoice(app: Express) {
             const randomSkip = skipMessages[Math.floor(Math.random() * skipMessages.length)];
             saySafe(vr, randomSkip);
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=confirm-phone-new&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           const g = vr.gather({
@@ -2856,7 +2665,7 @@ export function registerVoice(app: Express) {
           g.pause({ length: 1 });
           // If timeout, re-ask for email instead of restarting
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-email-new&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -2913,7 +2722,7 @@ export function registerVoice(app: Express) {
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
           console.log("[CONFIRM-PHONE-NEW] Sending response");
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[CONFIRM-PHONE-NEW] ❌ CRITICAL ERROR:", err);
           console.error("[CONFIRM-PHONE-NEW] Error stack:", err instanceof Error ? err.stack : String(err));
@@ -3008,7 +2817,7 @@ export function registerVoice(app: Express) {
 
           // Move to reason for visit
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (denied) {
           // Phone not confirmed - ask for different number
           // Note: Voice systems can't reliably capture phone numbers, so we'll note it and ask them to provide it another way
@@ -3029,7 +2838,7 @@ export function registerVoice(app: Express) {
 
           // Move to reason for visit
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-reason&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear - ask again
           const lastThreeDigits = from.slice(-3);
@@ -3044,7 +2853,7 @@ export function registerVoice(app: Express) {
           saySafe(g, `Sorry, I didn't catch that. Is the number ending in ${lastThreeDigits} the best number to reach you? Please say yes or no.`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3090,7 +2899,7 @@ export function registerVoice(app: Express) {
           saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Store reason in conversation context
@@ -3124,7 +2933,7 @@ export function registerVoice(app: Express) {
         if (isNewPatient) {
           // New patient - give proactive explanation before booking
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=explain-new-patient-visit-proactive&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Returning patient - proceed to week selection with professional acknowledgment
           const acknowledgmentLines = firstName ? [
@@ -3139,7 +2948,7 @@ export function registerVoice(app: Express) {
           const randomAcknowledgment = acknowledgmentLines[Math.floor(Math.random() * acknowledgmentLines.length)];
           saySafeSSML(vr, randomAcknowledgment);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3211,7 +3020,7 @@ export function registerVoice(app: Express) {
           console.log("[EXPLAIN-NEW-PATIENT-VISIT-PROACTIVE] No stored preference, using ask-week flow");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=0`));
         }
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 6) ASK-WEEK → Which week do they want?
@@ -3252,7 +3061,7 @@ export function registerVoice(app: Express) {
         saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 7) PROCESS-WEEK → Determine the week and check if day was mentioned
@@ -3281,7 +3090,7 @@ export function registerVoice(app: Express) {
           }
           // Skip to time-of-day selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=0`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (speechRaw.includes("tomorrow")) {
           // Handle tomorrow specifically
           weekOffset = 0;
@@ -3302,7 +3111,7 @@ export function registerVoice(app: Express) {
           }
           // Skip to time-of-day selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=0`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (speechRaw.includes("this week") || speechRaw.includes("this") || speechRaw.includes("soon") || speechRaw.includes("asap")) {
           weekOffset = 0;
           specificWeek = "this week";
@@ -3345,11 +3154,11 @@ export function registerVoice(app: Express) {
         if (mentionedDay) {
           console.log("[PROCESS-WEEK] Day mentioned:", mentionedDay, "- proceeding to time selection");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Ask for day of week
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-day-of-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3392,7 +3201,7 @@ export function registerVoice(app: Express) {
         saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 7b) PROCESS-DAY-OF-WEEK → Parse the day and move to time selection
@@ -3421,12 +3230,12 @@ export function registerVoice(app: Express) {
 
           // Move to time-of-day selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (speechRaw.includes("any") || speechRaw.includes("no preference") || speechRaw.includes("doesn't matter")) {
           // No preference - proceed without specific day
           console.log("[PROCESS-DAY-OF-WEEK] No day preference expressed");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-time-of-day&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}&weekOffset=${weekOffset}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear - ask again
           const g = vr.gather({
@@ -3440,7 +3249,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Which day works best? For example, Monday, Wednesday, or Friday?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3484,7 +3293,7 @@ export function registerVoice(app: Express) {
         saySafe(g, randomPrompt);
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // ESCALATE → Handle complex questions
@@ -3500,7 +3309,7 @@ export function registerVoice(app: Express) {
         saySafe(g, "I'd like to make sure you get the right information. Could you briefly describe what you need help with?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // CAPTURE-ESCALATION → Save the question and create alert
@@ -3523,7 +3332,7 @@ export function registerVoice(app: Express) {
 
         saySafe(vr, "Thank you. I've noted your question and Dr. Michael will get back to you. Is there anything else I can help with today?");
         vr.hangup();
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // RESCHEDULE-START → Start reschedule flow
@@ -3534,7 +3343,7 @@ export function registerVoice(app: Express) {
           console.error("[RESCHEDULE-START] No patientId provided");
           saySafe(vr, "I'm having trouble finding your patient record. Would you like to book a new appointment instead?");
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Add thinking filler
@@ -3556,7 +3365,7 @@ export function registerVoice(app: Express) {
             saySafe(g, "I don't see any upcoming appointments for you. Would you like to book a new one?");
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           // Confirm their current appointment
@@ -3572,12 +3381,12 @@ export function registerVoice(app: Express) {
           saySafe(g, `I see you have an appointment on ${currentTime}. Would you like to reschedule this appointment?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[RESCHEDULE-START] Error:", err);
           saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "medium")}, I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3590,11 +3399,11 @@ export function registerVoice(app: Express) {
         if (wantsBooking) {
           // Redirect to booking flow
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=check-been-before&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else if (doesNotWant) {
           saySafe(vr, "No worries. Thanks for calling, have a great day!");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           // Unclear response - ask again
           const g = vr.gather({
@@ -3608,7 +3417,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Sorry, I didn't catch that. Would you like to book a new appointment? Please say yes or no.");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3632,11 +3441,11 @@ export function registerVoice(app: Express) {
 
           // Move to week selection
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           saySafeSSML(vr, `Okay, no problem. ${EMOTIONS.mediumPause()} Is there anything else I can help you with?`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3648,7 +3457,7 @@ export function registerVoice(app: Express) {
           console.error("[CANCEL-START] No patientId provided");
           saySafe(vr, "I'm having trouble finding your patient record. Can I help you with anything else?");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Add thinking filler
@@ -3669,7 +3478,7 @@ export function registerVoice(app: Express) {
             saySafe(g, "I don't see any upcoming appointments to cancel. Would you like to book a new appointment instead?");
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           // Confirm cancellation
@@ -3685,12 +3494,12 @@ export function registerVoice(app: Express) {
           saySafe(g, `I see you have an appointment on ${currentTime}. Are you sure you want to cancel this appointment?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } catch (err) {
           console.error("[CANCEL-START] Error:", err);
           saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "medium")}, I'm having trouble accessing your appointment. ${EMOTIONS.mediumPause()} Please call back or try again later.`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3726,17 +3535,17 @@ export function registerVoice(app: Express) {
             saySafeSSML(g, `No problem, I understand. ${EMOTIONS.shortPause()} Your appointment has been cancelled. ${EMOTIONS.mediumPause()} Would you like to book a new one so you don't fall behind on your care?`);
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           } catch (err) {
             console.error("[CANCEL-CONFIRM] Error cancelling:", err);
             saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "medium")}, I couldn't cancel your appointment. ${EMOTIONS.mediumPause()} Please call back or try our office directly.`);
             vr.hangup();
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
         } else {
           saySafe(vr, "Okay, I've kept your appointment as is. See you then!");
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3744,11 +3553,11 @@ export function registerVoice(app: Express) {
       if (route === "cancel-rebook") {
         if (speechRaw.includes("yes") || speechRaw.includes("sure") || speechRaw.includes("book")) {
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=1`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } else {
           saySafeSSML(vr, `${EMOTIONS.excited("Alright", "low")}, have a great day!`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -3756,7 +3565,7 @@ export function registerVoice(app: Express) {
       if (route === "book-day") {
         if (!(speechRaw.includes("yes") || speechRaw.includes("book") || speechRaw.includes("appointment"))) {
           saySafeSSML(vr, `Okay. ${EMOTIONS.shortPause()} Take care, goodbye.`);
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Check if returning patient
@@ -3776,7 +3585,7 @@ export function registerVoice(app: Express) {
           saySafe(g, "Great. Which day would you prefer?");
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // New patient - ask for name
@@ -3792,7 +3601,7 @@ export function registerVoice(app: Express) {
         saySafe(g, "Great. May I have your full name please?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 3) ASK-NAME → capture name and skip to day selection (skip email - unreliable via voice)
@@ -3828,7 +3637,7 @@ export function registerVoice(app: Express) {
         saySafe(g, "Thank you. Which day would you prefer for your appointment?");
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // GET-AVAILABILITY → Fetch slots based on week offset and time preference
@@ -3984,9 +3793,10 @@ export function registerVoice(app: Express) {
 
         console.log("[GET-AVAILABILITY]", { fromDate, toDate, isNewPatient, appointmentTypeId, timePart, weekOffset, preferredDayOfWeek });
 
-        // Add warm thinking filler to reduce dead-air pauses during Cliniko lookup
-        const { ttsThinking } = await import("../utils/voice-constants");
-        saySafeSSML(vr, ttsThinking());
+        // Add thinking filler to reduce dead-air pauses
+        const { EMOTIONS } = await import("../utils/voice-constants");
+        const thinkingPhrase = EMOTIONS.thinking();
+        saySafeSSML(vr, thinkingPhrase);
         // Add a short pause to allow the phrase to be spoken before API call
         vr.pause({ length: 1 });
 
@@ -4077,7 +3887,7 @@ export function registerVoice(app: Express) {
 
           saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "high")}, I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const available = slots.slice(0, 2);
@@ -4122,7 +3932,7 @@ export function registerVoice(app: Express) {
           saySafeSSML(g, noAvailMessage);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const s1 = available[0].startISO;
@@ -4216,7 +4026,7 @@ export function registerVoice(app: Express) {
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, timeoutUrl);
 
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 4) ASK-DAY / BOOK-PART → LEGACY route for backward compatibility
@@ -4224,7 +4034,7 @@ export function registerVoice(app: Express) {
         // Redirect to new flow
         const isReturningPatient = (req.query.returning as string) === '1';
         vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // 5) BOOK-CHOOSE → pick slot & book with captured identity and correct appointment type
@@ -4277,7 +4087,7 @@ export function registerVoice(app: Express) {
           saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Handle alternative day request with warm Australian tone
@@ -4317,7 +4127,7 @@ export function registerVoice(app: Express) {
           saySafe(g, randomPrompt);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Handle unknown input - reprompt once
@@ -4348,12 +4158,12 @@ export function registerVoice(app: Express) {
             saySafe(g, randomRetry);
             g.pause({ length: 1 });
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           } else {
             // Second failure - offer to transfer or end call
             saySafe(vr, "I'm sorry, I'm having trouble understanding. Please call our front desk at your convenience to book your appointment. Goodbye.");
             vr.hangup();
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
         }
 
@@ -4364,7 +4174,7 @@ export function registerVoice(app: Express) {
         if (!chosen) {
           saySafeSSML(vr, `${EMOTIONS.disappointed("I'm sorry", "low")}, that option is no longer available. ${EMOTIONS.mediumPause()} Let's start again.`);
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         // Retrieve captured identity and reason from conversation context OR phone_map
@@ -4553,16 +4363,28 @@ export function registerVoice(app: Express) {
               method: "POST",
             });
 
-            // Warm, reassuring confirmation using SSML helper
-            const confirmation = ttsBookingConfirmed(firstName, spokenTime, "Dr. Michael", lastFourDigits);
-            saySafeSSML(g, confirmation);
+            // Warm, reassuring confirmation messages
+            const confirmationMessages = firstName ? [
+              `${firstName}, ${EMOTIONS.excited("beautiful", "medium")}! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+              `${firstName}, ${EMOTIONS.excited("perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+              `${firstName}, ${EMOTIONS.excited("lovely", "medium")}! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+            ] : [
+              `${EMOTIONS.excited("Perfect", "medium")}! You're all booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
+            ];
+            const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
+            saySafeSSML(g, randomConfirmation);
             g.pause({ length: 1 });
 
-            // If no response, warm farewell using SSML helper
-            const { ttsGoodbye } = await import("../utils/voice-constants");
-            saySafeSSML(vr, ttsGoodbye());
+            // If no response, warm farewell
+            const farewellMessages = [
+              "Lovely! We're looking forward to seeing you. Take care!",
+              "Beautiful! See you at your appointment. Bye for now!",
+              "Perfect! If anything changes, just give us a buzz. See you soon!"
+            ];
+            const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
+            saySafe(vr, randomFarewell);
             vr.hangup();
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           } else {
             // CREATE NEW appointment
             // Log detailed appointment creation info
@@ -4739,15 +4561,28 @@ export function registerVoice(app: Express) {
             method: "POST",
           });
 
-          // Warm booking confirmation using SSML helper
-          const confirmation = ttsBookingConfirmed(firstName, spokenTime, "Dr. Michael", lastFourDigits);
-          saySafeSSML(g, confirmation);
+          // Warm, reassuring confirmation messages
+          const confirmationMessages = firstName ? [
+            `${firstName}, beautiful! You're all set. You're booked for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Is there anything else I can help you with?`,
+            `${firstName}, perfect! You're all booked for ${spokenTime} with Dr. Michael. We'll text you a confirmation. Anything else I can help with today?`,
+            `${firstName}, lovely! All sorted. You're seeing Dr. Michael at ${spokenTime}. We'll send you a confirmation text. Is there anything else you need?`
+          ] : [
+            `Wonderful! You're all set for ${spokenTime} with Dr. Michael. We'll send a confirmation to your mobile ending in ${lastFourDigits}. Anything else I can help with?`
+          ];
+          const randomConfirmation = confirmationMessages[Math.floor(Math.random() * confirmationMessages.length)];
+          saySafeSSML(g, randomConfirmation);
           g.pause({ length: 1 });
 
-          // If no response, warm farewell using SSML helper
-          saySafeSSML(vr, ttsGoodbye());
+          // If no response, warm farewell
+          const farewellMessages = [
+            "Lovely! We're looking forward to seeing you. Take care!",
+            "Beautiful! See you at your appointment. Bye for now!",
+            "Perfect! If anything changes, just give us a buzz. See you soon!"
+          ];
+          const randomFarewell = farewellMessages[Math.floor(Math.random() * farewellMessages.length)];
+          saySafe(vr, randomFarewell);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         } catch (e: any) {
           console.error("[BOOK-CHOOSE][createAppointmentForPatient ERROR]", e);
           try {
@@ -4764,7 +4599,7 @@ export function registerVoice(app: Express) {
             console.error("[ALERT ERROR]", alertErr);
           }
           saySafeSSML(vr, `${EMOTIONS.disappointed("I'm very sorry", "high")}, I couldn't complete the booking. ${EMOTIONS.mediumPause()} Please try again later or call our office directly.`);
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
       }
 
@@ -4878,7 +4713,7 @@ export function registerVoice(app: Express) {
           if (targetDayNumber === undefined) {
             saySafe(vr, "Sorry, I didn't catch which day you wanted. Let me ask again.");
             vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=ask-week&callSid=${encodeURIComponent(callSid)}&returning=${isReturningPatient ? '1' : '0'}`));
-            return res.type("text/xml").send(getTwimlXml(vr));
+            return res.type("text/xml").send(vr.toString());
           }
 
           const tzNow = dayjs().tz();
@@ -4985,7 +4820,7 @@ export function registerVoice(app: Express) {
           }
           saySafeSSML(vr, `${EMOTIONS.disappointed("I apologize", "high")}, I'm having trouble accessing the schedule right now. ${EMOTIONS.mediumPause()} Please try calling back in a few minutes and we'll help you book your appointment. ${EMOTIONS.shortPause()} Thank you for calling.`);
           vr.hangup();
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const available = slots.slice(0, 2);
@@ -5016,7 +4851,7 @@ export function registerVoice(app: Express) {
           saySafe(g, `Sorry, there are no times available on ${requestedDay} for that time. Would you like to try a different day?`);
           g.pause({ length: 1 });
           vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=timeout&callSid=${encodeURIComponent(callSid)}`));
-          return res.type("text/xml").send(getTwimlXml(vr));
+          return res.type("text/xml").send(vr.toString());
         }
 
         const s1 = available[0].startISO;
@@ -5051,13 +4886,13 @@ export function registerVoice(app: Express) {
         g.pause({ length: 1 });
         vr.redirect({ method: "POST" }, timeoutUrl);
 
-        return res.type("text/xml").send(getTwimlXml(vr));
+        return res.type("text/xml").send(vr.toString());
       }
 
       // Fallback
       saySafe(vr, "Sorry, I didn't understand that. Let's start again.");
       vr.redirect({ method: "POST" }, abs(`/api/voice/handle?route=start`));
-      return res.type("text/xml").send(getTwimlXml(vr));
+      return res.type("text/xml").send(vr.toString());
     } catch (err: any) {
       console.error("[VOICE][ERROR]", err?.stack || err);
       const fallback = new twilio.twiml.VoiceResponse();
@@ -5422,70 +5257,24 @@ export function registerVoice(app: Express) {
       startRecordingWhenReady();
     }
 
-    // Generate OpenAI greeting - wrap in timeout and try-catch to ensure response is always sent
-    // Twilio webhooks timeout after ~10 seconds, so we need to respond quickly
-    let timeoutId: NodeJS.Timeout | null = null;
-    
-    const greetingPromise = (async () => {
-      try {
-        const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
-        const vr = await handleOpenAIGreeting(
-          callSid,
-          from,
-          tenantCtx?.id,
-          tenantCtx?.clinicName,
-          tenantCtx?.timezone || 'Australia/Brisbane'
-        );
-
-        const twimlXml = getTwimlXml(vr);
-        // Clear timeout if we succeeded
-        if (timeoutId) clearTimeout(timeoutId);
-        return { success: true, twimlXml };
-      } catch (error) {
-        console.error("[VOICE][OPENAI][GREETING ERROR]", error);
-        console.error("[VOICE][OPENAI][GREETING ERROR STACK]", error instanceof Error ? error.stack : 'No stack');
-        // Clear timeout on error too
-        if (timeoutId) clearTimeout(timeoutId);
-        throw error;
-      }
-    })();
-
-    // Timeout after 8 seconds (Twilio times out at ~10 seconds)
-    const timeoutPromise = new Promise<{ success: false; twimlXml: string }>((resolve) => {
-      timeoutId = setTimeout(() => {
-        console.warn("[VOICE][OPENAI][GREETING TIMEOUT] Handler took too long, sending fallback");
-        const timeoutVr = new twilio.twiml.VoiceResponse();
-        saySafe(timeoutVr, "Thanks for calling. Please hold while I connect you.");
-        timeoutVr.pause({ length: 2 });
-        timeoutVr.redirect({ method: "POST" }, abs(`/api/voice/openai-incoming?callSid=${encodeURIComponent(callSid)}`));
-        const timeoutXml = getTwimlXml(timeoutVr);
-        resolve({ success: false, twimlXml: timeoutXml });
-      }, 8000);
-    });
-
+    // Generate OpenAI greeting
     try {
-      const result = await Promise.race([greetingPromise, timeoutPromise]);
-      if (!res.headersSent) {
-        return res.type("text/xml").send(result.twimlXml);
-      }
+      const { handleOpenAIGreeting } = await import("../services/openai-call-handler");
+      const vr = await handleOpenAIGreeting(
+        callSid,
+        from,
+        tenantCtx?.id,
+        tenantCtx?.clinicName,
+        tenantCtx?.timezone || 'Australia/Brisbane'
+      );
+
+      return res.type("text/xml").send(vr.toString());
     } catch (error) {
-      console.error("[VOICE][OPENAI][GREETING CATCH]", error);
-      if (!res.headersSent) {
-        try {
-          const fallbackVr = new twilio.twiml.VoiceResponse();
-          saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
-          fallbackVr.hangup();
-          const fallbackXml = getTwimlXml(fallbackVr);
-          return res.type("text/xml").send(fallbackXml);
-        } catch (fallbackError) {
-          console.error("[VOICE][OPENAI][FALLBACK ERROR]", fallbackError);
-          // Last resort: return minimal valid TwiML
-          const minimalVr = new twilio.twiml.VoiceResponse();
-          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a problem. Please try again later.");
-          minimalVr.hangup();
-          return res.type("text/xml").send(minimalVr.toString());
-        }
-      }
+      console.error("[VOICE][OPENAI][GREETING ERROR]", error);
+      const fallbackVr = new twilio.twiml.VoiceResponse();
+      saySafe(fallbackVr, "Thanks for calling. I'm having some technical difficulties. Please call back in a moment.");
+      fallbackVr.hangup();
+      return res.type("text/xml").send(fallbackVr.toString());
     }
   });
 
@@ -5493,156 +5282,80 @@ export function registerVoice(app: Express) {
    * OpenAI Continue - Process user utterance in ongoing conversation
    */
   app.post("/api/voice/openai-continue", async (req: Request, res: Response) => {
-    // Wrap entire handler in try-catch to ensure we always send a response
+    const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
+    const speechResult = req.body?.SpeechResult || "";
+    const from = req.body?.From || "";
+
+    console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
+    console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
+
+    // If no speech, prompt again with improved settings
+    if (!speechResult || speechResult.trim() === "") {
+      const vr = new twilio.twiml.VoiceResponse();
+      const gather = vr.gather({
+        input: ['speech'],
+        timeout: 8, // Longer timeout for background noise
+        speechTimeout: 'auto',
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+        method: 'POST',
+        enhanced: true,
+        bargeIn: true,
+        profanityFilter: false, // Allow natural speech
+        hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
+      });
+      saySafe(gather, "I didn't catch that. What can I help you with?");
+      // Final fallback after retry
+      saySafe(vr, "Thanks for calling. Have a great day!");
+      vr.hangup();
+      return res.type("text/xml").send(vr.toString());
+    }
+
+    // Get tenant context
+    const call = await storage.getCallByCallSid(callSid);
+    let tenantCtx: {
+      id: number;
+      slug: string;
+      clinicName: string;
+      timezone: string;
+      googleMapsUrl?: string;
+      address?: string;
+    } | null = null;
+    if (call?.tenantId) {
+      const tenant = await storage.getTenantById(call.tenantId);
+      if (tenant) {
+        tenantCtx = {
+          id: tenant.id,
+          slug: tenant.slug,
+          clinicName: tenant.clinicName,
+          timezone: tenant.timezone || 'Australia/Brisbane',
+          googleMapsUrl: (tenant as any).googleMapsUrl,  // May not exist in DB yet
+          address: (tenant as any).address
+        };
+      }
+    }
+
+    // Process conversation with OpenAI
     try {
-      const callSid = (req.body?.CallSid as string) || (req.query?.callSid as string) || "";
-      const speechResult = req.body?.SpeechResult || "";
-      const from = req.body?.From || "";
-      const confidence = req.body?.Confidence ? parseFloat(req.body.Confidence as string) : undefined;
+      const { handleOpenAIConversation } = await import("../services/openai-call-handler");
+      const vr = await handleOpenAIConversation({
+        callSid,
+        callerPhone: from,
+        userUtterance: speechResult,
+        tenantId: tenantCtx?.id,
+        clinicName: tenantCtx?.clinicName,
+        timezone: tenantCtx?.timezone || 'Australia/Brisbane',
+        googleMapsUrl: tenantCtx?.googleMapsUrl,
+        clinicAddress: tenantCtx?.address,
+        practitionerName: env.CLINIKO_PRACTITIONER_NAME || undefined  // Use env for now
+      });
 
-      console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
-      console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
-
-      // If no speech (timeout or empty result), handle with emptyCount tracking
-      if (!speechResult || speechResult.trim() === "") {
-        try {
-          // Load conversation context to track empty count
-          const { getOrCreateContext, saveConversationContext } = await import("../services/openai-call-handler");
-          const call = await storage.getCallByCallSid(callSid);
-          const tenant = call?.tenantId ? await storage.getTenantById(call.tenantId) : null;
-          const clinicName = tenant?.clinicName || "the clinic";
-          
-          // Load context (will create if doesn't exist)
-          const context = await getOrCreateContext(callSid, from || "", call?.tenantId || undefined, clinicName);
-          
-          // Increment empty count
-          const emptyCount = (context.emptyCount || 0) + 1;
-          context.emptyCount = emptyCount;
-          
-          // Save updated context
-          await saveConversationContext(callSid, context);
-          
-          console.log(`[VOICE][OPENAI][EMPTY SPEECH] Empty count: ${emptyCount}`);
-          
-          // After 3 empty results, politely close and hangup (NO Gather)
-          if (emptyCount >= 3) {
-            const vr = new twilio.twiml.VoiceResponse();
-            saySafe(vr, "I'm having trouble hearing you. Please feel free to call back when you're ready. Thanks for calling!");
-            vr.hangup();
-            const twimlXml = getTwimlXml(vr);
-            return res.type("text/xml").send(twimlXml);
-          }
-          
-          // Otherwise, reprompt with Gather (NO Hangup)
-          const vr = new twilio.twiml.VoiceResponse();
-          const gather = vr.gather({
-            input: ['speech'],
-            timeout: 8,
-            speechTimeout: 'auto',
-            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-            method: 'POST',
-            enhanced: true,
-            speechModel: 'phone_call', // Required when enhanced=true to fix warning 13335
-            bargeIn: true,
-            actionOnEmptyResult: true,
-            profanityFilter: false,
-            hints: 'yes, no, appointment, booking, question'
-          });
-          saySafe(gather, "I didn't catch that. What can I help you with?");
-          // CRITICAL: Do NOT add Hangup here - only return Gather
-          const twimlXml = getTwimlXml(vr);
-          return res.type("text/xml").send(twimlXml);
-        } catch (emptySpeechError) {
-          console.error("[VOICE][OPENAI][EMPTY SPEECH ERROR]", emptySpeechError);
-          const minimalVr = new twilio.twiml.VoiceResponse();
-          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "I didn't catch that. Please try calling again.");
-          minimalVr.hangup();
-          return res.type("text/xml").send(minimalVr.toString());
-        }
-      }
-
-      // Get tenant context
-      let tenantCtx: {
-        id: number;
-        slug: string;
-        clinicName: string;
-        timezone: string;
-        googleMapsUrl?: string;
-        address?: string;
-      } | null = null;
-      
-      try {
-        const call = await storage.getCallByCallSid(callSid);
-        if (call?.tenantId) {
-          const tenant = await storage.getTenantById(call.tenantId);
-          if (tenant) {
-            tenantCtx = {
-              id: tenant.id,
-              slug: tenant.slug,
-              clinicName: tenant.clinicName,
-              timezone: tenant.timezone || 'Australia/Brisbane',
-              googleMapsUrl: (tenant as any).googleMapsUrl,  // May not exist in DB yet
-              address: (tenant as any).address
-            };
-          }
-        }
-      } catch (tenantError) {
-        console.error("[VOICE][OPENAI][TENANT LOOKUP ERROR]", tenantError);
-        // Continue with null tenantCtx - handler should work without it
-      }
-
-      // Process conversation with OpenAI
-      try {
-        const { handleOpenAIConversation } = await import("../services/openai-call-handler");
-        const vr = await handleOpenAIConversation({
-          callSid,
-          callerPhone: from,
-          userUtterance: speechResult,
-          confidence: confidence,  // Pass Twilio speech confidence for background noise detection
-          tenantId: tenantCtx?.id,
-          clinicName: tenantCtx?.clinicName,
-          timezone: tenantCtx?.timezone || 'Australia/Brisbane',
-          googleMapsUrl: tenantCtx?.googleMapsUrl,
-          clinicAddress: tenantCtx?.address,
-          practitionerName: env.CLINIKO_PRACTITIONER_NAME || undefined  // Use env for now
-        });
-
-        const twimlXml = getTwimlXml(vr);
-        return res.type("text/xml").send(twimlXml);
-      } catch (error) {
-        console.error("[VOICE][OPENAI][CONTINUE ERROR]", error);
-        try {
-          const fallbackVr = new twilio.twiml.VoiceResponse();
-          saySafe(fallbackVr, "I'm having trouble processing that. Let me transfer you to our reception team.");
-          fallbackVr.hangup();
-          const fallbackXml = getTwimlXml(fallbackVr);
-          return res.type("text/xml").send(fallbackXml);
-        } catch (fallbackError) {
-          console.error("[VOICE][OPENAI][FALLBACK ERROR]", fallbackError);
-          // Last resort: return minimal valid TwiML
-          const minimalVr = new twilio.twiml.VoiceResponse();
-          minimalVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a problem. Please try again later.");
-          minimalVr.hangup();
-          return res.type("text/xml").send(minimalVr.toString());
-        }
-      }
-    } catch (outerError) {
-      // Catch-all for any errors not caught above
-      console.error("[VOICE][OPENAI][CONTINUE OUTER ERROR]", outerError);
-      if (!res.headersSent) {
-        try {
-          const emergencyVr = new twilio.twiml.VoiceResponse();
-          emergencyVr.say({ voice: 'alice', language: 'en-AU' }, "Sorry, there was a technical problem. Please try calling again.");
-          emergencyVr.hangup();
-          return res.type("text/xml").send(emergencyVr.toString());
-        } catch (emergencyError) {
-          console.error("[VOICE][OPENAI][EMERGENCY ERROR]", emergencyError);
-          // Absolute last resort - send raw TwiML
-          if (!res.headersSent) {
-            return res.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-AU">Sorry, there was a problem. Please try calling again.</Say><Hangup/></Response>');
-          }
-        }
-      }
+      return res.type("text/xml").send(vr.toString());
+    } catch (error) {
+      console.error("[VOICE][OPENAI][CONTINUE ERROR]", error);
+      const fallbackVr = new twilio.twiml.VoiceResponse();
+      saySafe(fallbackVr, "I'm having trouble processing that. Let me transfer you to our reception team.");
+      fallbackVr.hangup();
+      return res.type("text/xml").send(fallbackVr.toString());
     }
   });
 }

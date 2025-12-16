@@ -97,60 +97,29 @@ export function pause(node: any, secs = 1) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Post-process TwiML XML to unescape SSML for Polly
- * Call this on the final TwiML string before sending to Twilio
+ * Enhanced say function with conversational improvements
+ * Strips SSML tags and uses natural language instead
+ *
+ * Note: Direct SSML doesn't work well with Twilio's Node SDK as it gets escaped.
+ * Instead, we strip tags and rely on Polly's natural prosody and our word choices.
  */
-export function unescapeSSMLInTwiml(twimlXml: string): string {
-  // Twilio SDK escapes SSML as &lt;speak&gt;, &lt;break&gt;, etc.
-  // Unescape only within <Say> tags for Polly voices
-  
-  // Match Say tags with Polly voices (voice attribute can be in any order)
-  return twimlXml.replace(
-    /<Say([^>]*voice="Polly\.[^"]*"[^>]*|[^>]*voice='Polly\.[^']*'[^>]*)>([\s\S]*?)<\/Say>/g,
-    (fullMatch, sayAttributes, content) => {
-      // Unescape all XML entities in the content (SSML tags)
-      // Order matters: unescape &amp; last to avoid double-unescaping
-      let unescaped = content
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .replace(/&amp;/g, '&'); // Do this last
-      
-      // Reconstruct the Say tag with unescaped SSML content
-      return `<Say${sayAttributes}>${unescaped}</Say>`;
-    }
-  );
-}
+export function saySafeSSML(node: any, text?: string, voice?: any) {
+  if (!text || text.trim().length === 0) {
+    console.warn("[VOICE] Attempted to speak empty text:", text);
+    return;
+  }
 
-/**
- * Sanitize SSML for Twilio - removes all SSML tags and converts to plain text
- * This prevents Twilio error 13520 by ensuring only clean text reaches <Say>
- */
-function sanitizeForTwilio(input: string): string {
-  if (!input) return '';
-  
-  return input
-    // Remove all SSML tags (speak, prosody, break, etc.)
-    .replace(/<\s*speak[^>]*>/gi, '')
-    .replace(/<\/\s*speak\s*>/gi, '')
-    .replace(/<\s*prosody[^>]*>/gi, '')
-    .replace(/<\/\s*prosody\s*>/gi, '')
-    .replace(/<\s*break[^>]*\/?\s*>/gi, ' ')
-    .replace(/<[^>]+>/g, '') // Remove any remaining tags
-    // Clean up whitespace
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+  // Strip all SSML tags and convert to natural speech
+  let cleanedText = text.trim();
 
-/**
- * Say function that properly supports SSML with Amazon Polly
- * CRITICAL FIX: Always convert SSML to Twilio-native format (plain text + Pause verbs)
- * This prevents Twilio error 13520 by never passing SSML tags to <Say>
- */
-export function saySafeSSML(node: any, ssmlText?: string, voice?: any) {
-  if (!ssmlText || ssmlText.trim().length === 0) {
-    console.warn("[VOICE] Attempted to speak empty SSML text:", ssmlText);
+  // Remove all SSML tags but keep the text content
+  cleanedText = cleanedText.replace(/<[^>]*>/g, '');
+
+  // Clean up extra whitespace created by tag removal
+  cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
+
+  if (!cleanedText || cleanedText.length === 0) {
+    console.warn("[VOICE] Text became empty after cleaning:", text);
     return;
   }
 
@@ -158,145 +127,18 @@ export function saySafeSSML(node: any, ssmlText?: string, voice?: any) {
   const isPollyVoice = (voiceName: string) => String(voiceName).toLowerCase().includes('polly');
   const isPrimary = isPollyVoice(v);
 
-  if (!isPrimary) {
-    // For non-Polly voices, strip SSML and use plain text
-    const cleanedText = sanitizeForTwilio(ssmlText);
-    saySafe(node, cleanedText, FALLBACK_VOICE);
-    return;
-  }
-
-  // ALWAYS convert SSML to Twilio-native format to avoid error 13520
-  // Parse SSML and convert breaks to Pause verbs, prosody to natural speech
-  let ssml = ssmlText.trim();
-  
-  // Quick check: if no SSML tags, use plain text directly
-  if (!ssml.includes('<') && !ssml.includes('>')) {
-    const cleaned = ttsClean(ssml);
-    if (cleaned) {
-      node.say({ voice: v }, cleaned);
-    }
-    return;
-  }
-  
-  // Remove <speak> wrapper if present
-  if (ssml.startsWith('<speak>') && ssml.endsWith('</speak>')) {
-    ssml = ssml.slice(7, -8).trim();
-  }
-
-  // Clean SSML: remove control characters
-  ssml = ssml.replace(/[\x00-\x1F\x7F]/g, '');
-
-  console.log(`[VOICE][saySafeSSML] Converting SSML to Twilio format, voice="${v}"`);
+  console.log(`[VOICE][saySafeSSML] voice="${v}" cleaned="${cleanedText.substring(0, 100)}..."`);
 
   try {
-    // Parse SSML and convert to Twilio-native format (text + Pause verbs)
-    const parsed = parseSSMLToTwilioFormat(ssml);
-    
-    // Speak each segment with appropriate pauses
-    for (let i = 0; i < parsed.segments.length; i++) {
-      const segment = parsed.segments[i];
-      
-      // Add pause before segment if specified (convert ms to seconds)
-      // Twilio Pause uses integer seconds (1-10), so convert and round milliseconds
-      if (segment.pauseBefore > 0) {
-        // Convert ms to seconds, round to nearest second
-        // Pauses < 500ms round to 1 second, >= 500ms round normally
-        const pauseSecs = Math.max(1, Math.min(Math.round(segment.pauseBefore / 1000), 10));
-        node.pause({ length: pauseSecs });
-      }
-      
-      // Speak the text (prosody effects handled via natural word choice)
-      if (segment.text.trim()) {
-        // For prosody effects, use natural word choice and punctuation
-        // Enthusiasm through exclamation, warmth through word choice
-        let textToSpeak = segment.text;
-        if (segment.slow) {
-          // Slow rate: add pauses via punctuation
-          textToSpeak = textToSpeak.replace(/\./g, '...').replace(/!/g, '!');
-        }
-        
-        const cleaned = ttsClean(textToSpeak);
-        if (cleaned) {
-          node.say({ voice: v }, cleaned);
-        }
-      }
+    if (isPrimary) {
+      node.say({ voice: v }, cleanedText);
+    } else {
+      node.say({ voice: v, language: "en-AU" }, cleanedText);
     }
-  } catch (parseErr) {
-    console.error("[VOICE] SSML parsing failed, using plain text fallback:", parseErr);
-    // Final fallback: strip all SSML and use plain text
-    const cleanedText = sanitizeForTwilio(ssmlText);
-    if (cleanedText) {
-      saySafe(node, cleanedText, v);
-    }
+  } catch (err) {
+    console.error("[VOICE] Say failed with primary voice:", err);
+    saySafe(node, cleanedText, FALLBACK_VOICE);
   }
-}
-
-/**
- * Parse SSML and convert to Twilio-native format (text + Pause verbs)
- */
-interface SSMLSegment {
-  text: string;
-  pauseBefore: number; // milliseconds
-  slow: boolean; // prosody rate="slow"
-}
-
-function parseSSMLToTwilioFormat(ssml: string): { segments: SSMLSegment[] } {
-  const segments: SSMLSegment[] = [];
-  
-  // Remove speak wrapper
-  ssml = ssml.replace(/<\/?speak>/gi, '').trim();
-  if (!ssml) return { segments: [] };
-  
-  // Extract break tags with their pause times
-  // Replace breaks with a special marker that includes the pause time
-  const breakPattern = /<break\s+time=["'](\d+)(ms|s)["']\s*\/?>/gi;
-  const processedText = ssml.replace(breakPattern, (match, value, unit) => {
-    const pauseMs = unit.toLowerCase() === 's' ? parseInt(value, 10) * 1000 : parseInt(value, 10);
-    return `__BREAK_${pauseMs}__`;
-  });
-  
-  // Split by break markers
-  const parts = processedText.split(/__BREAK_(\d+)__/);
-  
-  let currentPause = 0;
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    
-    // If this is a pause value (numeric), set it for next segment
-    if (/^\d+$/.test(part)) {
-      currentPause = parseInt(part, 10);
-      continue;
-    }
-    
-    if (!part || !part.trim()) continue;
-    
-    // Extract text, removing all SSML tags
-    let text = part
-      .replace(/<prosody[^>]*>/gi, '')
-      .replace(/<\/prosody>/gi, '')
-      .replace(/<break[^>]*\/?>/gi, '')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    if (!text) {
-      currentPause = 0; // Reset if no text
-      continue;
-    }
-    
-    // Check for prosody rate="slow"
-    const slow = part.includes('rate="slow"') || part.includes("rate='slow'");
-    
-    segments.push({
-      text,
-      pauseBefore: currentPause,
-      slow
-    });
-    
-    currentPause = 0; // Reset after using it
-  }
-  
-  return { segments };
 }
 
 /**
@@ -393,103 +235,3 @@ export const EMOTIONS = {
   // Whisper - just return text (can't control without SSML)
   whisper: (text: string) => text,
 };
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Reusable TTS Helpers with SSML
-// Warm, charming, professional voice output using Amazon Polly
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Generate warm, welcoming greeting with natural pauses
- * Tone: Friendly boutique clinic receptionist - warm, charming, human
- * Uses natural language and punctuation for enthusiasm (no SSML prosody)
- */
-export function ttsGreeting(clinicName: string, knownPatientName?: string): string {
-  const clinic = clinicName || 'our clinic';
-  
-  if (knownPatientName) {
-    const greetings = [
-      `Hi there, ${knownPatientName}! <break time="300ms"/> Thanks for calling ${clinic}. <break time="400ms"/> How can I help you today?`,
-      `Hello ${knownPatientName}! <break time="300ms"/> Great to hear from you. <break time="400ms"/> What can I do for you today?`,
-      `Hi ${knownPatientName}! <break time="300ms"/> Thanks for calling ${clinic}. <break time="400ms"/> How are you today?`
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
-  }
-  
-  // Warm, charming greetings with natural rhythm and enthusiasm
-  const greetings = [
-    `Hi there — thanks so much for calling ${clinic}. <break time="400ms"/> This is Sarah. <break time="400ms"/> How can I help you today?`,
-    `Hello! Thanks for calling ${clinic}. <break time="400ms"/> I'm Sarah. <break time="400ms"/> What can I do for you?`,
-    `Hi! Thanks so much for calling ${clinic}. <break time="400ms"/> This is Sarah. <break time="400ms"/> How can I assist you today?`
-  ];
-  return greetings[Math.floor(Math.random() * greetings.length)];
-}
-
-/**
- * Natural thinking/filler phrases during API lookups
- * Prevents dead-air pauses with warm, reassuring phrases
- */
-export function ttsThinking(): string {
-  const phrases = [
-    `<prosody rate="slow">Let me check that for you.</prosody> <break time="400ms"/>`,
-    `<prosody rate="slow">Just a moment.</prosody> <break time="400ms"/> <prosody rate="slow">Let me pull that up.</prosody>`,
-    `<prosody rate="slow">One second.</prosody> <break time="400ms"/> <prosody rate="slow">I'm just checking.</prosody>`,
-    `<prosody rate="slow">Bear with me.</prosody> <break time="400ms"/> <prosody rate="slow">I'll have that for you in just a moment.</prosody>`
-  ];
-  return phrases[Math.floor(Math.random() * phrases.length)];
-}
-
-/**
- * Warm booking confirmation message
- * Rate: normal (confident, not rushed)
- * Multiple short sentences with natural pauses
- */
-export function ttsBookingConfirmed(
-  patientName: string | undefined,
-  appointmentTime: string,
-  practitionerName?: string,
-  phoneLastFour?: string
-): string {
-  const name = patientName || '';
-  const namePrefix = name ? `${name}, ` : '';
-  const practitioner = practitionerName ? ` with ${practitionerName}` : '';
-  const phoneSuffix = phoneLastFour ? ` ending in ${phoneLastFour}` : '';
-  
-  const confirmations = [
-    `Perfect! <break time="300ms"/> ${namePrefix}you're all booked for ${appointmentTime}${practitioner}. <break time="400ms"/> We'll send a confirmation to your mobile${phoneSuffix}.`,
-    `Lovely! <break time="300ms"/> ${namePrefix}your appointment is confirmed for ${appointmentTime}${practitioner}. <break time="400ms"/> You'll receive a text confirmation${phoneSuffix ? ` to your mobile ${phoneSuffix}` : ''} in just a moment.`,
-    `Brilliant! <break time="300ms"/> ${namePrefix}you're all set for ${appointmentTime}${practitioner}. <break time="400ms"/> Keep an eye out for your confirmation message${phoneSuffix ? ` on your mobile ${phoneSuffix}` : ''}.`
-  ];
-  return confirmations[Math.floor(Math.random() * confirmations.length)];
-}
-
-/**
- * Friendly directions/map link message
- * Rate: slow (reassuring, clear)
- */
-export function ttsDirections(clinicName: string): string {
-  const clinic = clinicName || 'us';
-  
-  const messages = [
-    `<prosody rate="slow">Absolutely.</prosody> <break time="300ms"/> <prosody rate="slow">I'll send you directions to ${clinic} right away.</prosody> <break time="400ms"/> <prosody rate="slow">You should receive a text with a map link in just a moment.</prosody>`,
-    `<prosody rate="slow">Of course!</prosody> <break time="300ms"/> <prosody rate="slow">I'm sending you directions now.</prosody> <break time="400ms"/> <prosody rate="slow">Check your phone for the map link.</prosody>`,
-    `<prosody rate="slow">Perfect.</prosody> <break time="300ms"/> <prosody rate="slow">Directions are on their way.</prosody> <break time="400ms"/> <prosody rate="slow">You'll get a text with all the details.</prosody>`
-  ];
-  return messages[Math.floor(Math.random() * messages.length)];
-}
-
-/**
- * Warm, single-sentence goodbye
- * One closing sentence only - no repeated prompts
- * Rate: slow (warm, unhurried)
- */
-export function ttsGoodbye(): string {
-  const goodbyes = [
-    `<prosody rate="slow">Perfect! We're looking forward to seeing you. Have a wonderful day!</prosody>`,
-    `<prosody rate="slow">Lovely! Talk to you soon. Take care!</prosody>`,
-    `<prosody rate="slow">Beautiful! We'll be in touch. Have a great day!</prosody>`,
-    `<prosody rate="slow">Wonderful! Thanks for calling. See you soon!</prosody>`,
-    `<prosody rate="slow">Perfect! If anything changes, just give us a call. Bye for now!</prosody>`
-  ];
-  return goodbyes[Math.floor(Math.random() * goodbyes.length)];
-}
