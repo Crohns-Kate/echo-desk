@@ -86,6 +86,12 @@ export interface CompactCallState {
 
   /** bookingLockUntil = timestamp when booking lock expires (prevents double-booking) */
   bookingLockUntil?: number;
+
+  /** identityMismatchRecovery = true when recovering from identity mismatch (collecting new phone/email) */
+  identityMismatchRecovery?: boolean;
+
+  /** recoveryPhone = phone number collected during identity mismatch recovery */
+  recoveryPhone?: string;
 }
 
 /**

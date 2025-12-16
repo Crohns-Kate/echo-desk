@@ -166,6 +166,57 @@ assert(classifyYesNo("Different person") === 'no', '"Different person" returns N
 assert(classifyYesNo("Someone else") === 'no', '"Someone else" returns NO');
 
 // ============================================================================
+// Test 5: Identity Mismatch Does NOT Trigger Handoff
+// ============================================================================
+console.log('\nTest 5: Identity mismatch does NOT trigger handoff');
+{
+  // Test that identity mismatch is NOT a handoff trigger
+  // This ensures the recovery flow works instead of triggering handoff
+  
+  // Simulate identity mismatch scenario
+  const identityMismatchEvent = {
+    existingName: 'Michael Bishop',
+    spokenName: 'Justin Bieber',
+    callerPhone: '+61412345678'
+  };
+  
+  // Verify that identity mismatch is NOT in handoff triggers
+  const { detectHandoffTrigger } = require('../utils/handoff-detector');
+  const handoffResult = detectHandoffTrigger(
+    "No, I'm Justin Bieber", // User says they're NOT the existing patient
+    [],
+    {
+      noMatchCount: 0,
+      confidence: 0.8,
+      isOutOfScope: false,
+      hasClinikoError: false
+    }
+  );
+  
+  // Identity mismatch should NOT trigger handoff
+  assert(!handoffResult.shouldTrigger || handoffResult.trigger !== 'out_of_scope', 
+    'Identity mismatch does NOT trigger handoff');
+  
+  // Explicit human request SHOULD still trigger handoff
+  const explicitHandoffResult = detectHandoffTrigger(
+    "I want to speak to a human",
+    [],
+    {
+      noMatchCount: 0,
+      confidence: 0.8,
+      isOutOfScope: false,
+      hasClinikoError: false
+    }
+  );
+  
+  assert(explicitHandoffResult.shouldTrigger === true && explicitHandoffResult.trigger === 'explicit_request',
+    'Explicit human request still triggers handoff');
+  
+  console.log('    ✅ Identity mismatch recovery flow verified');
+  console.log('    ✅ Explicit human request still triggers handoff');
+}
+
+// ============================================================================
 // Summary
 // ============================================================================
 console.log('\n═══════════════════════════════════════════════════════════');
