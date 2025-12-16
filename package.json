@@ -14,7 +14,8 @@
     "test:appointment": "node --import tsx server/tests/appointment-search.test.ts",
     "test:booking": "node --import tsx server/tests/booking-flow.test.ts",
     "test:multi-patient": "node --import tsx server/tests/multi-patient.test.ts",
-    "test:quality": "tsx test-quality-check.ts"
+    "test:quality": "tsx test-quality-check.ts",
+    "test:stability": "PUBLIC_BASE_URL=http://localhost TWILIO_ACCOUNT_SID=test TWILIO_AUTH_TOKEN=test TWILIO_PHONE_NUMBER=test DATABASE_URL=test CLINIKO_API_KEY=test CLINIKO_BUSINESS_ID=test CLINIKO_PRACTITIONER_ID=test CLINIKO_APPT_TYPE_ID=test node --import tsx server/tests/call-flow-stability.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -115,7 +116,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/ws": "^8.5.13",
     "drizzle-kit": "^0.31.7",
-    "tsx": "^4.20.6",
+    "tsx": "^4.21.0",
     "typescript": "5.6.3"
   },
   "optionalDependencies": {
