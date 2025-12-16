@@ -830,11 +830,25 @@ export interface ConversationContext {
     timezone: string;
   };
 
-  /** Known patient info (from caller ID lookup) */
+  /** Known patient info (from caller ID lookup) - DEPRECATED: Use possiblePatientId instead */
   knownPatient?: {
     firstName: string;
     fullName: string;
     id: string;
+  };
+
+  /** Possible patient ID (from phone lookup) - NOT confirmed until user verifies identity */
+  possiblePatientId?: string;
+  possiblePatientName?: string;  // Full name for display
+
+  /** Confirmed patient ID - only set after user confirms identity or name matches */
+  confirmedPatientId?: string;
+
+  /** Shared phone disambiguation state */
+  sharedPhoneDisambiguation?: {
+    asked: boolean;  // Whether we've asked "booking for yourself or someone else?"
+    answer?: 'myself' | 'someone_else';  // User's answer
+    candidateName?: string;  // Name provided when "myself" is selected
   };
 
   /** Available appointment slots (injected by backend) - enriched with practitioner info */
@@ -1046,17 +1060,25 @@ export function initializeConversation(
   callSid: string,
   callerPhone: string,
   clinicName?: string,
-  knownPatient?: { firstName: string; fullName: string; id: string }
+  knownPatient?: { firstName: string; fullName: string; id: string }  // DEPRECATED: kept for backward compatibility
 ): ConversationContext {
-  return {
+  const context: ConversationContext = {
     callSid,
     callerPhone,
     history: [],
     currentState: {},
     clinicName,
-    knownPatient,
     firstTurn: true  // Mark as first turn for greeting
   };
+  
+  // Backward compatibility: migrate knownPatient to possiblePatientId
+  if (knownPatient) {
+    context.possiblePatientId = knownPatient.id;
+    context.possiblePatientName = knownPatient.fullName;
+    context.knownPatient = knownPatient;  // Keep for backward compatibility
+  }
+  
+  return context;
 }
 
 /**
