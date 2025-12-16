@@ -780,6 +780,22 @@ export async function handleOpenAIConversation(
           }
         };
       }
+    } else if (context.sharedPhoneDisambiguation?.answer === 'someone_else' && response.state.nm) {
+      // User selected "someone else" and provided the patient's name - clear disambiguation
+      // This allows handoff detection to work again for the rest of the call
+      console.log('[OpenAICallHandler] ✅ Name collected for "someone else" booking - clearing disambiguation');
+      context.sharedPhoneDisambiguation = undefined;
+      await saveConversationContext(callSid, context);
+      
+      // Continue with booking as new patient (name already in response.state.nm)
+      finalResponse = {
+        ...response,
+        state: {
+          ...response.state,
+          np: true, // New patient (someone else)
+          bc: response.state.bc // Preserve booking state
+        }
+      };
     }
 
     // 3a. Handle name disambiguation response if pending
@@ -1440,11 +1456,13 @@ export async function handleOpenAIConversation(
               console.log('[OpenAICallHandler] 🔄 Using recovery phone for patient creation:', phoneToUse);
             }
             
-            // CRITICAL: If we have a confirmedPatientId from shared phone disambiguation, 
-            // getOrCreatePatient will find it by phone and use it (preventing duplicate creation)
-            // The confirmedPatientId ensures we're using the right patient record
+            // CRITICAL: If we have a confirmedPatientId from shared phone disambiguation,
+            // pass it directly to createAppointmentForPatient to ensure we use the exact patient
+            // the user confirmed, not just any patient with that phone number.
+            // This is essential when multiple patients share the same phone number.
             if (context.confirmedPatientId) {
               console.log('[OpenAICallHandler] ✅ Using confirmed patient ID for appointment:', context.confirmedPatientId);
+              console.log('[OpenAICallHandler]   - This ensures the correct patient record is used (shared phone disambiguation)');
             }
             
             const appointment = await createAppointmentForPatient(phoneToUse, {
@@ -1453,6 +1471,7 @@ export async function handleOpenAIConversation(
               startsAt: selectedSlot.startISO,
               fullName: nameToUse, // Use existing name if disambiguation confirmed
               notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
+              patientId: context.confirmedPatientId, // Pass confirmed patient ID if available
               tenantCtx
             });
 
@@ -1611,27 +1630,38 @@ export async function handleOpenAIConversation(
 
     // 6b. Check if caller wants to end the call (goodbye detection)
     const userUtteranceLower = (userUtterance || '').toLowerCase().trim();
-    const goodbyePhrases = [
-      'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+    
+    // Check if AI is expecting a reply (asking a question)
+    const aiExpectsReply = finalResponse.expect_user_reply !== false;
+    
+    // Goodbye phrases that always indicate hangup (regardless of context)
+    const alwaysGoodbyePhrases = [
+      "that's it", "that's all", "that is all", "that is it",
       'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
       'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
       'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
       'no thank you', 'no more', 'nothing more'
     ];
     
-    // Match phrases with word boundaries for short words to avoid false positives
-    // e.g., "no" should match "no" but not "haven't" or "know"
-    const matchedPhrase = goodbyePhrases.find(phrase => {
-      // For single short words, use word boundary matching to avoid substring matches
-      // This prevents "no" from matching "haven't", "know", "not", etc.
-      if (phrase.length <= 3 && /^\w+$/.test(phrase)) {
-        // Use word boundary regex: \b matches word boundaries
-        const wordBoundaryRegex = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        return wordBoundaryRegex.test(userUtteranceLower);
-      }
-      // For longer phrases, use includes() as before
+    // Short negative words that only indicate hangup when NOT answering a question
+    // When AI is asking a question, "no" is likely an answer, not a goodbye
+    const conditionalGoodbyePhrases = ['no', 'nope', 'nah'];
+    
+    // First check always-goodbye phrases
+    let matchedPhrase = alwaysGoodbyePhrases.find(phrase => {
       return userUtteranceLower.includes(phrase);
     });
+    
+    // Only check conditional phrases (no/nope/nah) if AI is NOT expecting a reply
+    // This prevents "No, first time" from being treated as hangup when answering a question
+    if (!matchedPhrase && !aiExpectsReply) {
+      matchedPhrase = conditionalGoodbyePhrases.find(phrase => {
+        // Use word boundary regex to avoid substring matches
+        const wordBoundaryRegex = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return wordBoundaryRegex.test(userUtteranceLower);
+      });
+    }
+    
     const wantsToEndCall = !!matchedPhrase;
 
     // 7. Build TwiML response based on expect_user_reply flag
