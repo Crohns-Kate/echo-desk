@@ -918,6 +918,12 @@ export interface ConversationContext {
     speakable: string;  // e.g., "Thursday at 2:30 PM"
   };
 
+  /** Flag to prevent re-lookup of appointment for reschedule/cancel */
+  appointmentLookupDone?: boolean;
+
+  /** Flag indicating no appointment was found (for clean exit) */
+  noAppointmentFound?: boolean;
+
   /** Practitioner name for "who will I see" question (injected by backend) */
   practitionerName?: string;
 
@@ -1013,6 +1019,11 @@ export async function callReceptionistBrain(
   // Add booked slot time for reference after booking
   if (context.bookedSlotTime) {
     contextInfo += `booked_time: ${context.bookedSlotTime}\n`;
+  }
+
+  // IMPORTANT: If identity is resolved, tell AI to stop using the patient's name
+  if (context.identityResolved) {
+    contextInfo += `\n⚠️ IDENTITY CONFIRMED - Do NOT repeat the patient's name. They have already confirmed who they are.\n`;
   }
 
   // Combine system prompt with context into ONE system message
