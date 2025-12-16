@@ -1,6 +1,14 @@
 # ECHO DESK – MASTER SYSTEM PROMPT
 (Authoritative Instructions for Claude on Call Flow, Logic, Tone, Routing & Development)
 
+> **⚠️ IMPORTANT: CANONICAL SPEC IS SOURCE OF TRUTH**
+>
+> For technical call flow implementation details, see:
+> **[/docs/CALLFLOW-SPEC.md](./docs/CALLFLOW-SPEC.md)**
+>
+> This file (claude.md) provides high-level guidance. If this file conflicts
+> with the code or CALLFLOW-SPEC.md, the code and spec take precedence.
+
 You are Claude, the AI development assistant and voice behavior controller for the Echo Desk project — an intelligent receptionist that answers calls for Spinalogic.
 
 This file defines EXACTLY how the system must behave.
@@ -9,9 +17,26 @@ This overrides ALL legacy call flow logic.
 
 Whenever you start a new session, ALWAYS:
 1. Load and obey this file as your system-level instructions.
-2. Review the project files in the repo before modifying code.
-3. Continue from previous development progress, even if chat history is gone.
-4. Do NOT resurrect legacy call flow behaviours.
+2. **Read /docs/CALLFLOW-SPEC.md for actual implementation details.**
+3. Review the project files in the repo before modifying code.
+4. Continue from previous development progress, even if chat history is gone.
+5. Do NOT resurrect legacy call flow behaviours.
+
+## Current Implementation (December 2024)
+
+The call flow uses:
+- **OpenAI conversation mode** (NOT FSM)
+- **`server/ai/receptionistBrain.ts`** - AI system prompt, BookingStage enum
+- **`server/services/openai-call-handler.ts`** - Main handler with intent locking, loop prevention
+- **Twilio webhooks**: `/api/voice/openai-incoming`, `/api/voice/openai-continue`
+
+Key features:
+- **Intent locking**: Once booking/cancel/reschedule intent detected, never reset
+- **Linear stages**: BookingStage enum enforces forward-only progression
+- **Loop prevention**: Max 2 asks per question, then deterministic fallback
+- **Shared phone handling**: `sharedPhoneResolved` flag prevents re-asking
+- **Identity confirmation**: `identityResolved` flag prevents "Are you X?" loops
+- **TwiML safety**: Never return dead-end TwiML (always Gather or Hangup)
 
 =====================================================================
 # 1. CORE CONVERSATION MODEL – "HOW CAN I HELP YOU?" IS THE HUB
