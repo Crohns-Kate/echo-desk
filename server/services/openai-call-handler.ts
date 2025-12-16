@@ -538,6 +538,16 @@ export async function handleOpenAIConversation(
       console.log(`[OpenAICallHandler] ✅ Whitelisted response detected: "${utteranceLower}"`);
     }
 
+    // GUARDRAIL: Suppress noise detection after OFFER_SLOTS stage or after booking confirmed
+    // At this point, we're in critical confirmation flow - never say "background noise"
+    const isInConfirmationFlow = isPastStage(context, BookingStage.COLLECT_TIME) ||
+                                  context.currentState.bc === true ||
+                                  context.currentState.appointmentCreated === true;
+
+    if (isInConfirmationFlow && isLowConfidence) {
+      console.log(`[OpenAICallHandler] 🛡️ GUARDRAIL: Suppressing noise detection (stage=${context.bookingStage}, bc=${context.currentState.bc})`);
+    }
+
     // If we get a valid whitelisted response, reset noise count (conversation is flowing)
     if (isWhitelistedResponse && hasValidSpeech) {
       if (context.noiseCount > 0) {
@@ -546,7 +556,8 @@ export async function handleOpenAIConversation(
       }
     }
 
-    if (isLowConfidence && hasValidSpeech && !isWhitelistedResponse) {
+    // Only trigger noise handling if NOT in confirmation flow
+    if (isLowConfidence && hasValidSpeech && !isWhitelistedResponse && !isInConfirmationFlow) {
       // Low confidence but got some speech that's NOT a known short response - likely background noise
       context.noiseCount = (context.noiseCount || 0) + 1;
       console.log('[OpenAICallHandler] ⚠️ Low confidence detected (background noise?), noiseCount:', context.noiseCount);
@@ -718,9 +729,11 @@ export async function handleOpenAIConversation(
     }
 
     // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is change or cancel
+    // CRITICAL: Only look up ONCE per intent, cache result
     const isRescheduleOrCancel = context.currentState.im === 'change' || context.currentState.im === 'cancel';
-    if (isRescheduleOrCancel && !context.upcomingAppointment) {
-      console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
+    if (isRescheduleOrCancel && !context.upcomingAppointment && !context.appointmentLookupDone) {
+      console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel (ONCE)...');
+      context.appointmentLookupDone = true; // Mark as done to prevent re-lookup
       try {
         // First find the patient
         const patient = await findPatientByPhoneRobust(callerPhone);
@@ -737,13 +750,33 @@ export async function handleOpenAIConversation(
             };
             console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
           } else {
-            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
+            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found - will offer clean exit');
+            context.noAppointmentFound = true;
           }
         } else {
-          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko - will offer clean exit');
+          context.noAppointmentFound = true;
         }
       } catch (error) {
         console.error('[OpenAICallHandler] Error looking up appointment:', error);
+        context.noAppointmentFound = true;
+      }
+      await saveConversationContext(callSid, context);
+
+      // CLEAN EXIT: If no appointment found, tell caller and exit gracefully
+      if (context.noAppointmentFound) {
+        saySafe(vr, "I don't see any upcoming appointments under this phone number. Would you like to book a new appointment instead?");
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          hints: 'yes, no, book, appointment'
+        });
+        return vr;
       }
     }
 
@@ -761,12 +794,20 @@ export async function handleOpenAIConversation(
       }
     );
     
+    // TERMINAL STATE: After booking confirmed, only allow price/directions/website questions
+    // Never trigger handoff, callback, or SMS fallback after confirmation
+    const isTerminalState = context.currentState.appointmentCreated === true;
+
     // If explicit request or profanity detected, trigger handoff immediately
-    if (handoffDetection.shouldTrigger && 
-        (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity')) {
+    // BUT NOT if we're in terminal state (booking already confirmed)
+    if (handoffDetection.shouldTrigger &&
+        (handoffDetection.trigger === 'explicit_request' || handoffDetection.trigger === 'profanity') &&
+        !isTerminalState) {
       console.log('[OpenAICallHandler] 🚨 Handoff trigger detected:', handoffDetection.trigger, handoffDetection.reason);
       await processHandoff(vr, callSid, callerPhone, tenant, handoffDetection.trigger || 'unknown', handoffDetection.reason || '');
       return vr;
+    } else if (handoffDetection.shouldTrigger && isTerminalState) {
+      console.log('[OpenAICallHandler] 🛡️ TERMINAL STATE: Blocking handoff after booking confirmed');
     }
 
     // 3. Call OpenAI receptionist brain
@@ -1464,9 +1505,11 @@ export async function handleOpenAIConversation(
     // 4b. HANDOFF DETECTION: Check for handoff triggers after AI response
     //     This catches frustration loops, low confidence, out-of-scope, etc.
     //     CRITICAL: NEVER trigger handoff during shared phone disambiguation
+    //     CRITICAL: NEVER trigger handoff after booking is confirmed (terminal state)
     const isSharedPhoneDisambiguation = context.sharedPhoneDisambiguation && !context.confirmedPatientId;
-    
-    if (!isSharedPhoneDisambiguation) {
+    const isInTerminalState = context.currentState.appointmentCreated === true;
+
+    if (!isSharedPhoneDisambiguation && !isInTerminalState) {
       const postAIHandoffDetection = detectHandoffTrigger(
         userUtterance,
         context.history || [],
@@ -1477,17 +1520,19 @@ export async function handleOpenAIConversation(
           hasClinikoError: false // Will be checked after Cliniko calls
         }
       );
-      
+
       // If handoff detected (and not already handled), trigger it
-      if (postAIHandoffDetection.shouldTrigger && 
-          postAIHandoffDetection.trigger !== 'explicit_request' && 
+      if (postAIHandoffDetection.shouldTrigger &&
+          postAIHandoffDetection.trigger !== 'explicit_request' &&
           postAIHandoffDetection.trigger !== 'profanity') {
         console.log('[OpenAICallHandler] 🚨 Post-AI handoff trigger detected:', postAIHandoffDetection.trigger, postAIHandoffDetection.reason);
         await processHandoff(vr, callSid, callerPhone, tenant, postAIHandoffDetection.trigger || 'unknown', postAIHandoffDetection.reason || '');
         return vr;
       }
-    } else {
+    } else if (isSharedPhoneDisambiguation) {
       console.log('[OpenAICallHandler] ⏸️  Skipping handoff detection during shared phone disambiguation');
+    } else if (isInTerminalState) {
+      console.log('[OpenAICallHandler] 🛡️ TERMINAL STATE: Skipping handoff detection after booking confirmed');
     }
 
     // 4c. Detect repeated confusion or handoff requests
