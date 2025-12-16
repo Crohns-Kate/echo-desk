@@ -494,9 +494,35 @@ export async function handleOpenAIConversation(
     
     const isLowConfidence = confidence !== undefined && confidence < 0.55;
     const hasValidSpeech = userUtterance && userUtterance.trim();
-    
-    if (isLowConfidence && hasValidSpeech) {
-      // Low confidence but got some speech - likely background noise
+
+    // CRITICAL: Whitelist common short responses that often get low confidence from Twilio
+    // These are valid responses that should NOT be treated as background noise
+    const whitelistedShortResponses = [
+      'yes', 'yep', 'yup', 'yeah', 'ya', 'uh huh', 'uh-huh', 'mm hmm', 'mmhmm', 'mhm',
+      'no', 'nope', 'nah', 'na',
+      'ok', 'okay', 'right', 'correct', 'sure', 'alright', 'fine',
+      'thanks', 'thank you', 'bye', 'goodbye', 'cheers',
+      'one', 'two', 'three', 'first', 'second', 'third',
+      'same number', 'same', 'this number', 'that one', 'this one',
+      'myself', 'for me', 'for myself', 'someone else', 'my child', 'my son', 'my daughter',
+      'today', 'tomorrow', 'morning', 'afternoon', 'evening',
+      'that works', 'sounds good', 'perfect', 'great'
+    ];
+    const utteranceLower = (userUtterance || '').toLowerCase().trim();
+    const isWhitelistedResponse = whitelistedShortResponses.some(phrase =>
+      utteranceLower === phrase || utteranceLower.startsWith(phrase + ' ') || utteranceLower.endsWith(' ' + phrase)
+    );
+
+    // If we get a valid whitelisted response, reset noise count (conversation is flowing)
+    if (isWhitelistedResponse && hasValidSpeech) {
+      if (context.noiseCount > 0) {
+        console.log(`[OpenAICallHandler] ✅ Whitelisted response "${utteranceLower}" - resetting noiseCount from ${context.noiseCount} to 0`);
+        context.noiseCount = 0;
+      }
+    }
+
+    if (isLowConfidence && hasValidSpeech && !isWhitelistedResponse) {
+      // Low confidence but got some speech that's NOT a known short response - likely background noise
       context.noiseCount = (context.noiseCount || 0) + 1;
       console.log('[OpenAICallHandler] ⚠️ Low confidence detected (background noise?), noiseCount:', context.noiseCount);
       
