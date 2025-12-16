@@ -678,38 +678,43 @@ export async function handleOpenAIConversation(
         };
         console.log('[OpenAICallHandler] 📋 Restored booking state:', { bc: preservedBc, si: preservedSi });
       } else if (yesNoResult === 'no') {
-        // Different person - BLOCK booking and trigger handoff
+        // Different person - continue booking as new patient with recovery flow
         // Store disambiguation info BEFORE clearing it
         const existingName = context.nameDisambiguation.existingName;
         const spokenName = context.nameDisambiguation.spokenName;
         
-        console.log('[OpenAICallHandler] ❌ Different person detected - BLOCKING booking and triggering handoff');
+        console.log('[OpenAICallHandler] ❌ Different person detected - continuing booking as new patient');
         console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
         console.log('[OpenAICallHandler]   - Existing name on file:', existingName);
         console.log('[OpenAICallHandler]   - Spoken name:', spokenName);
+        console.log('[OpenAICallHandler]   → Entering identity mismatch recovery flow');
         
-        // Clear disambiguation context
+        // Clear disambiguation context and set identity mismatch recovery flag
         context.nameDisambiguation = undefined;
+        // Mark as identity mismatch recovery - this will trigger phone/email collection
+        context.currentState.identityMismatchRecovery = true;
         await saveConversationContext(callSid, context);
         
-        // Set handoff_needed and prevent booking
+        // Continue booking as new patient - ask for phone and email
         finalResponse = {
-          reply: "Thanks — because this number is already on file under a different name, I'll have reception help finish this booking so we don't mix records. They'll call you back shortly.",
-          expect_user_reply: false,
-          handoff_needed: true,
-          alert_category: 'TRICKY',
+          reply: "No worries — this number was previously used by someone else. I can still book you in. What's the best mobile number for you? You can say 'same number' if it's yours. And what email should I use for your confirmation?",
+          expect_user_reply: true,
           state: {
             ...response.state,
-            bc: false, // CRITICAL: Block booking
-            si: null // Clear slot selection
+            np: true, // Mark as new patient
+            bc: false, // Don't book yet - need phone/email
+            si: null // Clear slot selection for now
           }
         };
         
-        // Process handoff immediately
-        await processHandoff(vr, callSid, callerPhone, tenant, 'name_mismatch', `Phone number matches existing patient ${existingName} but caller identified as different person (${spokenName})`);
+        // Log identity mismatch event (but don't trigger handoff)
+        console.log('[OpenAICallHandler] 📝 Identity mismatch event logged (no handoff):', {
+          existingName,
+          spokenName,
+          callerPhone
+        });
         
-        // Return early - don't proceed with booking
-        return vr;
+        // Continue with booking flow - don't return early
       } else {
         // Unclear response - ask again
         console.log('[OpenAICallHandler] ⚠️  Unclear disambiguation response - asking again');
@@ -723,6 +728,98 @@ export async function handleOpenAIConversation(
           }
         };
         // Don't proceed with booking yet
+      }
+    }
+
+    // 3a-2. Handle identity mismatch recovery (collecting phone/email after "no" to disambiguation)
+    if (context.currentState.identityMismatchRecovery && !context.nameDisambiguation) {
+      console.log('[OpenAICallHandler] 🔄 Identity mismatch recovery - extracting phone and email');
+      
+      // Extract phone and email from user utterance
+      const utteranceLower = userUtterance.toLowerCase();
+      
+      // Check for "same number" or phone number patterns
+      let phoneProvided = false;
+      let newPhone: string | undefined = undefined;
+      
+      if (utteranceLower.includes('same number') || utteranceLower.includes('same') || utteranceLower.includes('this number')) {
+        phoneProvided = true;
+        newPhone = callerPhone; // Use current caller phone
+        console.log('[OpenAICallHandler]   - User said "same number" - using caller phone:', callerPhone);
+      } else {
+        // Try to extract phone number from utterance (basic pattern matching)
+        const phonePattern = /(\+?\d{1,3}[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/;
+        const phoneMatch = userUtterance.match(phonePattern);
+        if (phoneMatch) {
+          phoneProvided = true;
+          newPhone = phoneMatch[0].replace(/[\s\-\(\)]/g, '');
+          console.log('[OpenAICallHandler]   - Extracted phone from utterance:', newPhone);
+        }
+      }
+      
+      // Extract email from utterance
+      const emailPattern = /[\w\.-]+@[\w\.-]+\.\w+/i;
+      const emailMatch = userUtterance.match(emailPattern);
+      const emailProvided = !!emailMatch;
+      const extractedEmail = emailMatch ? emailMatch[0] : undefined;
+      
+      console.log('[OpenAICallHandler]   - Phone provided:', phoneProvided, newPhone);
+      console.log('[OpenAICallHandler]   - Email provided:', emailProvided, extractedEmail);
+      
+      // If we have both phone and email, clear recovery flag and continue booking
+      if (phoneProvided && emailProvided && newPhone && extractedEmail) {
+        console.log('[OpenAICallHandler] ✅ Phone and email collected - clearing recovery flag');
+        context.currentState.identityMismatchRecovery = false;
+        context.currentState.pc = true; // Phone confirmed
+        context.currentState.em = extractedEmail;
+        // Update caller phone if different
+        if (newPhone !== callerPhone) {
+          console.log('[OpenAICallHandler]   - New phone number provided:', newPhone);
+          // Note: We can't change callerPhone in context, but we'll use newPhone when creating patient
+          (context.currentState as any).recoveryPhone = newPhone;
+        }
+        await saveConversationContext(callSid, context);
+        
+        // Continue with booking - AI should proceed normally now
+        finalResponse = {
+          ...response,
+          state: {
+            ...response.state,
+            np: true, // Ensure marked as new patient
+            pc: true,
+            em: extractedEmail,
+            identityMismatchRecovery: false
+          }
+        };
+      } else if (phoneProvided && newPhone) {
+        // Have phone but need email
+        console.log('[OpenAICallHandler]   - Phone collected, still need email');
+        finalResponse = {
+          reply: "Great, I've got your number. What email should I use for your confirmation?",
+          expect_user_reply: true,
+          state: {
+            ...response.state,
+            np: true,
+            pc: true,
+            identityMismatchRecovery: true // Keep flag until email collected
+          }
+        };
+        if (newPhone !== callerPhone) {
+          (context.currentState as any).recoveryPhone = newPhone;
+        }
+        await saveConversationContext(callSid, context);
+      } else {
+        // Still need phone (and possibly email)
+        console.log('[OpenAICallHandler]   - Still need phone and email');
+        finalResponse = {
+          reply: "I didn't catch your phone number. What's the best mobile number for you? You can say 'same number' if it's yours. And what email should I use?",
+          expect_user_reply: true,
+          state: {
+            ...response.state,
+            np: true,
+            identityMismatchRecovery: true
+          }
+        };
       }
     }
 
@@ -1139,7 +1236,13 @@ export async function handleOpenAIConversation(
             // Note: nameDisambiguation is cleared after confirmation, so we use the nm field which was updated above
             const nameToUse = finalResponse.state.nm || undefined;
             
-            const appointment = await createAppointmentForPatient(callerPhone, {
+            // Use recovery phone if available (from identity mismatch recovery), otherwise use caller phone
+            const phoneToUse = (context.currentState as any).recoveryPhone || callerPhone;
+            if ((context.currentState as any).recoveryPhone) {
+              console.log('[OpenAICallHandler] 🔄 Using recovery phone for patient creation:', phoneToUse);
+            }
+            
+            const appointment = await createAppointmentForPatient(phoneToUse, {
               practitionerId,
               appointmentTypeId,
               startsAt: selectedSlot.startISO,
