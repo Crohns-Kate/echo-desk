@@ -485,7 +485,16 @@ export async function handleOpenAIConversation(
   try {
     // 1. Load or create conversation context
     let context = await getOrCreateContext(callSid, callerPhone, tenantId, clinicName);
-    
+
+    // COMPREHENSIVE DEBUG: Log current state for troubleshooting
+    console.log(`[OpenAICallHandler] ═══════════════════════════════════════════`);
+    console.log(`[OpenAICallHandler] 📞 TURN START - callSid: ${callSid}`);
+    console.log(`[OpenAICallHandler] 📊 State: intent=${context.currentState?.im || 'none'}, stage=${context.bookingStage || 'none'}`);
+    console.log(`[OpenAICallHandler] 🔒 Locks: intentLocked=${context.intentLocked}, sharedPhoneResolved=${context.sharedPhoneResolved}, identityResolved=${context.identityResolved}`);
+    console.log(`[OpenAICallHandler] 📝 Patient: possible=${context.possiblePatientName || 'none'}, confirmed=${context.confirmedPatientId || 'none'}`);
+    console.log(`[OpenAICallHandler] 📋 Counters: noiseCount=${context.noiseCount || 0}, emptyCount=${context.emptyCount || 0}`);
+    console.log(`[OpenAICallHandler] ═══════════════════════════════════════════`);
+
     // 1a. Handle low confidence (background noise)
     // Track noiseCount separately from emptyCount
     if (!context.noiseCount) {
@@ -494,6 +503,9 @@ export async function handleOpenAIConversation(
     
     const isLowConfidence = confidence !== undefined && confidence < 0.55;
     const hasValidSpeech = userUtterance && userUtterance.trim();
+
+    // DEBUG: Log speech confidence for troubleshooting
+    console.log(`[OpenAICallHandler] 📊 Speech: "${userUtterance}", confidence: ${confidence}, isLowConfidence: ${isLowConfidence}`);
 
     // CRITICAL: Whitelist common short responses that often get low confidence from Twilio
     // These are valid responses that should NOT be treated as background noise
@@ -506,12 +518,25 @@ export async function handleOpenAIConversation(
       'same number', 'same', 'this number', 'that one', 'this one',
       'myself', 'for me', 'for myself', 'someone else', 'my child', 'my son', 'my daughter',
       'today', 'tomorrow', 'morning', 'afternoon', 'evening',
-      'that works', 'sounds good', 'perfect', 'great'
+      'that works', 'sounds good', 'perfect', 'great',
+      // Additional common responses that might get low confidence
+      "that's right", "thats right", "that's correct", "thats correct",
+      "that's me", "thats me", "it is", "i am", "speaking",
+      "been before", "first time", "new patient", "existing",
+      "book", "appointment", "cancel", "reschedule"
     ];
-    const utteranceLower = (userUtterance || '').toLowerCase().trim();
+    // Strip punctuation for matching (handles "Yes." vs "yes")
+    const utteranceLower = (userUtterance || '').toLowerCase().trim().replace(/[.,!?;:'"]/g, '');
     const isWhitelistedResponse = whitelistedShortResponses.some(phrase =>
-      utteranceLower === phrase || utteranceLower.startsWith(phrase + ' ') || utteranceLower.endsWith(' ' + phrase)
+      utteranceLower === phrase ||
+      utteranceLower.startsWith(phrase + ' ') ||
+      utteranceLower.endsWith(' ' + phrase) ||
+      utteranceLower.includes(phrase)  // Also check if phrase is contained anywhere
     );
+
+    if (isWhitelistedResponse) {
+      console.log(`[OpenAICallHandler] ✅ Whitelisted response detected: "${utteranceLower}"`);
+    }
 
     // If we get a valid whitelisted response, reset noise count (conversation is flowing)
     if (isWhitelistedResponse && hasValidSpeech) {
@@ -1909,19 +1934,20 @@ export async function handleOpenAIConversation(
       // Return TwiML with just the gather - no goodbye/hangup after it
       return vr;
     } else {
-      // Informational/confirmation only - Say without Gather
-      saySafeSSML(vr, finalResponse.reply);
-      
+      // AI said expect_user_reply=false - but we still need to handle continuation!
+      // CRITICAL FIX: Never return without Gather/Redirect unless explicit hangup
+
       // If handoff is needed, process handoff instead of just hanging up
       if (finalResponse.handoff_needed === true) {
         console.log('[OpenAICallHandler] 🔄 Handoff needed - processing handoff');
-        const handoffReason = finalResponse.alert_category 
-          ? `AI detected ${finalResponse.alert_category.toLowerCase()}` 
+        saySafeSSML(vr, finalResponse.reply);
+        const handoffReason = finalResponse.alert_category
+          ? `AI detected ${finalResponse.alert_category.toLowerCase()}`
           : 'AI requested handoff';
         await processHandoff(vr, callSid, callerPhone, tenant, 'out_of_scope', handoffReason);
         return vr;
       }
-      
+
       // If AI explicitly set expect_user_reply=false and caller said "no" after booking, close politely
       if (finalResponse.expect_user_reply === false && context.currentState.appointmentCreated) {
         const noPhrases = ['no', 'nope', 'nah', "that's it", "that's all", 'nothing else', 'no thanks'];
@@ -1932,14 +1958,50 @@ export async function handleOpenAIConversation(
           }
           return userUtteranceLower.includes(phrase);
         });
-        
+
         if (saidNo) {
+          saySafeSSML(vr, finalResponse.reply);
           saySafeSSML(vr, ttsGoodbye());
           vr.hangup();
+          return vr;
         }
       }
-      
-      // CRITICAL: Never include both Gather and Hangup
+
+      // Check for cancel completion - caller explicitly confirmed and cancel is done
+      if (context.currentState.cc === true && finalResponse.state.cc === true) {
+        console.log('[OpenAICallHandler] ✅ Cancel completed - closing call');
+        saySafeSSML(vr, finalResponse.reply);
+        saySafeSSML(vr, ttsGoodbye());
+        vr.hangup();
+        return vr;
+      }
+
+      // Check for reschedule completion - caller confirmed and reschedule is done
+      if (context.currentState.rc === true && finalResponse.state.rc === true) {
+        console.log('[OpenAICallHandler] ✅ Reschedule completed - closing call');
+        saySafeSSML(vr, finalResponse.reply);
+        saySafeSSML(vr, ttsGoodbye());
+        vr.hangup();
+        return vr;
+      }
+
+      // SAFETY NET: Always add Gather to continue conversation
+      // This prevents dead air when AI sets expect_user_reply=false but call should continue
+      console.log('[OpenAICallHandler] ⚠️ expect_user_reply=false but no explicit close - adding safety Gather');
+      const safetyGather = vr.gather({
+        input: ['speech'],
+        timeout: 8,
+        speechTimeout: 'auto',
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+        method: 'POST',
+        enhanced: true,
+        speechModel: 'phone_call',
+        bargeIn: true,
+        actionOnEmptyResult: true,
+        profanityFilter: false,
+        hints: 'yes, no, reschedule, cancel, tomorrow, today, morning, afternoon'
+      });
+      saySafeSSML(safetyGather, finalResponse.reply);
       return vr;
     }
 
