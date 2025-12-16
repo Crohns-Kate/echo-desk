@@ -796,6 +796,42 @@ If any logic fails or text is unclear, use fallback phrasing:
 OUTPUT ONLY THE JSON OBJECT. No text before it. No text after it. Just pure JSON.`;
 
 // ═══════════════════════════════════════════════
+// Booking Stage State Machine
+// ═══════════════════════════════════════════════
+
+/**
+ * Linear booking stages - prevents loops by enforcing progression
+ * Once a stage is complete, we NEVER go back to it
+ */
+export enum BookingStage {
+  INTENT = 'intent',                    // Step 1: Detect intent (book/change/cancel/faq)
+  NEW_OR_EXISTING = 'new_or_existing',  // Step 2: New patient or existing?
+  SHARED_PHONE = 'shared_phone',        // Step 3: Shared phone disambiguation (if needed)
+  COLLECT_NAME = 'collect_name',        // Step 4: Get full name
+  COLLECT_TIME = 'collect_time',        // Step 5: Get time preference
+  OFFER_SLOTS = 'offer_slots',          // Step 6: Offer available slots
+  CONFIRM_SLOT = 'confirm_slot',        // Step 7: User selects slot
+  COLLECT_CONTACT = 'collect_contact',  // Step 8: Email/phone if new patient
+  BOOKING_COMPLETE = 'booking_complete', // Step 9: Appointment created
+  POST_BOOKING_FAQ = 'post_booking_faq', // Step 10: Answer any remaining questions
+  CALL_ENDED = 'call_ended'             // Step 11: Call complete
+}
+
+/**
+ * Question keys for tracking ask counts
+ * Used to enforce max 2 asks per question type
+ */
+export type QuestionKey =
+  | 'new_or_existing'
+  | 'shared_phone_disambiguation'
+  | 'identity_confirmation'
+  | 'name_capture'
+  | 'email_capture'
+  | 'time_preference'
+  | 'slot_selection'
+  | 'phone_confirmation';
+
+// ═══════════════════════════════════════════════
 // Conversation Context
 // ═══════════════════════════════════════════════
 
@@ -820,6 +856,25 @@ export interface ConversationContext {
 
   /** Tenant/clinic information */
   clinicName?: string;
+
+  // ═══════════════════════════════════════════════
+  // LINEAR STATE MACHINE - Prevents loops and resets
+  // ═══════════════════════════════════════════════
+
+  /** Current stage in booking flow - enforces linear progression */
+  bookingStage?: BookingStage;
+
+  /** Once intent is locked (booking started), never reset to "what can I help with" */
+  intentLocked?: boolean;
+
+  /** Question ask counts - max 2 per question type, then fallback */
+  questionAskCounts?: Record<QuestionKey, number>;
+
+  /** Shared phone disambiguation resolved - ensures it NEVER re-triggers */
+  sharedPhoneResolved?: boolean;
+
+  /** Identity confirmed - after this, NEVER ask "Are you [name]?" again */
+  identityResolved?: boolean;
 
   /** Compact tenant info for AI context (injected by backend) */
   tenantInfo?: {
@@ -1121,5 +1176,125 @@ export function updateConversationState(
       ...context.currentState,
       ...newState
     }
+  };
+}
+
+// ═══════════════════════════════════════════════
+// Loop Prevention Helpers
+// ═══════════════════════════════════════════════
+
+/**
+ * Check if we should ask a question (max 2 times per question type)
+ * Returns true if we can ask, false if we've exceeded the limit
+ */
+export function shouldAskQuestion(
+  context: ConversationContext,
+  questionKey: QuestionKey
+): boolean {
+  const counts = context.questionAskCounts || ({} as Record<QuestionKey, number>);
+  const currentCount = counts[questionKey] || 0;
+  return currentCount < 2;
+}
+
+/**
+ * Increment question ask count and return updated context
+ * Also logs structured debug info
+ */
+export function incrementQuestionCount(
+  context: ConversationContext,
+  questionKey: QuestionKey
+): ConversationContext {
+  const counts = context.questionAskCounts || {} as Record<QuestionKey, number>;
+  const newCount = (counts[questionKey] || 0) + 1;
+
+  console.log(`[LoopPrevention] Question "${questionKey}" asked ${newCount} time(s), callSid: ${context.callSid}, stage: ${context.bookingStage || 'unknown'}`);
+
+  return {
+    ...context,
+    questionAskCounts: {
+      ...counts,
+      [questionKey]: newCount
+    }
+  };
+}
+
+/**
+ * Get current count for a question type
+ */
+export function getQuestionCount(
+  context: ConversationContext,
+  questionKey: QuestionKey
+): number {
+  const counts = context.questionAskCounts || ({} as Record<QuestionKey, number>);
+  return counts[questionKey] || 0;
+}
+
+/**
+ * Advance to the next booking stage
+ * Returns updated context with new stage
+ */
+export function advanceBookingStage(
+  context: ConversationContext,
+  newStage: BookingStage
+): ConversationContext {
+  const currentStage = context.bookingStage;
+  console.log(`[StateMachine] Stage transition: ${currentStage || 'none'} → ${newStage}, callSid: ${context.callSid}`);
+
+  return {
+    ...context,
+    bookingStage: newStage,
+    // Lock intent as soon as we enter any booking stage (including INTENT)
+    intentLocked: true
+  };
+}
+
+/**
+ * Check if we've moved past a certain stage (prevents regression)
+ */
+export function isPastStage(
+  context: ConversationContext,
+  stage: BookingStage
+): boolean {
+  const stageOrder = [
+    BookingStage.INTENT,
+    BookingStage.NEW_OR_EXISTING,
+    BookingStage.SHARED_PHONE,
+    BookingStage.COLLECT_NAME,
+    BookingStage.COLLECT_TIME,
+    BookingStage.OFFER_SLOTS,
+    BookingStage.CONFIRM_SLOT,
+    BookingStage.COLLECT_CONTACT,
+    BookingStage.BOOKING_COMPLETE,
+    BookingStage.POST_BOOKING_FAQ,
+    BookingStage.CALL_ENDED
+  ];
+
+  const currentIndex = stageOrder.indexOf(context.bookingStage || BookingStage.INTENT);
+  const targetIndex = stageOrder.indexOf(stage);
+
+  return currentIndex > targetIndex;
+}
+
+/**
+ * Mark shared phone disambiguation as resolved (prevents re-triggering)
+ */
+export function resolveSharedPhone(context: ConversationContext): ConversationContext {
+  console.log(`[StateMachine] Shared phone disambiguation RESOLVED, callSid: ${context.callSid}`);
+  return {
+    ...context,
+    sharedPhoneResolved: true,
+    sharedPhoneDisambiguation: undefined // Clear the temporary state
+  };
+}
+
+/**
+ * Mark identity as resolved (prevents "Are you X?" from re-triggering)
+ */
+export function resolveIdentity(context: ConversationContext): ConversationContext {
+  console.log(`[StateMachine] Identity RESOLVED, callSid: ${context.callSid}`);
+  return {
+    ...context,
+    identityResolved: true,
+    nameDisambiguation: undefined // Clear the temporary state
   };
 }
