@@ -1648,7 +1648,17 @@ export async function handleOpenAIConversation(
     const conditionalGoodbyePhrases = ['no', 'nope', 'nah'];
     
     // First check always-goodbye phrases
+    // For short words (≤3 chars), use word boundary matching to prevent substring matches
+    // e.g., "bye" should match "bye" but not "Byers" or "Byerly"
     let matchedPhrase = alwaysGoodbyePhrases.find(phrase => {
+      // For single short words, use word boundary matching to avoid substring matches
+      // This prevents "bye" from matching "Byers", "Byerly", "Byfield", etc.
+      if (phrase.length <= 3 && /^\w+$/.test(phrase)) {
+        // Use word boundary regex: \b matches word boundaries
+        const wordBoundaryRegex = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        return wordBoundaryRegex.test(userUtteranceLower);
+      }
+      // For longer phrases, use includes() as before
       return userUtteranceLower.includes(phrase);
     });
     
