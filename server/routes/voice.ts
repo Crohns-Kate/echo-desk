@@ -5289,24 +5289,40 @@ export function registerVoice(app: Express) {
     console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
     console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
 
-    // If no speech, prompt again with improved settings
+    // If no speech, prompt again with "Are you still there?"
+    // Track empty count to avoid infinite loops - close gracefully after 2 empty results
     if (!speechResult || speechResult.trim() === "") {
       const vr = new twilio.twiml.VoiceResponse();
+
+      // Get empty count from query param (or default to 0)
+      const emptyCount = parseInt(req.query?.emptyCount as string || '0', 10);
+      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount);
+
+      if (emptyCount >= 2) {
+        // After 2 empty results, close gracefully
+        saySafe(vr, "Thanks for calling. Have a great day!");
+        vr.hangup();
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // CRITICAL: Only ONE <Gather> per response
       const gather = vr.gather({
         input: ['speech'],
-        timeout: 8, // Longer timeout for background noise
+        timeout: 10, // Longer timeout for silence
         speechTimeout: 'auto',
-        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}&emptyCount=${emptyCount + 1}`),
         method: 'POST',
+        // GUARD: Only set enhanced=true with phone_call model (Twilio warning 13335)
         enhanced: true,
+        speechModel: 'phone_call',
         bargeIn: true,
+        actionOnEmptyResult: true, // Continue tracking empty results
         profanityFilter: false, // Allow natural speech
         hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
       });
-      saySafe(gather, "I didn't catch that. What can I help you with?");
-      // Final fallback after retry
-      saySafe(vr, "Thanks for calling. Have a great day!");
-      vr.hangup();
+      saySafe(gather, "Are you still there? Is there anything else I can help you with?");
+
+      // NO second gather or hangup here - actionOnEmptyResult handles next turn
       return res.type("text/xml").send(vr.toString());
     }
 

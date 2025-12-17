@@ -850,38 +850,27 @@ export async function handleOpenAIConversation(
     }
 
     // 7. Gather next user input with barge-in enabled (Say INSIDE Gather)
+    // CRITICAL: Only ONE <Gather> per response - use actionOnEmptyResult to handle silence on next turn
     const gather = vr.gather({
       input: ['speech'],
       timeout: 8,
       speechTimeout: 'auto',
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
+      // GUARD: Only set enhanced=true with phone_call model (Twilio warning 13335)
       enhanced: true,
+      speechModel: 'phone_call',
       bargeIn: true,
       profanityFilter: false, // Allow natural speech patterns
+      actionOnEmptyResult: true, // Send empty result to continue handler (handles "Are you still there?" on next turn)
       hints: 'yes, no, new patient, first time, first visit, existing patient, been before, appointment, morning, afternoon, today, tomorrow, goodbye, that\'s all, nothing else'
     });
 
     // Say response INSIDE gather to enable barge-in (caller can interrupt)
     saySafe(gather, finalResponse.reply);
 
-    // 8. If no response after gather times out, check once more (but detect goodbye)
-    const retryGather = vr.gather({
-      input: ['speech'],
-      timeout: 10,  // Longer timeout for the retry
-      speechTimeout: 'auto',
-      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-      method: 'POST',
-      enhanced: true,
-      bargeIn: true,
-      profanityFilter: false,
-      hints: 'yes, no, goodbye, that\'s all, nothing else, thank you, bye, no thanks'
-    });
-    saySafe(retryGather, "Are you still there? Is there anything else you'd like to know?");
-
-    // 9. If still no response, close gracefully (not abruptly)
-    saySafe(vr, "Thanks for calling Spinalogic. Have a great day!");
-    vr.hangup();
+    // NO second gather here - actionOnEmptyResult handles silence by calling continue handler
+    // The continue handler will say "Are you still there?" if SpeechResult is empty
 
     return vr;
 
@@ -926,32 +915,25 @@ export async function handleOpenAIGreeting(
     await saveConversationContext(callSid, updatedContext);
 
     // Speak greeting and gather response
+    // CRITICAL: Only ONE <Gather> per response - use actionOnEmptyResult to handle silence on next turn
     const gather = vr.gather({
       input: ['speech'],
       timeout: 8,
       speechTimeout: 'auto',
       action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
       method: 'POST',
+      // GUARD: Only set enhanced=true with phone_call model (Twilio warning 13335)
       enhanced: true,
+      speechModel: 'phone_call',
+      bargeIn: true,
+      actionOnEmptyResult: true, // Send empty result to continue handler (handles "Are you still there?" on next turn)
       hints: 'appointment, booking, reschedule, cancel, question, today, tomorrow, morning, afternoon'
     });
 
     saySafe(gather, greeting);
 
-    // If no response after greeting, give them another chance
-    const retryGather = vr.gather({
-      input: ['speech'],
-      timeout: 10,
-      speechTimeout: 'auto',
-      action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-      method: 'POST',
-      enhanced: true,
-      hints: 'appointment, booking, question, today, tomorrow'
-    });
-    saySafe(retryGather, "Are you still there? How can I help you today?");
-
-    // If still no response, close gracefully
-    saySafe(vr, "Thanks for calling Spinalogic. Feel free to call back anytime.");
+    // NO second gather here - actionOnEmptyResult handles silence by calling continue handler
+    // The continue handler will say "Are you still there?" if SpeechResult is empty
 
     return vr;
 
