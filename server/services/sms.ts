@@ -191,10 +191,13 @@ export async function sendNewPatientForm(params: {
   to: string;
   token: string;
   clinicName: string;
+  clinikoPatientId?: string;  // Optional: if provided, used for direct Cliniko update
 }): Promise<void> {
   try {
     const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
-    const link = `${publicUrl}/intake/${params.token}`;
+    // Include patientId in URL if available for direct Cliniko update
+    const patientIdParam = params.clinikoPatientId ? `?patientId=${params.clinikoPatientId}` : '';
+    const link = `${publicUrl}/intake/${params.token}${patientIdParam}`;
     const message = `Thanks for calling ${params.clinicName}! Please complete your details here (takes 30 seconds): ${link}`;
 
     await client.messages.create({

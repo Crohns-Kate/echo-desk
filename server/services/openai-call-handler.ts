@@ -297,7 +297,8 @@ function parseTimePreference(
 async function fetchAvailableSlots(
   state: Partial<CompactCallState>,
   tenantId?: number,
-  timezone: string = 'Australia/Brisbane'
+  timezone: string = 'Australia/Brisbane',
+  maxSlots: number = 3  // Default 3 slots, more for group bookings
 ): Promise<EnrichedSlot[]> {
   if (!state.tp) {  // tp = time preference
     console.log('[OpenAICallHandler] No time preference, cannot fetch slots');
@@ -349,7 +350,7 @@ async function fetchAvailableSlots(
           tenantCtx,
           isNewPatient
         },
-        3,  // maxSlots
+        maxSlots,  // Use parameter for group booking support
         3   // concurrencyLimit
       );
 
