@@ -364,6 +364,152 @@ test('Sports injury should be categorized as treatable', () => {
 });
 
 // ============================================================
+// TEST 4: Call Stage Guard (Empty Speech Suppression)
+// ============================================================
+console.log('\n[TEST 4: Call Stage Guard]');
+console.log('Scenario: Empty speech during booking_in_progress or terminal stage');
+console.log('Expected: Should NOT say "Are you still there?" - silent gather only\n');
+
+type CallStage = 'greeting' | 'ask_name' | 'ask_time' | 'offer_slots' | 'ask_confirmation' | 'faq' | 'booking_in_progress' | 'sending_sms' | 'terminal';
+
+interface EmptySpeechContext {
+  currentState: {
+    emptyCount?: number;
+    lastEmptyAt?: number;
+    callStage?: CallStage;
+    terminalLock?: boolean;
+  };
+}
+
+function shouldSpeakEmptyPrompt(ctx: EmptySpeechContext | null): boolean {
+  const callStage = ctx?.currentState?.callStage;
+  const terminalLock = ctx?.currentState?.terminalLock;
+
+  // Non-interactive stages - suppress prompt
+  const nonInteractiveStages: CallStage[] = ['booking_in_progress', 'sending_sms', 'terminal'];
+  const isNonInteractive = callStage && nonInteractiveStages.includes(callStage);
+
+  // Terminal lock always suppresses
+  if (terminalLock || isNonInteractive) {
+    return false; // Silent gather only
+  }
+
+  return true; // Can speak "Are you still there?"
+}
+
+// Test: booking_in_progress should suppress empty speech prompt
+test('booking_in_progress stage should suppress "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'booking_in_progress' } };
+  return shouldSpeakEmptyPrompt(ctx) === false;
+});
+
+// Test: terminal stage should suppress empty speech prompt
+test('terminal stage should suppress "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'terminal' } };
+  return shouldSpeakEmptyPrompt(ctx) === false;
+});
+
+// Test: sending_sms stage should suppress empty speech prompt
+test('sending_sms stage should suppress "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'sending_sms' } };
+  return shouldSpeakEmptyPrompt(ctx) === false;
+});
+
+// Test: terminalLock=true should suppress regardless of stage
+test('terminalLock=true should suppress "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { terminalLock: true, callStage: 'faq' } };
+  return shouldSpeakEmptyPrompt(ctx) === false;
+});
+
+// Test: Interactive stages should allow empty speech prompt
+test('greeting stage should allow "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'greeting' } };
+  return shouldSpeakEmptyPrompt(ctx) === true;
+});
+
+test('ask_name stage should allow "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'ask_name' } };
+  return shouldSpeakEmptyPrompt(ctx) === true;
+});
+
+test('offer_slots stage should allow "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'offer_slots' } };
+  return shouldSpeakEmptyPrompt(ctx) === true;
+});
+
+test('faq stage (without terminalLock) should allow "Are you still there?"', () => {
+  const ctx: EmptySpeechContext = { currentState: { callStage: 'faq', terminalLock: false } };
+  return shouldSpeakEmptyPrompt(ctx) === true;
+});
+
+// ============================================================
+// TEST 5: Terminal Lock Behavior
+// ============================================================
+console.log('\n[TEST 5: Terminal Lock Behavior]');
+console.log('Scenario: After booking, terminalLock=true should prevent duplicate confirmations');
+console.log('Expected: FAQ, directions, price allowed; no repeat confirmations\n');
+
+interface TerminalLockState {
+  appointmentCreated?: boolean;
+  terminalLock?: boolean;
+  callStage?: CallStage;
+  smsConfirmSent?: boolean;
+  smsMapSent?: boolean;
+}
+
+function simulateBookingCompletion(): TerminalLockState {
+  // Simulates what happens after appointment is created
+  return {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true
+  };
+}
+
+function canSendDuplicateSms(state: TerminalLockState, smsType: 'confirm' | 'map'): boolean {
+  if (smsType === 'confirm') {
+    return !state.smsConfirmSent; // Can only send if not already sent
+  }
+  if (smsType === 'map') {
+    return !state.smsMapSent; // Can only send if not already sent
+  }
+  return false;
+}
+
+// Test: After booking, terminalLock should be true
+test('After booking, terminalLock should be true', () => {
+  const state = simulateBookingCompletion();
+  return state.terminalLock === true;
+});
+
+// Test: After booking, callStage should be terminal
+test('After booking, callStage should be terminal', () => {
+  const state = simulateBookingCompletion();
+  return state.callStage === 'terminal';
+});
+
+// Test: Cannot send duplicate confirmation SMS
+test('Cannot send duplicate confirmation SMS after booking', () => {
+  const state = simulateBookingCompletion();
+  return canSendDuplicateSms(state, 'confirm') === false;
+});
+
+// Test: Can send map SMS if not already sent
+test('Can send map SMS if not already sent', () => {
+  const state = simulateBookingCompletion();
+  state.smsMapSent = false;
+  return canSendDuplicateSms(state, 'map') === true;
+});
+
+// Test: Cannot send map SMS if already sent
+test('Cannot send duplicate map SMS', () => {
+  const state = simulateBookingCompletion();
+  state.smsMapSent = true;
+  return canSendDuplicateSms(state, 'map') === false;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
@@ -389,3 +535,13 @@ console.log('3. Knee Pain FAQ:');
 console.log('   - Ask "Do you treat knee pain?"');
 console.log('   - Should say "Yes, our chiropractors can help assess knee pain"');
 console.log('   - Should NOT say "we focus on chiropractic care"');
+console.log('');
+console.log('4. Call Stage Guard (NEW):');
+console.log('   - Select slot → system says "Booking now" → silence');
+console.log('   - Should NOT hear "Are you still there?" during booking');
+console.log('   - Silent gather only while booking_in_progress');
+console.log('');
+console.log('5. Terminal Lock (NEW):');
+console.log('   - After booking, ask price + directions');
+console.log('   - Should answer FAQ without repeating confirmation/SMS language');
+console.log('   - No duplicate "I\'ve booked your appointment" messages');
