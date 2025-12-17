@@ -1,14 +1,8 @@
 # OpenAI Conversation Mode
 
-> **For canonical call flow specification, see: [CALLFLOW-SPEC.md](./CALLFLOW-SPEC.md)**
->
-> This document provides an overview of the OpenAI conversation mode.
-> For complete implementation details including intent locking, loop prevention,
-> and stage management, refer to the canonical spec.
-
 ## Overview
 
-Echo Desk uses an **OpenAI-powered conversational AI mode** that provides a more natural, human-like interaction compared to the traditional FSM (Finite State Machine) approach.
+Echo Desk now supports an **OpenAI-powered conversational AI mode** that provides a more natural, human-like interaction compared to the traditional FSM (Finite State Machine) approach.
 
 ### Key Features
 
