@@ -107,6 +107,12 @@ export interface CompactCallState {
   /** secondaryPatientName = name of child/family member for secondary booking */
   secondaryPatientName?: string | null;
 
+  /** smsConfirmSentPrimary = true if primary booking SMS was sent (preserved during secondary booking) */
+  smsConfirmSentPrimary?: boolean;
+
+  /** smsIntakeSentPrimary = true if primary intake form SMS was sent (preserved during secondary booking) */
+  smsIntakeSentPrimary?: boolean;
+
   // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════

@@ -510,6 +510,234 @@ test('Cannot send duplicate map SMS', () => {
 });
 
 // ============================================================
+// TEST 6: Empty Speech Grace Window (REGRESSION FIX)
+// ============================================================
+console.log('\n[TEST 6: Empty Speech Grace Window (Regression Fix)]');
+console.log('Scenario: First empty should be silent, not "Are you still there?"');
+console.log('Expected: On first empty (lastEmptyAt=0), return silent gather and set timestamp\n');
+
+function simulateEmptySpeechGrace(
+  lastEmptyAt: number,
+  now: number,
+  graceMs: number = 1000
+): { shouldSpeak: boolean; isFirstEmpty: boolean; isWithinGrace: boolean } {
+  const isFirstEmpty = lastEmptyAt === 0;
+  const timeSinceLastEmpty = now - lastEmptyAt;
+  const isWithinGrace = !isFirstEmpty && timeSinceLastEmpty < graceMs;
+
+  // FIRST EMPTY or WITHIN GRACE: Silent gather only, don't speak
+  if (isFirstEmpty || isWithinGrace) {
+    return { shouldSpeak: false, isFirstEmpty, isWithinGrace };
+  }
+
+  // AFTER GRACE: Can speak "Are you still there?"
+  return { shouldSpeak: true, isFirstEmpty, isWithinGrace };
+}
+
+test('FIRST empty (lastEmptyAt=0) should NOT speak - silent gather only', () => {
+  const now = Date.now();
+  const result = simulateEmptySpeechGrace(0, now);
+  return result.shouldSpeak === false && result.isFirstEmpty === true;
+});
+
+test('Empty within grace window should NOT speak', () => {
+  const now = Date.now();
+  const lastEmptyAt = now - 500; // 500ms ago
+  const result = simulateEmptySpeechGrace(lastEmptyAt, now);
+  return result.shouldSpeak === false && result.isWithinGrace === true;
+});
+
+test('Empty AFTER grace window should speak', () => {
+  const now = Date.now();
+  const lastEmptyAt = now - 1500; // 1.5 seconds ago
+  const result = simulateEmptySpeechGrace(lastEmptyAt, now);
+  return result.shouldSpeak === true;
+});
+
+test('Empty → immediate non-empty should never trigger "Are you still there?"', () => {
+  // Simulate: empty arrives, then 200ms later non-empty arrives
+  // The first empty should return silent gather (shouldSpeak=false)
+  const now = Date.now();
+  const emptyResult = simulateEmptySpeechGrace(0, now);
+  // First empty: should NOT speak, just set timestamp
+  // Then non-empty arrives - context would reset emptyCount
+  return emptyResult.shouldSpeak === false;
+});
+
+// ============================================================
+// TEST 7: Secondary Booking Session (REGRESSION FIX)
+// ============================================================
+console.log('\n[TEST 7: Secondary Booking Session (Regression Fix)]');
+console.log('Scenario: After primary booking, user says "book for my son Chris"');
+console.log('Expected: Reset terminalLock, SMS flags, create new appointment\n');
+
+interface SecondaryBookingState {
+  appointmentCreated: boolean;
+  terminalLock: boolean;
+  callStage: string;
+  smsConfirmSent: boolean;
+  smsIntakeSent: boolean;
+  bookingFor?: 'self' | 'someone_else';
+  secondaryPatientName?: string;
+  smsConfirmSentPrimary?: boolean;
+  smsIntakeSentPrimary?: boolean;
+}
+
+function simulateSecondaryBookingDetection(
+  state: SecondaryBookingState,
+  utterance: string
+): SecondaryBookingState {
+  if (!state.appointmentCreated) return state;
+
+  const utteranceLower = utterance.toLowerCase();
+  const secondaryBookingPhrases = [
+    'book for my', 'also book', 'another appointment', 'for my child',
+    'for my son', 'for my daughter', 'family member', 'someone else'
+  ];
+
+  const isSecondaryBooking = secondaryBookingPhrases.some(p => utteranceLower.includes(p));
+
+  if (isSecondaryBooking) {
+    // Reset for secondary booking session
+    return {
+      appointmentCreated: false,
+      terminalLock: false,
+      callStage: 'ask_name',
+      smsConfirmSent: false,
+      smsIntakeSent: false,
+      bookingFor: 'someone_else',
+      secondaryPatientName: undefined,
+      smsConfirmSentPrimary: state.smsConfirmSent,
+      smsIntakeSentPrimary: state.smsIntakeSent
+    };
+  }
+
+  return state;
+}
+
+test('Secondary booking should reset terminalLock to false', () => {
+  const state: SecondaryBookingState = {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: true
+  };
+  const result = simulateSecondaryBookingDetection(state, 'book for my son Chris');
+  return result.terminalLock === false;
+});
+
+test('Secondary booking should reset SMS flags for new session', () => {
+  const state: SecondaryBookingState = {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: true
+  };
+  const result = simulateSecondaryBookingDetection(state, 'also book for my daughter');
+  return result.smsConfirmSent === false && result.smsIntakeSent === false;
+});
+
+test('Secondary booking should preserve primary SMS state', () => {
+  const state: SecondaryBookingState = {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: true
+  };
+  const result = simulateSecondaryBookingDetection(state, 'book for my child');
+  return result.smsConfirmSentPrimary === true && result.smsIntakeSentPrimary === true;
+});
+
+test('Secondary booking should set callStage to ask_name', () => {
+  const state: SecondaryBookingState = {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: false
+  };
+  const result = simulateSecondaryBookingDetection(state, 'another appointment for my kid');
+  return result.callStage === 'ask_name';
+});
+
+test('Secondary booking should set bookingFor to someone_else', () => {
+  const state: SecondaryBookingState = {
+    appointmentCreated: true,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: true
+  };
+  const result = simulateSecondaryBookingDetection(state, 'for my daughter');
+  return result.bookingFor === 'someone_else';
+});
+
+// ============================================================
+// TEST 8: Name Sanitizer (REGRESSION FIX)
+// ============================================================
+console.log('\n[TEST 8: Name Sanitizer (Regression Fix)]');
+console.log('Scenario: Speech-to-text captures "Chris message" or "John text"');
+console.log('Expected: Strip artifacts → "Chris", "John"\n');
+
+function sanitizePatientName(name: string | null | undefined): string | null {
+  if (!name) return null;
+
+  const artifactWords = [
+    'message', 'text', 'sms', 'link', 'email',
+    'please', 'thanks', 'thank you', 'okay', 'ok',
+    'appointment', 'booking', 'book'
+  ];
+
+  let sanitized = name.trim();
+
+  for (const artifact of artifactWords) {
+    const regex = new RegExp(`\\s+${artifact}\\s*$`, 'i');
+    sanitized = sanitized.replace(regex, '');
+  }
+
+  sanitized = sanitized.replace(/[.,!?;:]+$/, '').trim();
+  sanitized = sanitized.replace(/\b\w/g, c => c.toUpperCase());
+
+  return sanitized || null;
+}
+
+test('"Chris message" should sanitize to "Chris"', () => {
+  return sanitizePatientName('Chris message') === 'Chris';
+});
+
+test('"John text" should sanitize to "John"', () => {
+  return sanitizePatientName('John text') === 'John';
+});
+
+test('"Sarah SMS" should sanitize to "Sarah"', () => {
+  return sanitizePatientName('Sarah SMS') === 'Sarah';
+});
+
+test('"Michael please" should sanitize to "Michael"', () => {
+  return sanitizePatientName('Michael please') === 'Michael';
+});
+
+test('"Emma booking" should sanitize to "Emma"', () => {
+  return sanitizePatientName('Emma booking') === 'Emma';
+});
+
+test('"David" (no artifact) should remain "David"', () => {
+  return sanitizePatientName('david') === 'David';
+});
+
+test('null input should return null', () => {
+  return sanitizePatientName(null) === null;
+});
+
+test('"Chris Link appointment" should sanitize to "Chris Link"', () => {
+  // Only removes trailing artifact
+  return sanitizePatientName('Chris Link appointment') === 'Chris Link';
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
@@ -545,3 +773,19 @@ console.log('5. Terminal Lock (NEW):');
 console.log('   - After booking, ask price + directions');
 console.log('   - Should answer FAQ without repeating confirmation/SMS language');
 console.log('   - No duplicate "I\'ve booked your appointment" messages');
+console.log('');
+console.log('6. Empty Speech Grace Window (REGRESSION FIX):');
+console.log('   - On FIRST empty speech, should NOT say "Are you still there?"');
+console.log('   - Should return silent gather and set lastEmptyAt timestamp');
+console.log('   - Only speak after grace window (1s) passes');
+console.log('');
+console.log('7. Secondary Booking (REGRESSION FIX):');
+console.log('   - After primary booking: "book for my son Chris same time"');
+console.log('   - Should reset terminalLock=false, smsConfirmSent=false');
+console.log('   - Should create NEW appointment with child name');
+console.log('   - Should send NEW confirmation SMS for child');
+console.log('');
+console.log('8. Name Sanitizer (REGRESSION FIX):');
+console.log('   - "Chris message" → "Chris"');
+console.log('   - "John text" → "John"');
+console.log('   - Strips speech-to-text artifacts from patient names');
