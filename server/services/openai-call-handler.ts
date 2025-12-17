@@ -760,7 +760,175 @@ export async function handleOpenAIConversation(
     context = updateConversationState(context, finalResponse.state);
 
     // ═══════════════════════════════════════════════
-    // 5. GROUP BOOKING: Create multiple appointments for group members
+    // 4a. GROUP BOOKING EXECUTOR: Auto-execute when conditions are met
+    // This runs BEFORE the bc-based executor to handle initial group bookings
+    // where the AI has collected all names and time preference
+    // ═══════════════════════════════════════════════
+    const hasGroupBookingInfo = context.currentState.gb === true &&
+                                Array.isArray(context.currentState.gp) &&
+                                context.currentState.gp.length >= 2 &&
+                                context.currentState.tp &&  // Has time preference
+                                !context.currentState.groupBookingComplete &&
+                                !context.currentState.appointmentCreated;
+
+    if (hasGroupBookingInfo) {
+      console.log('[OpenAICallHandler] 👨‍👩‍👧 GROUP BOOKING READY - executing auto-booking');
+      console.log('[OpenAICallHandler]   - Patients:', context.currentState.gp?.map(p => p.name).join(', '));
+      console.log('[OpenAICallHandler]   - Time preference:', context.currentState.tp);
+
+      // Fetch slots if not already available
+      if (!context.availableSlots || context.availableSlots.length === 0) {
+        console.log('[OpenAICallHandler] 🔄 Fetching slots for group booking...');
+        const groupSize = context.currentState.gp?.length || 2;
+        const slots = await fetchAvailableSlots(
+          { ...context.currentState, np: true },  // Treat as new patients
+          tenantId,
+          timezone,
+          groupSize * 2  // Fetch extra slots for flexibility
+        );
+        context.availableSlots = slots;
+        console.log('[OpenAICallHandler] ✅ Fetched', slots.length, 'slots for group');
+      }
+
+      if (context.availableSlots && context.availableSlots.length >= (context.currentState.gp?.length || 2)) {
+        // Execute group booking
+        const groupBookingResults: Array<{ name: string; patientId: string; appointmentId: string; time: string }> = [];
+        const groupPatients = context.currentState.gp || [];
+
+        // Set booking lock
+        context.currentState.bookingLockUntil = Date.now() + 20_000;
+        context.currentState.callStage = 'booking_in_progress';
+        console.log('[OpenAICallHandler] 🔒 Group booking lock acquired');
+
+        try {
+          // Get tenant context
+          let tenantCtx = undefined;
+          if (tenantId) {
+            const tenant = await storage.getTenantById(tenantId);
+            if (tenant) {
+              tenantCtx = getTenantContext(tenant);
+            }
+          }
+
+          // Book appointments for each group member
+          for (let i = 0; i < groupPatients.length; i++) {
+            const member = groupPatients[i];
+
+            // Check we have enough slots
+            if (i >= context.availableSlots.length) {
+              console.log('[OpenAICallHandler] ⚠️ Not enough slots for all group members. Booked', i, 'of', groupPatients.length);
+              break;
+            }
+
+            const slot = context.availableSlots[i];  // Use consecutive slots starting from 0
+            const practitionerId = slot.clinikoPractitionerId || env.CLINIKO_PRACTITIONER_ID;
+            const appointmentTypeId = slot.appointmentTypeId || env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID;
+
+            // Sanitize name
+            const memberName = sanitizePatientName(member.name) || member.name;
+
+            console.log('[OpenAICallHandler] 📋 Creating appointment', i + 1, 'for:', memberName, 'at', slot.speakable);
+
+            const appointment = await createAppointmentForPatient(callerPhone, {
+              practitionerId,
+              appointmentTypeId,
+              startsAt: slot.startISO,
+              fullName: memberName,
+              notes: context.currentState.sym
+                ? `Symptom: ${context.currentState.sym} (Group booking: ${member.relation || 'family'})`
+                : `Group booking: ${member.relation || 'family'}`,
+              tenantCtx
+            });
+
+            console.log('[OpenAICallHandler] ✅ Group member', i + 1, 'booked:', appointment.id, 'patient:', appointment.patient_id);
+
+            groupBookingResults.push({
+              name: memberName,
+              patientId: appointment.patient_id,
+              appointmentId: appointment.id,
+              time: slot.speakable
+            });
+          }
+
+          // Send SMS confirmation (once for the caller)
+          if (!context.currentState.smsConfirmSent && groupBookingResults.length > 0) {
+            const appointmentSummary = groupBookingResults.map(r => `${r.name}: ${r.time}`).join(', ');
+            const firstSlot = context.availableSlots[0];
+            const appointmentTime = dayjs(firstSlot.startISO).tz(timezone);
+            const formattedDate = appointmentTime.format('dddd, MMMM D');
+
+            await sendAppointmentConfirmation({
+              to: callerPhone,
+              appointmentDate: `${formattedDate} - ${appointmentSummary}`,
+              clinicName: clinicName || 'Spinalogic',
+              practitionerName: firstSlot.practitionerDisplayName,
+              address: clinicAddress || context.tenantInfo?.address,
+              mapUrl: googleMapsUrl || undefined
+            });
+            context.currentState.smsConfirmSent = true;
+            if (googleMapsUrl) {
+              context.currentState.confirmSmsIncludedMap = true;
+              context.currentState.smsMapSent = true;
+            }
+            console.log('[OpenAICallHandler] ✅ Group booking SMS confirmation sent');
+          }
+
+          // Send intake forms for each patient
+          if (!context.currentState.smsIntakeSent && groupBookingResults.length > 0) {
+            for (const result of groupBookingResults) {
+              const formToken = `form_${callSid}_${result.patientId}`;
+
+              await sendNewPatientForm({
+                to: callerPhone,
+                token: formToken,
+                clinicName: clinicName || 'Spinalogic',
+                clinikoPatientId: result.patientId
+              });
+              console.log('[OpenAICallHandler] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId);
+            }
+            context.currentState.smsIntakeSent = true;
+          }
+
+          // Mark group booking complete
+          context.currentState.appointmentCreated = true;
+          context.currentState.groupBookingComplete = groupBookingResults.length;
+          context.currentState.terminalLock = true;
+          context.currentState.callStage = 'terminal';
+          context.currentState.bc = true;
+          console.log('[OpenAICallHandler] 🎉 GROUP BOOKING COMPLETE!', groupBookingResults.length, 'appointments created');
+
+          // Generate confirmation response for the AI to speak
+          const bookedNames = groupBookingResults.map(r => r.name).join(' and ');
+          const bookedTimes = groupBookingResults.map(r => r.time).join(' and ');
+          const confirmationReply = `Perfect! I've booked ${bookedNames} for ${bookedTimes}. I'm sending a text with forms to confirm everyone's details. Is there anything else I can help with?`;
+
+          // Update the reply to confirm the booking
+          finalResponse = {
+            ...finalResponse,
+            reply: confirmationReply,
+            state: {
+              ...finalResponse.state,
+              bc: true,
+              appointmentCreated: true,
+              groupBookingComplete: groupBookingResults.length
+            }
+          };
+          context = updateConversationState(context, finalResponse.state);
+
+        } catch (error) {
+          console.error('[OpenAICallHandler] ❌ Error in group booking execution:', error);
+          // Reset booking state on failure
+          context.currentState.callStage = 'offer_slots';
+          context.currentState.bookingLockUntil = undefined;
+        }
+      } else {
+        console.log('[OpenAICallHandler] ⚠️ Not enough slots available for group booking');
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // 5. GROUP BOOKING (AI-initiated): Create multiple appointments for group members
+    // This handles the case where AI explicitly sets bc=true and si for group booking
     // ═══════════════════════════════════════════════
     const isGroupBooking = finalResponse.state.gb === true &&
                            Array.isArray(finalResponse.state.gp) &&

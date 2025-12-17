@@ -903,6 +903,216 @@ test('clinikoPatientId takes precedence over phone', () => {
 });
 
 // ============================================================
+// TEST 12: Group Booking Executor (Auto-execution)
+// ============================================================
+console.log('\n[TEST 12: Group Booking Executor (Auto-execution)]');
+console.log('Scenario: gb=true, gp[] has 2 names, tp set → should auto-execute');
+console.log('Expected: Create appointments, send SMS, set terminalLock=true\n');
+
+interface GroupBookingExecutorState {
+  gb?: boolean;
+  gp?: Array<{ name: string; relation?: string }>;
+  tp?: string;
+  np?: boolean;
+  groupBookingComplete?: number;
+  appointmentCreated?: boolean;
+  terminalLock?: boolean;
+  callStage?: string;
+  smsConfirmSent?: boolean;
+  smsIntakeSent?: boolean;
+}
+
+function shouldExecuteGroupBooking(state: GroupBookingExecutorState): boolean {
+  return state.gb === true &&
+         Array.isArray(state.gp) &&
+         state.gp.length >= 2 &&
+         !!state.tp &&
+         !state.groupBookingComplete &&
+         !state.appointmentCreated;
+}
+
+function simulateGroupBookingExecution(
+  state: GroupBookingExecutorState,
+  slotsAvailable: number
+): GroupBookingExecutorState {
+  if (!shouldExecuteGroupBooking(state)) {
+    return state;
+  }
+
+  const groupSize = state.gp?.length || 0;
+  if (slotsAvailable < groupSize) {
+    return state;  // Not enough slots
+  }
+
+  return {
+    ...state,
+    appointmentCreated: true,
+    groupBookingComplete: groupSize,
+    terminalLock: true,
+    callStage: 'terminal',
+    smsConfirmSent: true,
+    smsIntakeSent: true
+  };
+}
+
+test('Should execute when gb=true, gp.length>=2, tp set', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John', relation: 'self' }, { name: 'Tommy', relation: 'son' }],
+    tp: 'today at 3pm',
+    np: true
+  };
+  return shouldExecuteGroupBooking(state) === true;
+});
+
+test('Should NOT execute when gp.length < 2', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John', relation: 'self' }],
+    tp: 'today at 3pm'
+  };
+  return shouldExecuteGroupBooking(state) === false;
+});
+
+test('Should NOT execute when tp is missing', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John', relation: 'self' }, { name: 'Tommy', relation: 'son' }]
+  };
+  return shouldExecuteGroupBooking(state) === false;
+});
+
+test('Should NOT execute when already complete', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John', relation: 'self' }, { name: 'Tommy', relation: 'son' }],
+    tp: 'today at 3pm',
+    groupBookingComplete: 2
+  };
+  return shouldExecuteGroupBooking(state) === false;
+});
+
+test('Should NOT execute when appointment already created', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John', relation: 'self' }, { name: 'Tommy', relation: 'son' }],
+    tp: 'today at 3pm',
+    appointmentCreated: true
+  };
+  return shouldExecuteGroupBooking(state) === false;
+});
+
+test('After execution: appointmentCreated should be true', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 4);
+  return result.appointmentCreated === true;
+});
+
+test('After execution: groupBookingComplete should equal group size', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 4);
+  return result.groupBookingComplete === 2;
+});
+
+test('After execution: terminalLock should be true', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 4);
+  return result.terminalLock === true;
+});
+
+test('After execution: callStage should be terminal', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 4);
+  return result.callStage === 'terminal';
+});
+
+test('Should NOT execute when not enough slots', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }, { name: 'Sarah' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 2);  // Only 2 slots, need 3
+  return result.appointmentCreated !== true;
+});
+
+test('Should send SMS after execution', () => {
+  const state: GroupBookingExecutorState = {
+    gb: true,
+    gp: [{ name: 'John' }, { name: 'Tommy' }],
+    tp: 'today at 3pm'
+  };
+  const result = simulateGroupBookingExecution(state, 4);
+  return result.smsConfirmSent === true && result.smsIntakeSent === true;
+});
+
+// ============================================================
+// TEST 13: Group Booking Suppresses Empty Speech
+// ============================================================
+console.log('\n[TEST 13: Group Booking Suppresses Empty Speech]');
+console.log('Scenario: During/after group booking, no "Are you still there?"');
+console.log('Expected: terminalLock=true suppresses empty speech prompts\n');
+
+interface GroupBookingEmptySpeechState {
+  callStage?: string;
+  terminalLock?: boolean;
+  groupBookingComplete?: number;
+}
+
+function shouldSpeakDuringGroupBooking(state: GroupBookingEmptySpeechState): boolean {
+  // If terminal lock is set, suppress empty speech
+  if (state.terminalLock === true) return false;
+
+  // If in booking_in_progress stage, suppress
+  if (state.callStage === 'booking_in_progress') return false;
+
+  // If in terminal stage, suppress
+  if (state.callStage === 'terminal') return false;
+
+  return true;
+}
+
+test('During group booking (booking_in_progress), should NOT speak', () => {
+  const state: GroupBookingEmptySpeechState = { callStage: 'booking_in_progress' };
+  return shouldSpeakDuringGroupBooking(state) === false;
+});
+
+test('After group booking (terminal), should NOT speak', () => {
+  const state: GroupBookingEmptySpeechState = { callStage: 'terminal', terminalLock: true };
+  return shouldSpeakDuringGroupBooking(state) === false;
+});
+
+test('After group booking complete, terminalLock should suppress', () => {
+  const state: GroupBookingEmptySpeechState = {
+    callStage: 'terminal',
+    terminalLock: true,
+    groupBookingComplete: 2
+  };
+  return shouldSpeakDuringGroupBooking(state) === false;
+});
+
+test('Before group booking (ask_name stage), should allow speaking', () => {
+  const state: GroupBookingEmptySpeechState = { callStage: 'ask_name' };
+  return shouldSpeakDuringGroupBooking(state) === true;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
