@@ -106,6 +106,28 @@ export interface CompactCallState {
 
   /** secondaryPatientName = name of child/family member for secondary booking */
   secondaryPatientName?: string | null;
+
+  // ═══════════════════════════════════════════════
+  // Call Stage Tracking (for empty speech guard)
+  // ═══════════════════════════════════════════════
+
+  /**
+   * callStage = current stage in the call flow
+   * Interactive stages (allow empty speech prompts):
+   *   - 'greeting' | 'ask_name' | 'ask_time' | 'offer_slots' | 'ask_confirmation' | 'faq'
+   * Non-interactive stages (suppress empty speech prompts):
+   *   - 'booking_in_progress' | 'sending_sms' | 'terminal'
+   */
+  callStage?: 'greeting' | 'ask_name' | 'ask_time' | 'offer_slots' | 'ask_confirmation' | 'faq' | 'booking_in_progress' | 'sending_sms' | 'terminal';
+
+  /**
+   * terminalLock = true after booking confirmed to prevent:
+   *   - Identity prompts
+   *   - Empty speech retries
+   *   - Duplicate booking confirmations
+   * Allowed: FAQ, directions, price, "book another appointment", explicit cancel/reschedule
+   */
+  terminalLock?: boolean;
 }
 
 /**

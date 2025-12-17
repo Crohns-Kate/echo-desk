@@ -5330,12 +5330,41 @@ export function registerVoice(app: Express) {
       const vr = new twilio.twiml.VoiceResponse();
       const now = Date.now();
 
-      // Load context to check grace window and get emptyCount
+      // Load context to check grace window, callStage, and terminalLock
       const ctx = await loadContextForEmpty();
       const emptyCount = ctx?.currentState?.emptyCount || 0;
       const lastEmptyAt = ctx?.currentState?.lastEmptyAt || 0;
+      const callStage = ctx?.currentState?.callStage;
+      const terminalLock = ctx?.currentState?.terminalLock;
 
-      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount, 'lastEmptyAt:', lastEmptyAt);
+      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount, 'callStage:', callStage, 'terminalLock:', terminalLock);
+
+      // ═══════════════════════════════════════════════
+      // CALL STAGE GUARD: Suppress empty speech prompts during non-interactive stages
+      // ═══════════════════════════════════════════════
+      const nonInteractiveStages = ['booking_in_progress', 'sending_sms', 'terminal'];
+      const isNonInteractive = callStage && nonInteractiveStages.includes(callStage);
+
+      // TERMINAL LOCK: After booking, suppress empty speech retries entirely
+      if (terminalLock || isNonInteractive) {
+        console.log('[VOICE][OPENAI][CONTINUE] Suppressing empty speech prompt (terminalLock:', terminalLock, ', stage:', callStage, ')');
+        // Silent gather - just wait for user input without prompting
+        const silentGather = vr.gather({
+          input: ['speech'],
+          timeout: 15, // Longer timeout in terminal state
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          actionOnEmptyResult: true,
+          profanityFilter: false,
+          hints: 'yes, no, thank you, goodbye, price, directions, question, book another'
+        });
+        // NO say - silent gather allows user to speak or hang up naturally
+        return res.type("text/xml").send(vr.toString());
+      }
 
       // Check if we're within the grace window (don't speak yet, just wait for more input)
       const timeSinceLastEmpty = now - lastEmptyAt;
@@ -5375,7 +5404,9 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // CRITICAL: Only ONE <Gather> per response
+      // INTERACTIVE STAGE: Prompt user with "Are you still there?"
+      // Only for interactive stages: greeting, ask_name, ask_time, offer_slots, ask_confirmation, faq
+      console.log('[VOICE][OPENAI][CONTINUE] Interactive stage - prompting user');
       const gather = vr.gather({
         input: ['speech'],
         timeout: 10, // Longer timeout for silence

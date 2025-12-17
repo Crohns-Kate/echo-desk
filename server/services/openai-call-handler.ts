@@ -704,7 +704,9 @@ export async function handleOpenAIConversation(
       } else if (selectedSlot && !context.currentState.appointmentCreated) {  // Prevent duplicate bookings
         // Set booking lock for 10 seconds to prevent race conditions
         context.currentState.bookingLockUntil = now + 10_000;
-        console.log('[OpenAICallHandler] 🔒 Booking lock acquired for 10 seconds');
+        // CALL STAGE: Mark as booking in progress (suppresses empty speech prompts)
+        context.currentState.callStage = 'booking_in_progress';
+        console.log('[OpenAICallHandler] 🔒 Booking lock acquired for 10 seconds, stage: booking_in_progress');
 
         try {
           // CRITICAL: Use enriched slot's practitioner and appointment type (from multi-practitioner query)
@@ -801,6 +803,13 @@ export async function handleOpenAIConversation(
 
           // Mark appointment as created to prevent duplicates
           context.currentState.appointmentCreated = true;
+
+          // TERMINAL LOCK: After booking, lock flow to prevent:
+          // - Identity prompts, empty speech retries, duplicate confirmations
+          // Allowed: FAQ, directions, price, "book another appointment"
+          context.currentState.terminalLock = true;
+          context.currentState.callStage = 'terminal';
+          console.log('[OpenAICallHandler] 🔐 Terminal lock engaged - stage: terminal');
 
           // Save booked slot time for reference in FAQ answers
           context.bookedSlotTime = selectedSlot.speakable;
