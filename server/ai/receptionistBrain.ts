@@ -86,6 +86,26 @@ export interface CompactCallState {
 
   /** bookingLockUntil = timestamp when booking lock expires (prevents double-booking) */
   bookingLockUntil?: number;
+
+  // ═══════════════════════════════════════════════
+  // Empty Speech Tracking (backend-only)
+  // ═══════════════════════════════════════════════
+
+  /** emptyCount = number of consecutive empty speech results */
+  emptyCount?: number;
+
+  /** lastEmptyAt = timestamp of last empty speech result (for grace window) */
+  lastEmptyAt?: number;
+
+  // ═══════════════════════════════════════════════
+  // Secondary Booking (for family members after primary booking)
+  // ═══════════════════════════════════════════════
+
+  /** bookingFor = who we're booking for: 'self' | 'someone_else' */
+  bookingFor?: 'self' | 'someone_else';
+
+  /** secondaryPatientName = name of child/family member for secondary booking */
+  secondaryPatientName?: string | null;
 }
 
 /**
@@ -494,12 +514,21 @@ Use safe, simple answers like:
 - What should I wear / What to wear:
   "Just wear something comfortable that you can move in easily. Loose clothing works best so we can assess your movement."
 
-- Do you treat [condition] (back pain, neck pain, headaches, knee pain, etc.):
+- Do you treat [condition] (back pain, neck pain, headaches, etc.):
   ⚠️ IMPORTANT: Check if they already have a booking!
   If appointmentCreated=true or bc=true in state:
     "I'm sorry to hear about your [condition]. You can definitely mention that to the chiropractor when you come in for your appointment, so they can assess it properly."
   If no booking yet:
     "Yes, we definitely treat [condition]. It's one of the common issues we help with. Would you like to book an appointment?"
+
+- Knee pain / hip pain / joint pain / shoulder pain:
+  ⚠️ IMPORTANT: Knee/hip/shoulder pain IS treatable - don't say "we focus on chiropractic care" as out-of-scope!
+  Chiropractors CAN assess and help with joint pain, sports injuries, and musculoskeletal issues.
+  If appointmentCreated=true or bc=true in state:
+    "I'm sorry to hear about your knee [or hip/shoulder]. The chiropractor can definitely assess that when you come in for your appointment. Many knee issues relate to the way the body moves as a whole."
+  If no booking yet:
+    "Yes, our chiropractors can help assess knee pain [or hip/shoulder pain]. Often joint issues are related to posture, movement patterns, or referred pain. Would you like to book an appointment to have it checked out?"
+  ⚠️ Include referral note: "If it turns out to be something outside our scope, we can always refer you to the right specialist."
 
 - How often will I need to come back / Treatment frequency / Number of visits:
   "That's something the chiropractor will discuss with you at your first visit. They'll assess your situation and recommend a treatment plan that works for you."

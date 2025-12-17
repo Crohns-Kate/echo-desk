@@ -5289,17 +5289,87 @@ export function registerVoice(app: Express) {
     console.log('[VOICE][OPENAI][CONTINUE] Call:', callSid);
     console.log('[VOICE][OPENAI][CONTINUE] Speech:', speechResult);
 
-    // If no speech, prompt again with "Are you still there?"
-    // Track empty count to avoid infinite loops - close gracefully after 2 empty results
+    // EMPTY SPEECH DEBOUNCE: Use context-based tracking with grace window
+    // Problem: Twilio sometimes sends empty SpeechResult immediately followed by real speech
+    // Solution: Store lastEmptyAt in context, only speak "Are you still there?" after grace period
+    const EMPTY_SPEECH_GRACE_MS = 1000; // 1 second grace window
+
+    // Load conversation context for empty speech tracking
+    const loadContextForEmpty = async () => {
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        if (!call?.conversationId) return null;
+        const conversation = await storage.getConversation(call.conversationId);
+        return conversation?.context as any || null;
+      } catch { return null; }
+    };
+
+    const saveContextForEmpty = async (context: any) => {
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        if (!call?.conversationId) return;
+        await storage.updateConversation(call.conversationId, { context });
+      } catch (e) {
+        console.error('[VOICE][OPENAI][CONTINUE] Error saving empty speech context:', e);
+      }
+    };
+
+    // If speech is non-empty, reset empty count in context
+    if (speechResult && speechResult.trim() !== "") {
+      const ctx = await loadContextForEmpty();
+      if (ctx?.currentState?.emptyCount) {
+        console.log('[VOICE][OPENAI][CONTINUE] Resetting emptyCount (had non-empty speech)');
+        ctx.currentState.emptyCount = 0;
+        ctx.currentState.lastEmptyAt = undefined;
+        await saveContextForEmpty(ctx);
+      }
+    }
+
+    // If no speech, handle with debounce/grace window
     if (!speechResult || speechResult.trim() === "") {
       const vr = new twilio.twiml.VoiceResponse();
+      const now = Date.now();
 
-      // Get empty count from query param (or default to 0)
-      const emptyCount = parseInt(req.query?.emptyCount as string || '0', 10);
-      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount);
+      // Load context to check grace window and get emptyCount
+      const ctx = await loadContextForEmpty();
+      const emptyCount = ctx?.currentState?.emptyCount || 0;
+      const lastEmptyAt = ctx?.currentState?.lastEmptyAt || 0;
+
+      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount, 'lastEmptyAt:', lastEmptyAt);
+
+      // Check if we're within the grace window (don't speak yet, just wait for more input)
+      const timeSinceLastEmpty = now - lastEmptyAt;
+      if (lastEmptyAt > 0 && timeSinceLastEmpty < EMPTY_SPEECH_GRACE_MS) {
+        console.log('[VOICE][OPENAI][CONTINUE] Within grace window (' + timeSinceLastEmpty + 'ms), waiting silently');
+        // Just gather again without speaking - give user time to respond
+        const silentGather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          actionOnEmptyResult: true,
+          profanityFilter: false,
+          hints: 'yes, no, appointment, booking, question, goodbye, that\'s all, nothing else'
+        });
+        // NO say here - silent gather to allow real speech to come through
+        return res.type("text/xml").send(vr.toString());
+      }
+
+      // Update context with new empty timestamp and count
+      if (ctx) {
+        ctx.currentState = ctx.currentState || {};
+        ctx.currentState.emptyCount = emptyCount + 1;
+        ctx.currentState.lastEmptyAt = now;
+        await saveContextForEmpty(ctx);
+      }
 
       if (emptyCount >= 2) {
-        // After 2 empty results, close gracefully
+        // After 2 empty results (outside grace window), close gracefully
+        console.log('[VOICE][OPENAI][CONTINUE] Max empty count reached, closing call');
         saySafe(vr, "Thanks for calling. Have a great day!");
         vr.hangup();
         return res.type("text/xml").send(vr.toString());
@@ -5310,7 +5380,7 @@ export function registerVoice(app: Express) {
         input: ['speech'],
         timeout: 10, // Longer timeout for silence
         speechTimeout: 'auto',
-        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}&emptyCount=${emptyCount + 1}`),
+        action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
         method: 'POST',
         // GUARD: Only set enhanced=true with phone_call model (Twilio warning 13335)
         enhanced: true,

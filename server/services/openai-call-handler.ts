@@ -498,9 +498,64 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler] Fetched', slots.length, 'slots for AI to offer');
     }
 
+    // 2a-bis. SECONDARY BOOKING: After primary booking completed, user wants to book for someone else
+    //         Detect "book for my child/son/daughter" or "same time as my appointment" etc.
+    //         MUST be checked BEFORE reschedule/cancel to avoid "couldn't find appointment" error
+    if (context.currentState.appointmentCreated) {
+      const utteranceLower = userUtterance.toLowerCase();
+      const secondaryBookingPhrases = [
+        'book for my',
+        'also book',
+        'another appointment',
+        'same time for',
+        'same time as my',
+        'book my child',
+        'book my son',
+        'book my daughter',
+        'for my child',
+        'for my son',
+        'for my daughter',
+        'for my kid',
+        'family member',
+        'someone else',
+        'another person',
+        'one more appointment',
+        'second appointment'
+      ];
+
+      const isSecondaryBooking = secondaryBookingPhrases.some(phrase => utteranceLower.includes(phrase));
+
+      if (isSecondaryBooking) {
+        console.log('[OpenAICallHandler] 🎯 SECONDARY BOOKING detected after primary appointment');
+        console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
+
+        // Reset state for new booking, keeping some info
+        context.currentState.im = 'book';
+        context.currentState.bookingFor = 'someone_else';
+        context.currentState.appointmentCreated = false; // Allow new booking
+        context.currentState.bc = false;
+        context.currentState.si = null;
+        context.currentState.nm = null; // Need new name for child/family member
+        context.currentState.np = true; // Treat secondary booking as new patient
+        context.availableSlots = undefined; // Will fetch fresh slots
+
+        // Keep time preference if "same time" mentioned
+        if (utteranceLower.includes('same time')) {
+          console.log('[OpenAICallHandler]   - Keeping time preference (same time requested)');
+          // tp is preserved
+        } else {
+          context.currentState.tp = null; // Ask for time preference
+        }
+
+        console.log('[OpenAICallHandler]   - Reset state for secondary booking');
+      }
+    }
+
     // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is change or cancel
+    //     Skip if this is a secondary booking (bookingFor='someone_else')
     const isRescheduleOrCancel = context.currentState.im === 'change' || context.currentState.im === 'cancel';
-    if (isRescheduleOrCancel && !context.upcomingAppointment) {
+    const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
+    if (isRescheduleOrCancel && !context.upcomingAppointment && !isSecondaryBookingFlow) {
       console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
       try {
         // First find the patient
@@ -592,7 +647,8 @@ export async function handleOpenAIConversation(
     }
 
     // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
-    if ((finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment) {
+    //     Skip if this is a secondary booking flow (user wants to book for someone else after primary booking)
+    if ((finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment && context.currentState.bookingFor !== 'someone_else') {
       console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - looking up appointment...');
       try {
         const patient = await findPatientByPhoneRobust(callerPhone);
