@@ -12,9 +12,11 @@ export function registerForms(app: Express) {
   /**
    * GET /intake/:token
    * Displays the new patient intake form
+   * Optional query param: patientId - Cliniko patient ID for direct updates
    */
   app.get("/intake/:token", async (req: Request, res: Response) => {
     const { token } = req.params;
+    const { patientId } = req.query;  // Cliniko patient ID if available
 
     // Validate token format
     if (!token || !token.startsWith('form_')) {
@@ -232,6 +234,7 @@ export function registerForms(app: Express) {
           const errorMessage = document.getElementById('errorMessage');
           const successMessage = document.getElementById('successMessage');
           const token = '${token}';
+          const clinikoPatientId = '${patientId || ''}';
 
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -258,6 +261,7 @@ export function registerForms(app: Express) {
                 },
                 body: JSON.stringify({
                   token: token,
+                  clinikoPatientId: clinikoPatientId || undefined,
                   ...formData
                 })
               });
@@ -289,10 +293,11 @@ export function registerForms(app: Express) {
   /**
    * POST /api/forms/submit
    * Handles form submission
+   * Accepts optional clinikoPatientId for direct patient updates
    */
   app.post("/api/forms/submit", async (req: Request, res: Response) => {
     try {
-      const { token, firstName, lastName, email, phone } = req.body;
+      const { token, firstName, lastName, email, phone, clinikoPatientId } = req.body;
 
       // Validate inputs
       if (!token || !firstName || !lastName || !email || !phone) {
@@ -349,25 +354,41 @@ export function registerForms(app: Express) {
 
       // Update patient in Cliniko with correct details
       try {
-        // IMPORTANT: Use the CALLER's phone number from the call record first
-        // The patient was created with the caller's phone, which may be formatted differently
-        // than what they enter in the form
-        const callerPhone = call.fromNumber;  // Schema uses 'fromNumber' for caller phone
-        console.log('[POST /api/forms/submit] Looking up patient by caller phone:', callerPhone);
+        let patientIdToUpdate: string | null = null;
 
-        let patient = callerPhone ? await findPatientByPhoneRobust(callerPhone) : null;
+        // PREFERRED: Use clinikoPatientId if provided (most reliable)
+        if (clinikoPatientId) {
+          console.log('[POST /api/forms/submit] Using direct clinikoPatientId:', clinikoPatientId);
+          patientIdToUpdate = clinikoPatientId;
+        } else {
+          // FALLBACK: Try phone lookup (legacy behavior for older links)
+          // Use the CALLER's phone number from the call record first
+          const callerPhone = call.fromNumber;  // Schema uses 'fromNumber' for caller phone
+          console.log('[POST /api/forms/submit] No patientId provided, falling back to phone lookup');
+          console.log('[POST /api/forms/submit] Looking up patient by caller phone:', callerPhone);
 
-        // If not found by caller phone, try the phone entered in form
-        if (!patient && phone !== callerPhone) {
-          console.log('[POST /api/forms/submit] Not found by caller phone, trying form phone:', phone);
-          patient = await findPatientByPhoneRobust(phone);
+          let patient = callerPhone ? await findPatientByPhoneRobust(callerPhone) : null;
+
+          // If not found by caller phone, try the phone entered in form
+          if (!patient && phone !== callerPhone) {
+            console.log('[POST /api/forms/submit] Not found by caller phone, trying form phone:', phone);
+            patient = await findPatientByPhoneRobust(phone);
+          }
+
+          if (patient) {
+            patientIdToUpdate = patient.id.toString();
+            console.log('[POST /api/forms/submit] Found Cliniko patient via phone lookup:', patientIdToUpdate);
+          } else {
+            console.log('[POST /api/forms/submit] No matching Cliniko patient found for caller phone:', callerPhone, 'or form phone:', phone);
+          }
         }
 
-        if (patient) {
-          console.log('[POST /api/forms/submit] Found Cliniko patient:', patient.id);
+        // Update patient if we have an ID
+        if (patientIdToUpdate) {
+          console.log('[POST /api/forms/submit] Updating Cliniko patient:', patientIdToUpdate);
 
           // Update patient with correct name spelling, email, and phone
-          // Only update phone if user entered a different one than the caller phone
+          const callerPhone = call.fromNumber;
           const updatePayload: {
             first_name: string;
             last_name: string;
@@ -387,11 +408,8 @@ export function registerForms(app: Express) {
             ];
           }
 
-          await updateClinikoPatient(patient.id.toString(), updatePayload);
-
+          await updateClinikoPatient(patientIdToUpdate, updatePayload);
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
-        } else {
-          console.log('[POST /api/forms/submit] No matching Cliniko patient found for caller phone:', callerPhone, 'or form phone:', phone);
         }
       } catch (clinikoError) {
         // Log but don't fail the request - form data is saved in context
