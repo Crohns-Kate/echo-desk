@@ -35,6 +35,41 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 // ═══════════════════════════════════════════════
+// Name Sanitization (remove speech artifacts)
+// ═══════════════════════════════════════════════
+
+/**
+ * Sanitize patient name by removing common speech-to-text artifacts
+ * Examples: "Chris message" → "Chris", "John text" → "John"
+ */
+function sanitizePatientName(name: string | null | undefined): string | null {
+  if (!name) return null;
+
+  // Words to strip from end of name (speech artifacts)
+  const artifactWords = [
+    'message', 'text', 'sms', 'link', 'email',
+    'please', 'thanks', 'thank you', 'okay', 'ok',
+    'appointment', 'booking', 'book'
+  ];
+
+  let sanitized = name.trim();
+
+  // Remove trailing artifact words (case-insensitive)
+  for (const artifact of artifactWords) {
+    const regex = new RegExp(`\\s+${artifact}\\s*$`, 'i');
+    sanitized = sanitized.replace(regex, '');
+  }
+
+  // Remove any trailing punctuation
+  sanitized = sanitized.replace(/[.,!?;:]+$/, '').trim();
+
+  // Capitalize first letter of each word
+  sanitized = sanitized.replace(/\b\w/g, c => c.toUpperCase());
+
+  return sanitized || null;
+}
+
+// ═══════════════════════════════════════════════
 // Conversation State Storage
 // ═══════════════════════════════════════════════
 
@@ -529,7 +564,12 @@ export async function handleOpenAIConversation(
         console.log('[OpenAICallHandler] 🎯 SECONDARY BOOKING detected after primary appointment');
         console.log('[OpenAICallHandler]   - User utterance:', userUtterance);
 
-        // Reset state for new booking, keeping some info
+        // ═══════════════════════════════════════════════
+        // SECONDARY BOOKING SESSION: Reset all booking-related state
+        // This allows a fresh booking flow for the child/family member
+        // ═══════════════════════════════════════════════
+
+        // Core booking state
         context.currentState.im = 'book';
         context.currentState.bookingFor = 'someone_else';
         context.currentState.appointmentCreated = false; // Allow new booking
@@ -539,6 +579,20 @@ export async function handleOpenAIConversation(
         context.currentState.np = true; // Treat secondary booking as new patient
         context.availableSlots = undefined; // Will fetch fresh slots
 
+        // CRITICAL: Reset terminal lock so empty speech prompts work
+        context.currentState.terminalLock = false;
+        context.currentState.callStage = 'ask_name'; // We need to ask for child's name
+
+        // CRITICAL: Reset SMS flags for secondary booking session
+        // Store primary SMS state and allow new SMS for secondary patient
+        context.currentState.smsConfirmSentPrimary = context.currentState.smsConfirmSent;
+        context.currentState.smsIntakeSentPrimary = context.currentState.smsIntakeSent;
+        context.currentState.smsConfirmSent = false; // Allow confirmation SMS for child
+        context.currentState.smsIntakeSent = false; // Allow intake form SMS for child
+
+        // Reset booking lock
+        context.currentState.bookingLockUntil = undefined;
+
         // Keep time preference if "same time" mentioned
         if (utteranceLower.includes('same time')) {
           console.log('[OpenAICallHandler]   - Keeping time preference (same time requested)');
@@ -547,7 +601,15 @@ export async function handleOpenAIConversation(
           context.currentState.tp = null; // Ask for time preference
         }
 
-        console.log('[OpenAICallHandler]   - Reset state for secondary booking');
+        // Try to extract child's name from utterance
+        const nameMatch = userUtterance.match(/(?:for|book)\s+(?:my\s+)?(?:child|son|daughter|kid)?\s*(?:named?\s+)?([A-Z][a-z]+)/i);
+        if (nameMatch) {
+          const extractedName = sanitizePatientName(nameMatch[1]);
+          context.currentState.secondaryPatientName = extractedName;
+          console.log('[OpenAICallHandler]   - Extracted child name:', extractedName);
+        }
+
+        console.log('[OpenAICallHandler]   - Reset state for secondary booking (terminalLock: false, SMS flags reset)');
       }
     }
 
@@ -734,15 +796,32 @@ export async function handleOpenAIConversation(
             }
           }
 
+          // ═══════════════════════════════════════════════
+          // NAME HANDLING: Sanitize and use correct name for booking
+          // For secondary bookings, use secondaryPatientName if available
+          // ═══════════════════════════════════════════════
+          const isSecondaryBooking = context.currentState.bookingFor === 'someone_else';
+          let patientName: string | null = finalResponse.state.nm;
+
+          // Sanitize the name (remove speech artifacts like "message", "text", etc.)
+          patientName = sanitizePatientName(patientName) || patientName;
+
+          // For secondary booking, prefer secondaryPatientName if we extracted it
+          if (isSecondaryBooking && context.currentState.secondaryPatientName) {
+            patientName = context.currentState.secondaryPatientName;
+            console.log('[OpenAICallHandler] 🧒 Using secondary patient name:', patientName);
+          }
+
           console.log('[OpenAICallHandler] Creating appointment with:', {
-            name: finalResponse.state.nm,
+            name: patientName,
             phone: callerPhone,
             time: selectedSlot.startISO,
             speakable: selectedSlot.speakable,
             practitionerId,
             practitionerName: selectedSlot.practitionerDisplayName,
             appointmentTypeId,
-            isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT'
+            isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT',
+            isSecondaryBooking: isSecondaryBooking ? '🧒 SECONDARY (child/family)' : '👤 PRIMARY'
           });
 
           // Create appointment in Cliniko
@@ -750,7 +829,7 @@ export async function handleOpenAIConversation(
             practitionerId,
             appointmentTypeId,
             startsAt: selectedSlot.startISO,
-            fullName: finalResponse.state.nm,
+            fullName: patientName,
             notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
             tenantCtx
           });

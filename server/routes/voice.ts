@@ -5337,7 +5337,7 @@ export function registerVoice(app: Express) {
       const callStage = ctx?.currentState?.callStage;
       const terminalLock = ctx?.currentState?.terminalLock;
 
-      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount, 'callStage:', callStage, 'terminalLock:', terminalLock);
+      console.log('[VOICE][OPENAI][CONTINUE] Empty speech result, emptyCount:', emptyCount, 'lastEmptyAt:', lastEmptyAt, 'callStage:', callStage, 'terminalLock:', terminalLock);
 
       // ═══════════════════════════════════════════════
       // CALL STAGE GUARD: Suppress empty speech prompts during non-interactive stages
@@ -5366,11 +5366,29 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // Check if we're within the grace window (don't speak yet, just wait for more input)
+      // ═══════════════════════════════════════════════
+      // GRACE WINDOW LOGIC: Prevent "Are you still there?" during rapid empty→non-empty
+      // ═══════════════════════════════════════════════
+      // FIRST EMPTY (lastEmptyAt === 0): Set timestamp, return silent gather, don't speak
+      // WITHIN GRACE WINDOW: Return silent gather, don't speak
+      // AFTER GRACE WINDOW: Now we can speak "Are you still there?"
+
+      const isFirstEmpty = lastEmptyAt === 0;
       const timeSinceLastEmpty = now - lastEmptyAt;
-      if (lastEmptyAt > 0 && timeSinceLastEmpty < EMPTY_SPEECH_GRACE_MS) {
-        console.log('[VOICE][OPENAI][CONTINUE] Within grace window (' + timeSinceLastEmpty + 'ms), waiting silently');
-        // Just gather again without speaking - give user time to respond
+      const isWithinGraceWindow = !isFirstEmpty && timeSinceLastEmpty < EMPTY_SPEECH_GRACE_MS;
+
+      // Update context with new empty timestamp and count BEFORE returning
+      if (ctx) {
+        ctx.currentState = ctx.currentState || {};
+        ctx.currentState.emptyCount = emptyCount + 1;
+        ctx.currentState.lastEmptyAt = now;
+        await saveContextForEmpty(ctx);
+        console.log('[VOICE][OPENAI][CONTINUE] Updated empty state: emptyCount:', emptyCount + 1, 'lastEmptyAt:', now);
+      }
+
+      // FIRST EMPTY or WITHIN GRACE WINDOW: Silent gather only
+      if (isFirstEmpty || isWithinGraceWindow) {
+        console.log('[VOICE][OPENAI][CONTINUE] Grace window active (first:', isFirstEmpty, ', withinGrace:', isWithinGraceWindow, ') - silent gather');
         const silentGather = vr.gather({
           input: ['speech'],
           timeout: 8,
@@ -5388,14 +5406,7 @@ export function registerVoice(app: Express) {
         return res.type("text/xml").send(vr.toString());
       }
 
-      // Update context with new empty timestamp and count
-      if (ctx) {
-        ctx.currentState = ctx.currentState || {};
-        ctx.currentState.emptyCount = emptyCount + 1;
-        ctx.currentState.lastEmptyAt = now;
-        await saveContextForEmpty(ctx);
-      }
-
+      // AFTER GRACE WINDOW: Check max count then prompt
       if (emptyCount >= 2) {
         // After 2 empty results (outside grace window), close gracefully
         console.log('[VOICE][OPENAI][CONTINUE] Max empty count reached, closing call');
@@ -5405,8 +5416,8 @@ export function registerVoice(app: Express) {
       }
 
       // INTERACTIVE STAGE: Prompt user with "Are you still there?"
-      // Only for interactive stages: greeting, ask_name, ask_time, offer_slots, ask_confirmation, faq
-      console.log('[VOICE][OPENAI][CONTINUE] Interactive stage - prompting user');
+      // Only reached after grace window has passed and emptyCount < 2
+      console.log('[VOICE][OPENAI][CONTINUE] After grace window - prompting user');
       const gather = vr.gather({
         input: ['speech'],
         timeout: 10, // Longer timeout for silence
