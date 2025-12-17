@@ -32,29 +32,6 @@ const migrations: Migration[] = [
       );
     `,
   },
-  {
-    name: "add_handoff_support",
-    sql: `
-      -- CALL LOGS: Add handoff tracking fields
-      ALTER TABLE call_logs
-        ADD COLUMN IF NOT EXISTS handoff_triggered BOOLEAN DEFAULT FALSE,
-        ADD COLUMN IF NOT EXISTS handoff_reason TEXT,
-        ADD COLUMN IF NOT EXISTS handoff_mode TEXT,
-        ADD COLUMN IF NOT EXISTS handoff_status TEXT,
-        ADD COLUMN IF NOT EXISTS handoff_target TEXT,
-        ADD COLUMN IF NOT EXISTS handoff_notes TEXT;
-
-      CREATE INDEX IF NOT EXISTS idx_call_logs_handoff_triggered ON call_logs(handoff_triggered);
-      CREATE INDEX IF NOT EXISTS idx_call_logs_handoff_status ON call_logs(handoff_status);
-
-      -- TENANTS: Add handoff configuration fields
-      ALTER TABLE tenants
-        ADD COLUMN IF NOT EXISTS handoff_mode TEXT DEFAULT 'callback',
-        ADD COLUMN IF NOT EXISTS handoff_phone TEXT,
-        ADD COLUMN IF NOT EXISTS after_hours_mode TEXT DEFAULT 'callback',
-        ADD COLUMN IF NOT EXISTS handoff_sms_template TEXT DEFAULT 'Hi, you requested a callback from {{clinic_name}}. We''ll call you back shortly.';
-    `,
-  },
 ];
 
 /**

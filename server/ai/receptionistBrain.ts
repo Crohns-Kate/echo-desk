@@ -114,29 +114,6 @@ export interface CompactCallState {
   smsIntakeSentPrimary?: boolean;
 
   // ═══════════════════════════════════════════════
-  // Group Booking (for multiple people e.g. "me and my son")
-  // ═══════════════════════════════════════════════
-
-  /**
-   * gb = group_booking: true when booking for multiple people
-   * Triggered by phrases like "for my son and me", "two of us", "both of us"
-   */
-  gb?: boolean;
-
-  /**
-   * gp = group_patients: list of people to book for
-   * Each entry has name (required) and relation (optional)
-   * e.g. [{name: "John Smith", relation: "self"}, {name: "Tommy Smith", relation: "son"}]
-   */
-  gp?: Array<{ name: string; relation?: string }>;
-
-  /**
-   * groupBookingComplete = number of group members booked so far
-   * Used to track progress when booking multiple appointments
-   */
-  groupBookingComplete?: number;
-
-  // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════
 
@@ -236,9 +213,7 @@ No explanations, no commentary, ONLY the JSON object below:
     "pc": true or false (optional),
     "ml": true or false (optional),
     "rc": true or false (optional - reschedule confirmed),
-    "cc": true or false (optional - cancel confirmed),
-    "gb": true or false (optional - group booking for multiple people),
-    "gp": [{"name": "...", "relation": "..."}] (optional - list of group members)
+    "cc": true or false (optional - cancel confirmed)
   }
 }
 

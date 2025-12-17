@@ -152,12 +152,6 @@ export const tenants = pgTable("tenants", {
   afterHoursMessage: text("after_hours_message"),
   holdMessage: text("hold_message"),
 
-  // Handoff Configuration
-  handoffMode: text("handoff_mode").default("callback"), // 'transfer' | 'callback' | 'sms_only'
-  handoffPhone: text("handoff_phone"), // Phone number for transfer (E.164 format)
-  afterHoursMode: text("after_hours_mode").default("callback"), // 'transfer' | 'callback' | 'sms_only'
-  handoffSmsTemplate: text("handoff_sms_template").default("Hi, you requested a callback from {{clinic_name}}. We'll call you back shortly."),
-
   // Metadata
   isActive: boolean("is_active").default(false), // Default false until onboarding complete
   createdAt: timestamp("created_at").defaultNow(),
@@ -231,13 +225,6 @@ export const callLogs = pgTable("call_logs", {
   recordingStatus: text("recording_status"),
   transcript: text("transcript"),
   duration: integer("duration"), // in seconds
-  // Handoff tracking
-  handoffTriggered: boolean("handoff_triggered").default(false),
-  handoffReason: text("handoff_reason"),
-  handoffMode: text("handoff_mode"), // 'transfer' | 'callback' | 'sms_only'
-  handoffStatus: text("handoff_status"), // 'pending' | 'transferred' | 'failed' | 'callback_requested' | 'completed'
-  handoffTarget: text("handoff_target"), // Phone number or callback info
-  handoffNotes: text("handoff_notes"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
