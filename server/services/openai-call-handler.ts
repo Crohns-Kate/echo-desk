@@ -181,6 +181,103 @@ async function getOrCreateContext(
 }
 
 // ═══════════════════════════════════════════════
+// Deterministic Time Preference Extraction (No LLM dependency)
+// ═══════════════════════════════════════════════
+
+/**
+ * Extract time preference from raw utterance deterministically.
+ * This runs BEFORE calling the AI to ensure tp is set even if LLM doesn't extract it.
+ *
+ * Returns a canonical tp string that parseTimePreference() can handle, or null if no match.
+ *
+ * Examples:
+ * - "this afternoon" → "today afternoon"
+ * - "tomorrow morning" → "tomorrow morning"
+ * - "3pm" / "at 3" → "today 3pm"
+ * - "next Tuesday" → "tuesday"
+ * - "sometime this week" → "this week"
+ */
+function extractTimePreferenceFromUtterance(utterance: string): string | null {
+  const lower = utterance.toLowerCase().trim();
+
+  // Pattern 1: Time of day with optional day reference
+  // "this afternoon", "tomorrow morning", "today evening"
+  const timeOfDayMatch = lower.match(
+    /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
+  );
+
+  if (timeOfDayMatch) {
+    const dayRef = timeOfDayMatch[1] || 'today';
+    let timeOfDay = timeOfDayMatch[2];
+
+    // Normalize "arvo" to "afternoon" (Australian slang)
+    if (timeOfDay === 'arvo') timeOfDay = 'afternoon';
+
+    // "this afternoon" → "today afternoon"
+    const normalizedDay = dayRef === 'this' ? 'today' : dayRef;
+
+    console.log('[extractTimePreference] Matched time-of-day pattern:', `${normalizedDay} ${timeOfDay}`);
+    return `${normalizedDay} ${timeOfDay}`;
+  }
+
+  // Pattern 2: Specific time (e.g., "3pm", "at 3", "around 4:30")
+  const specificTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i
+  );
+
+  if (specificTimeMatch) {
+    let hour = parseInt(specificTimeMatch[1], 10);
+    const minute = specificTimeMatch[2] || '00';
+    const meridiem = specificTimeMatch[3]?.toLowerCase().replace(/\./g, '') || '';
+
+    // If hour is 1-11 without meridiem, assume pm for business hours
+    if (!meridiem && hour >= 1 && hour <= 11) {
+      // Most people mean PM when they say "at 3" during business hours
+    }
+
+    const timeStr = meridiem ? `${hour}:${minute}${meridiem}` : `${hour}:${minute}pm`;
+    console.log('[extractTimePreference] Matched specific time:', `today ${timeStr}`);
+    return `today ${timeStr}`;
+  }
+
+  // Pattern 3: Day names (monday, tuesday, etc.)
+  const dayNameMatch = lower.match(
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+
+  if (dayNameMatch) {
+    const dayName = dayNameMatch[1].toLowerCase();
+    console.log('[extractTimePreference] Matched day name:', dayName);
+    return dayName;
+  }
+
+  // Pattern 4: Relative days
+  if (/\btomorrow\b/i.test(lower)) {
+    console.log('[extractTimePreference] Matched "tomorrow"');
+    return 'tomorrow';
+  }
+
+  if (/\btoday\b/i.test(lower)) {
+    console.log('[extractTimePreference] Matched "today"');
+    return 'today';
+  }
+
+  // Pattern 5: "next week", "this week"
+  if (/\bnext\s+week\b/i.test(lower)) {
+    console.log('[extractTimePreference] Matched "next week"');
+    return 'next week';
+  }
+
+  if (/\bthis\s+week\b/i.test(lower)) {
+    console.log('[extractTimePreference] Matched "this week"');
+    return 'today'; // Default to today for "this week"
+  }
+
+  // No time preference found
+  return null;
+}
+
+// ═══════════════════════════════════════════════
 // Time Preference Parsing and Slot Fetching
 // ═══════════════════════════════════════════════
 
@@ -651,6 +748,38 @@ export async function handleOpenAIConversation(
       }
     }
 
+    // ═══════════════════════════════════════════════
+    // 2c. DETERMINISTIC TP EXTRACTION: For group bookings, extract time preference
+    // from utterance BEFORE calling AI. This ensures tp is set even if LLM doesn't.
+    // ═══════════════════════════════════════════════
+    const isGroupBookingActive = context.currentState.gb === true &&
+                                  Array.isArray(context.currentState.gp) &&
+                                  context.currentState.gp.length >= 2;
+
+    if (isGroupBookingActive && !context.currentState.tp) {
+      const extractedTp = extractTimePreferenceFromUtterance(userUtterance);
+      if (extractedTp) {
+        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking detected, extracted tp from utterance:', extractedTp);
+        context.currentState.tp = extractedTp;
+
+        // Also set request_slots since we now have tp
+        context.currentState.rs = true;
+        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Set tp="%s" and rs=true for group booking', extractedTp);
+      } else {
+        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking active but no time preference found in utterance:', userUtterance);
+      }
+    }
+
+    // Log group booking state before AI call
+    if (context.currentState.gb) {
+      console.log('[OpenAICallHandler] 👨‍👩‍👧 GROUP BOOKING STATE BEFORE AI:',
+        'gb=', context.currentState.gb,
+        'gp=', context.currentState.gp?.map(p => p.name),
+        'tp=', context.currentState.tp,
+        'np=', context.currentState.np
+      );
+    }
+
     // 3. Call OpenAI receptionist brain
     const response = await callReceptionistBrain(context, userUtterance);
 
@@ -761,8 +890,10 @@ export async function handleOpenAIConversation(
 
     // ═══════════════════════════════════════════════
     // 4a. GROUP BOOKING EXECUTOR: Auto-execute when conditions are met
-    // This runs BEFORE the bc-based executor to handle initial group bookings
-    // where the AI has collected all names and time preference
+    // This runs AFTER state merge to handle group bookings where we have:
+    // - gb=true (group booking detected)
+    // - gp.length>=2 (at least 2 people)
+    // - tp set (time preference - via LLM or deterministic extraction)
     // ═══════════════════════════════════════════════
     const hasGroupBookingInfo = context.currentState.gb === true &&
                                 Array.isArray(context.currentState.gp) &&
@@ -771,10 +902,20 @@ export async function handleOpenAIConversation(
                                 !context.currentState.groupBookingComplete &&
                                 !context.currentState.appointmentCreated;
 
+    // Always log group booking check for debugging
+    console.log('[GroupBookingExecutor] hasGroupBookingInfo=%s | gb=%s | gp.length=%d | tp=%s | complete=%s | created=%s',
+      hasGroupBookingInfo,
+      context.currentState.gb,
+      Array.isArray(context.currentState.gp) ? context.currentState.gp.length : 0,
+      context.currentState.tp || 'null',
+      context.currentState.groupBookingComplete || false,
+      context.currentState.appointmentCreated || false
+    );
+
     if (hasGroupBookingInfo) {
-      console.log('[OpenAICallHandler] 👨‍👩‍👧 GROUP BOOKING READY - executing auto-booking');
-      console.log('[OpenAICallHandler]   - Patients:', context.currentState.gp?.map(p => p.name).join(', '));
-      console.log('[OpenAICallHandler]   - Time preference:', context.currentState.tp);
+      console.log('[GroupBookingExecutor] 👨‍👩‍👧 EXECUTING GROUP BOOKING');
+      console.log('[GroupBookingExecutor]   - Patients:', context.currentState.gp?.map(p => p.name).join(', '));
+      console.log('[GroupBookingExecutor]   - Time preference:', context.currentState.tp);
 
       // Fetch slots if not already available
       if (!context.availableSlots || context.availableSlots.length === 0) {
