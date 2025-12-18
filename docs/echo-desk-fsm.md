@@ -1,27 +1,10 @@
 # Echo Desk Call Flow State Machine
 
-> **⚠️ DEPRECATED - DO NOT USE**
->
-> This document describes the OLD FSM-based call flow which has been replaced by the
-> OpenAI conversation mode. The FSM approach (callFlowHandler.ts) is no longer the
-> primary call handler.
->
-> **For current call flow behavior, see: [/docs/CALLFLOW-SPEC.md](./CALLFLOW-SPEC.md)**
->
-> The current implementation uses:
-> - `server/ai/receptionistBrain.ts` - AI system prompt and state types
-> - `server/services/openai-call-handler.ts` - Main conversation handler
-> - `server/routes/voice.ts` - Twilio webhooks (openai-incoming, openai-continue)
->
-> This file is kept for historical reference only.
-
----
-
-## Overview (DEPRECATED)
+## Overview
 
 The Echo Desk voice receptionist implements a finite state machine (FSM) to manage call flow. This ensures predictable, maintainable conversation logic with proper error handling and state transitions.
 
-**Implementation**: `server/services/callFlowHandler.ts` (CallFlowHandler class) - **DEPRECATED**
+**Implementation**: `server/services/callFlowHandler.ts` (CallFlowHandler class)
 
 ## State Diagram
 
