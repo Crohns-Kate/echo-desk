@@ -775,7 +775,184 @@ export async function handleOpenAIConversation(
       );
     }
 
-    // 3. Call OpenAI receptionist brain
+    // ═══════════════════════════════════════════════
+    // 2d. GROUP BOOKING EXECUTOR - MUST RUN BEFORE AI
+    // If group booking is ready (gb=true, gp>=2, tp set, not complete),
+    // execute immediately without calling AI. AI must NOT decide outcomes.
+    // ═══════════════════════════════════════════════
+    const groupBookingReady = context.currentState.gb === true &&
+                               Array.isArray(context.currentState.gp) &&
+                               context.currentState.gp.length >= 2 &&
+                               context.currentState.tp &&
+                               !context.currentState.groupBookingComplete;
+
+    // Hard logging for verification
+    console.log('[GroupBookingExecutor] CHECK:', {
+      gb: context.currentState.gb,
+      gpLength: Array.isArray(context.currentState.gp) ? context.currentState.gp.length : 0,
+      tp: context.currentState.tp || 'null',
+      groupBookingComplete: context.currentState.groupBookingComplete || false,
+      ready: groupBookingReady
+    });
+
+    if (groupBookingReady) {
+      console.log('[GroupBookingExecutor] 🚀 RUNNING - All conditions met, bypassing AI');
+      console.log('[GroupBookingExecutor] Patients:', context.currentState.gp?.map((p: { name: string; relation?: string }) => p.name).join(', '));
+      console.log('[GroupBookingExecutor] Time preference:', context.currentState.tp);
+
+      try {
+        // Fetch slots if not already available
+        if (!context.availableSlots || context.availableSlots.length === 0) {
+          console.log('[GroupBookingExecutor] 🔄 Fetching slots...');
+          const groupSize = context.currentState.gp?.length || 2;
+          const slots = await fetchAvailableSlots(
+            { ...context.currentState, np: true },  // Treat as new patients
+            tenantId,
+            timezone,
+            groupSize * 2  // Fetch extra slots for flexibility
+          );
+          context.availableSlots = slots;
+          console.log('[GroupBookingExecutor] ✅ Fetched', slots.length, 'slots');
+        }
+
+        const groupPatients = context.currentState.gp || [];
+
+        if (!context.availableSlots || context.availableSlots.length < groupPatients.length) {
+          console.log('[GroupBookingExecutor] ⚠️ Not enough slots for group booking');
+          // Fall through to AI to handle "no slots available"
+        } else {
+          // Execute group booking
+          const groupBookingResults: Array<{ name: string; patientId: string; appointmentId: string; time: string }> = [];
+
+          // Set booking lock
+          context.currentState.bookingLockUntil = Date.now() + 20_000;
+          context.currentState.callStage = 'booking_in_progress';
+          console.log('[GroupBookingExecutor] 🔒 Booking lock acquired');
+
+          // Get tenant context
+          let tenantCtx = undefined;
+          if (tenantId) {
+            const tenant = await storage.getTenantById(tenantId);
+            if (tenant) {
+              tenantCtx = getTenantContext(tenant);
+            }
+          }
+
+          // Book appointments for each group member
+          for (let i = 0; i < groupPatients.length; i++) {
+            const member = groupPatients[i];
+
+            // Check we have enough slots
+            if (i >= context.availableSlots.length) {
+              console.log('[GroupBookingExecutor] ⚠️ Not enough slots. Booked', i, 'of', groupPatients.length);
+              break;
+            }
+
+            const slot = context.availableSlots[i];
+            const practitionerId = slot.clinikoPractitionerId || env.CLINIKO_PRACTITIONER_ID;
+            const appointmentTypeId = slot.appointmentTypeId || env.CLINIKO_NEW_PATIENT_APPT_TYPE_ID;
+
+            // Sanitize name
+            const memberName = sanitizePatientName(member.name) || member.name;
+
+            console.log('[GroupBookingExecutor] 📋 Creating appointment', i + 1, 'for:', memberName, 'at', slot.speakable);
+
+            const appointment = await createAppointmentForPatient(callerPhone, {
+              practitionerId,
+              appointmentTypeId,
+              startsAt: slot.startISO,
+              fullName: memberName,
+              notes: context.currentState.sym
+                ? `Symptom: ${context.currentState.sym} (Group booking: ${member.relation || 'family'})`
+                : `Group booking: ${member.relation || 'family'}`,
+              tenantCtx
+            });
+
+            console.log('[GroupBookingExecutor] ✅ Appointment created:', appointment.id, 'patient:', appointment.patient_id);
+
+            groupBookingResults.push({
+              name: memberName,
+              patientId: appointment.patient_id,
+              appointmentId: appointment.id,
+              time: slot.speakable
+            });
+          }
+
+          // Send SMS confirmation (once for the caller)
+          if (groupBookingResults.length > 0) {
+            const appointmentSummary = groupBookingResults.map(r => `${r.name}: ${r.time}`).join(', ');
+            const firstSlot = context.availableSlots[0];
+            const appointmentTime = dayjs(firstSlot.startISO).tz(timezone);
+            const formattedDate = appointmentTime.format('dddd, MMMM D');
+
+            await sendAppointmentConfirmation({
+              to: callerPhone,
+              appointmentDate: `${formattedDate} - ${appointmentSummary}`,
+              clinicName: clinicName || 'Spinalogic',
+              practitionerName: firstSlot.practitionerDisplayName,
+              address: clinicAddress || context.tenantInfo?.address,
+              mapUrl: googleMapsUrl || undefined
+            });
+            context.currentState.smsConfirmSent = true;
+            console.log('[GroupBookingExecutor] ✅ SMS confirmation sent');
+
+            // Send intake forms for each patient
+            for (const result of groupBookingResults) {
+              const formToken = `form_${callSid}_${result.patientId}`;
+
+              await sendNewPatientForm({
+                to: callerPhone,
+                token: formToken,
+                clinicName: clinicName || 'Spinalogic'
+              });
+              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name);
+            }
+            context.currentState.smsIntakeSent = true;
+          }
+
+          // Mark group booking complete ONLY after all operations succeed
+          context.currentState.groupBookingComplete = groupBookingResults.length;
+          context.currentState.terminalLock = true;
+          context.currentState.callStage = 'terminal';
+          context.currentState.bc = true;
+          console.log('[GroupBookingExecutor] 🎉 COMPLETE!', groupBookingResults.length, 'appointments created');
+
+          // Save context
+          await saveConversationContext(callSid, context);
+
+          // Generate confirmation TwiML - bypass AI entirely
+          const bookedNames = groupBookingResults.map(r => r.name).join(' and ');
+          const bookedTimes = groupBookingResults.map(r => r.time).join(' and ');
+          const confirmationMessage = `Perfect! I've booked ${bookedNames} for ${bookedTimes}. I'm sending a text with the appointment details and forms. Is there anything else I can help with?`;
+
+          const gather = vr.gather({
+            input: ['speech'],
+            timeout: 8,
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            speechModel: 'phone_call',
+            bargeIn: true,
+            profanityFilter: false,
+            actionOnEmptyResult: true,
+            hints: 'yes, no, goodbye, that\'s all, nothing else'
+          });
+
+          saySafe(gather, confirmationMessage);
+
+          // Return immediately - do NOT call AI
+          return vr;
+        }
+      } catch (error) {
+        console.error('[GroupBookingExecutor] ❌ Error:', error);
+        // Reset state on failure and fall through to AI
+        context.currentState.callStage = 'offer_slots';
+        context.currentState.bookingLockUntil = undefined;
+      }
+    }
+
+    // 3. Call OpenAI receptionist brain (ONLY if group booking executor did not run/complete)
     const response = await callReceptionistBrain(context, userUtterance);
 
     console.log('[OpenAICallHandler] Reply:', response.reply);
