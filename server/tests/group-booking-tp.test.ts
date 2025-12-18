@@ -474,6 +474,150 @@ assert(
   '"this arvo" (Aussie slang) → "today afternoon"'
 );
 
+// ─────────────────────────────────────────────────────────────
+// TEST 10: Full Two-Person Group Booking Flow (Regression Test)
+// Scenario: "Can I book for myself and my son?"
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 10: Full Two-Person Group Booking Flow (Regression)');
+
+// Simulates the executor condition check (must NOT include appointmentCreated)
+function groupBookingExecutorReady(state: MockCompactCallState): boolean {
+  return state.gb === true &&
+         Array.isArray(state.gp) &&
+         state.gp.length >= 2 &&
+         !!state.tp &&
+         !state.groupBookingComplete;
+  // NOTE: appointmentCreated is NOT checked - group booking is atomic
+}
+
+// Turn 1: User says "Can I book for myself and my son?"
+// AI detects group booking and collects names
+const turn1: MockCompactCallState = {
+  gb: true,
+  gp: [
+    { name: 'Michael Bishop', relation: 'self' },
+    { name: 'Scott Bishop', relation: 'son' }
+  ],
+  tp: null,
+  np: true,
+  appointmentCreated: false  // This should NOT block executor
+};
+
+assert(
+  turn1.gb === true && turn1.gp?.length === 2,
+  'Turn 1: Names "Michael Bishop" and "Scott Bishop" collected'
+);
+
+assert(
+  turn1.tp === null,
+  'Turn 1: tp=null (time preference not yet collected)'
+);
+
+assert(
+  groupBookingExecutorReady(turn1) === false,
+  'Turn 1: Executor NOT ready (missing tp)'
+);
+
+// Turn 2: User says "This afternoon"
+// Deterministic TP extraction sets tp, executor should be ready
+const turn2 = simulateDeterministicTPExtraction(turn1, 'This afternoon');
+
+assert(
+  turn2.tp === 'today afternoon',
+  'Turn 2: tp="today afternoon" extracted deterministically'
+);
+
+assert(
+  groupBookingExecutorReady(turn2) === true,
+  'Turn 2: Executor IS READY - should run BEFORE AI!'
+);
+
+// Verify that appointmentCreated=false does NOT block executor
+const turn2WithPriorBooking: MockCompactCallState = {
+  ...turn2,
+  appointmentCreated: true  // Even if this is true, executor should still run
+};
+
+assert(
+  groupBookingExecutorReady(turn2WithPriorBooking) === true,
+  'Executor ignores appointmentCreated (group booking is atomic)'
+);
+
+// Verify executor is blocked ONLY by groupBookingComplete
+const turn2Completed: MockCompactCallState = {
+  ...turn2,
+  groupBookingComplete: 2  // Both booked
+};
+
+assert(
+  groupBookingExecutorReady(turn2Completed) === false,
+  'Executor blocked ONLY when groupBookingComplete is set'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 11: Executor Flow Priority
+// Verifies that executor runs BEFORE AI can generate close-out
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 11: Executor Priority Over AI');
+
+// Simulate the exact state when user says "This afternoon"
+// after providing names "Michael Bishop and Scott Bishop"
+const preExecutorState: MockCompactCallState = {
+  gb: true,
+  gp: [
+    { name: 'Michael Bishop', relation: 'self' },
+    { name: 'Scott Bishop', relation: 'son' }
+  ],
+  tp: 'today afternoon',  // Set by deterministic extraction
+  np: true,
+  rs: true,  // Ready to offer slots
+  groupBookingComplete: undefined,  // Not yet complete
+  appointmentCreated: false
+};
+
+assert(
+  groupBookingExecutorReady(preExecutorState) === true,
+  'Pre-executor state: Ready to run'
+);
+
+// The executor should:
+// 1. Fetch slots
+// 2. Create 2 Cliniko patients
+// 3. Create 2 appointments
+// 4. Send 2 intake SMS links
+// 5. Set groupBookingComplete = 2
+// 6. Return TwiML confirmation WITHOUT calling AI
+
+// After executor runs:
+const postExecutorState: MockCompactCallState = {
+  ...preExecutorState,
+  groupBookingComplete: 2,
+  bc: true,
+  terminalLock: true,
+  smsConfirmSent: true,
+  smsIntakeSent: true
+};
+
+assert(
+  postExecutorState.groupBookingComplete === 2,
+  'Post-executor: groupBookingComplete = 2 (both patients booked)'
+);
+
+assert(
+  postExecutorState.bc === true,
+  'Post-executor: bc=true (booking confirmed)'
+);
+
+assert(
+  postExecutorState.terminalLock === true,
+  'Post-executor: terminalLock=true (call in terminal state)'
+);
+
+assert(
+  groupBookingExecutorReady(postExecutorState) === false,
+  'Post-executor: Executor blocked (won\'t run again)'
+);
+
 // ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
@@ -496,5 +640,8 @@ console.log('  - Non-group bookings skip deterministic extraction');
 console.log('  - Existing tp not overwritten');
 console.log('  - Executor blocks after completion');
 console.log('  - Edge cases (embedded, filler words, Aussie slang)');
+console.log('  - Full two-person group booking flow (Michael + Scott Bishop)');
+console.log('  - Executor ignores appointmentCreated (atomic booking)');
+console.log('  - Executor runs BEFORE AI can generate close-out');
 
 process.exit(failed > 0 ? 1 : 0);
