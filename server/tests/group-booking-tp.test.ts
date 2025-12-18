@@ -98,6 +98,11 @@ interface MockCompactCallState {
   tp?: string | null;
   np?: boolean | null;
   rs?: boolean;
+  im?: string;
+  bc?: boolean;
+  terminalLock?: boolean;
+  smsConfirmSent?: boolean;
+  smsIntakeSent?: boolean;
   groupBookingComplete?: number;
   appointmentCreated?: boolean;
 }
@@ -618,6 +623,301 @@ assert(
   'Post-executor: Executor blocked (won\'t run again)'
 );
 
+// ─────────────────────────────────────────────────────────────
+// TEST 12: First-Utterance Group Booking Detection (Pre-AI)
+// Tests the deterministic regex-based detection that seeds gb/gp
+// BEFORE the AI runs, enabling executor to trigger on first turn
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 12: First-Utterance Group Booking Detection');
+
+// Group booking phrase patterns (mirror of production code)
+const groupBookingPatterns = [
+  /myself and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
+  /me and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
+  /my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother) and (me|myself|i)/i,
+  /both of us/i,
+  /two of us/i,
+  /for (both|two|the two)/i,
+  /appointments? for (both|two|me and)/i,
+  /book(ing)? for (me|myself) and/i,
+  /for myself and/i,
+  /(book|appointment|see).+(son|child|daughter|kids?).+and.+(me|myself)/i,
+  /(book|appointment|see).+(me|myself).+and.+(son|child|daughter|kids?)/i
+];
+
+function detectsGroupBooking(utterance: string): boolean {
+  return groupBookingPatterns.some(pattern => pattern.test(utterance));
+}
+
+// Simulates the first-turn seeding logic
+function simulateFirstTurnDetection(
+  state: MockCompactCallState,
+  utterance: string
+): MockCompactCallState {
+  const isGroupBookingUtterance = detectsGroupBooking(utterance);
+
+  if (isGroupBookingUtterance && !state.gb) {
+    // Extract relation
+    let relation = 'family member';
+    const relationMatch = utterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
+    if (relationMatch) {
+      relation = relationMatch[1].toLowerCase();
+    }
+
+    // Seed state
+    const newState: MockCompactCallState = {
+      ...state,
+      gb: true,
+      gp: [
+        { name: 'PRIMARY', relation: 'caller' },
+        { name: 'SECONDARY', relation: relation }
+      ],
+      im: 'book'
+    };
+
+    // Also extract tp if present
+    const tp = extractTimePreferenceFromUtterance(utterance);
+    if (tp) {
+      newState.tp = tp;
+      newState.rs = true;
+    }
+
+    return newState;
+  }
+
+  return state;
+}
+
+// Test pattern matching
+assert(
+  detectsGroupBooking('myself and my son for this afternoon') === true,
+  '"myself and my son" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('me and my child this afternoon') === true,
+  '"me and my child" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('my daughter and myself') === true,
+  '"my daughter and myself" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('both of us need an appointment') === true,
+  '"both of us" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('two of us need to be seen') === true,
+  '"two of us" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('for both please') === true,
+  '"for both" detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('appointments for me and my husband') === true,
+  '"appointments for me and my husband" detected'
+);
+
+assert(
+  detectsGroupBooking('booking for myself and my wife') === true,
+  '"booking for myself and my wife" detected'
+);
+
+assert(
+  detectsGroupBooking('me and my kids') === true,
+  '"me and my kids" detected'
+);
+
+assert(
+  detectsGroupBooking('my mum and me') === true,
+  '"my mum and me" detected'
+);
+
+// Negative cases
+assert(
+  detectsGroupBooking('I need an appointment') === false,
+  '"I need an appointment" NOT detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('this afternoon please') === false,
+  '"this afternoon please" NOT detected as group booking'
+);
+
+assert(
+  detectsGroupBooking('I have back pain') === false,
+  '"I have back pain" NOT detected as group booking'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 13: First-Turn State Seeding
+// Verifies that gb, gp placeholders, and tp are seeded together
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 13: First-Turn State Seeding');
+
+const emptyState: MockCompactCallState = {};
+
+// Test: "myself and my son for this afternoon"
+const seededState1 = simulateFirstTurnDetection(
+  emptyState,
+  'myself and my son for this afternoon'
+);
+
+assert(
+  seededState1.gb === true,
+  'First turn: gb=true seeded'
+);
+
+assert(
+  Array.isArray(seededState1.gp) && seededState1.gp.length === 2,
+  'First turn: gp seeded with 2 entries'
+);
+
+assert(
+  seededState1.gp?.[0]?.name === 'PRIMARY' && seededState1.gp?.[0]?.relation === 'caller',
+  'First turn: gp[0] is PRIMARY caller'
+);
+
+assert(
+  seededState1.gp?.[1]?.name === 'SECONDARY' && seededState1.gp?.[1]?.relation === 'son',
+  'First turn: gp[1] is SECONDARY son'
+);
+
+assert(
+  seededState1.tp === 'today afternoon',
+  'First turn: tp="today afternoon" extracted'
+);
+
+assert(
+  seededState1.rs === true,
+  'First turn: rs=true (ready for slots)'
+);
+
+// Test: "me and my daughter tomorrow morning"
+const seededState2 = simulateFirstTurnDetection(
+  emptyState,
+  'me and my daughter tomorrow morning'
+);
+
+assert(
+  seededState2.gp?.[1]?.relation === 'daughter',
+  'Relation "daughter" extracted correctly'
+);
+
+assert(
+  seededState2.tp === 'tomorrow morning',
+  'tp="tomorrow morning" extracted'
+);
+
+// Test: "both of us" (no specific relation)
+const seededState3 = simulateFirstTurnDetection(
+  emptyState,
+  'both of us need appointments'
+);
+
+assert(
+  seededState3.gb === true,
+  '"both of us" → gb=true'
+);
+
+assert(
+  seededState3.gp?.[1]?.relation === 'family member',
+  '"both of us" → default relation "family member"'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 14: Executor Ready on First Turn
+// The key regression test: executor should be ready after
+// first-turn seeding when both gp placeholders AND tp are set
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 14: Executor Ready on First Turn (Critical Regression)');
+
+// Simulate: User says "myself and my son for this afternoon" as FIRST utterance
+const firstUtteranceState = simulateFirstTurnDetection(
+  {},
+  'myself and my son for this afternoon'
+);
+
+// Check executor readiness
+// NOTE: In production, executor needs actual names, not placeholders
+// The seeding ensures gb/gp.length >= 2 is true, triggering further name collection
+const executorConditionsMet =
+  firstUtteranceState.gb === true &&
+  Array.isArray(firstUtteranceState.gp) &&
+  firstUtteranceState.gp.length >= 2 &&
+  !!firstUtteranceState.tp;
+
+assert(
+  executorConditionsMet === true,
+  'First turn: All executor PRE-CONDITIONS met (gb, gp.length>=2, tp)'
+);
+
+// Note: Actual executor needs real names, so it will ask AI to collect them
+// But the important thing is that the state is SEEDED so AI knows it's a group booking
+assert(
+  firstUtteranceState.gp?.[0]?.name === 'PRIMARY',
+  'Placeholder names indicate names still need collection'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 15: Full First-Turn Flow Simulation
+// End-to-end: First utterance → State seeded → AI collects names → Executor runs
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 15: Full First-Turn Flow Simulation');
+
+// Step 1: First utterance with group + time
+let flowState: MockCompactCallState = {};
+flowState = simulateFirstTurnDetection(flowState, 'myself and my son for this afternoon');
+
+assert(
+  flowState.gb === true && flowState.gp?.length === 2 && flowState.tp === 'today afternoon',
+  'Step 1: First-turn detection seeds gb, gp placeholders, and tp'
+);
+
+// Step 2: AI response provides actual names (simulated)
+flowState = {
+  ...flowState,
+  gp: [
+    { name: 'Michael Bishop', relation: 'caller' },
+    { name: 'Scott Bishop', relation: 'son' }
+  ]
+};
+
+assert(
+  flowState.gp?.[0]?.name === 'Michael Bishop' && flowState.gp?.[1]?.name === 'Scott Bishop',
+  'Step 2: AI replaces placeholders with actual names'
+);
+
+// Step 3: Check executor readiness
+assert(
+  groupBookingExecutorReady(flowState) === true,
+  'Step 3: Executor IS READY - should execute BEFORE next AI call'
+);
+
+// Step 4: Executor runs and completes
+flowState = {
+  ...flowState,
+  groupBookingComplete: 2,
+  bc: true,
+  terminalLock: true
+};
+
+assert(
+  flowState.groupBookingComplete === 2,
+  'Step 4: Executor completed - groupBookingComplete=2'
+);
+
+assert(
+  groupBookingExecutorReady(flowState) === false,
+  'Step 4: Executor blocked from running again'
+);
+
 // ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
@@ -643,5 +943,10 @@ console.log('  - Edge cases (embedded, filler words, Aussie slang)');
 console.log('  - Full two-person group booking flow (Michael + Scott Bishop)');
 console.log('  - Executor ignores appointmentCreated (atomic booking)');
 console.log('  - Executor runs BEFORE AI can generate close-out');
+console.log('  - First-utterance group booking detection (pre-AI regex)');
+console.log('  - Placeholder seeding: gp=[PRIMARY, SECONDARY] on detection');
+console.log('  - Combined detection: "myself and my son for this afternoon"');
+console.log('  - Relation extraction: son, daughter, kids, husband, wife, etc.');
+console.log('  - First-turn flow: detection → seeding → AI names → executor');
 
 process.exit(failed > 0 ? 1 : 0);

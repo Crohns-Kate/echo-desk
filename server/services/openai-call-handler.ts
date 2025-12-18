@@ -744,7 +744,73 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
-    // 2c. DETERMINISTIC TP EXTRACTION: For group bookings, extract time preference
+    // 2c. DETERMINISTIC GROUP BOOKING DETECTION: Detect group booking from utterance
+    // BEFORE calling AI. This seeds gb and gp on the FIRST turn so executor can trigger.
+    // The AI would normally set these, but executor runs BEFORE AI response is applied.
+    // ═══════════════════════════════════════════════
+    const utteranceLowerForGroup = userUtterance.toLowerCase().trim();
+
+    // Group booking phrase patterns - detect multi-person booking intent
+    const groupBookingPatterns = [
+      /myself and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
+      /me and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
+      /my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother) and (me|myself|i)/i,
+      /both of us/i,
+      /two of us/i,
+      /for (both|two|the two)/i,
+      /appointments? for (both|two|me and)/i,
+      /book(ing)? for (me|myself) and/i,
+      /for myself and/i,
+      /(book|appointment|see).+(son|child|daughter|kids?).+and.+(me|myself)/i,
+      /(book|appointment|see).+(me|myself).+and.+(son|child|daughter|kids?)/i
+    ];
+
+    const isGroupBookingUtterance = groupBookingPatterns.some(pattern => pattern.test(userUtterance));
+
+    if (isGroupBookingUtterance && !context.currentState.gb) {
+      console.log('[OpenAICallHandler] 🎯 DETERMINISTIC GROUP BOOKING DETECTION: First-turn detection triggered');
+      console.log('[OpenAICallHandler]   Utterance:', userUtterance);
+
+      // Set group booking flag
+      context.currentState.gb = true;
+
+      // Seed gp with placeholder entries if empty
+      // These will be replaced with actual names when AI extracts them
+      if (!context.currentState.gp || context.currentState.gp.length < 2) {
+        // Try to extract relation from utterance (for better placeholders)
+        let relation = 'family member';
+        const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
+        if (relationMatch) {
+          relation = relationMatch[1].toLowerCase();
+        }
+
+        context.currentState.gp = [
+          { name: 'PRIMARY', relation: 'caller' },
+          { name: 'SECONDARY', relation: relation }
+        ];
+        console.log('[OpenAICallHandler]   Seeded gp with placeholders:', context.currentState.gp);
+      }
+
+      // Also extract time preference if present
+      const extractedTpFirst = extractTimePreferenceFromUtterance(userUtterance);
+      if (extractedTpFirst && !context.currentState.tp) {
+        context.currentState.tp = extractedTpFirst;
+        context.currentState.rs = true;
+        console.log('[OpenAICallHandler]   Extracted tp from first utterance:', extractedTpFirst);
+      }
+
+      // Set booking intent
+      context.currentState.im = 'book';
+
+      console.log('[OpenAICallHandler] 🎯 DETERMINISTIC GROUP BOOKING: gb=%s, gp.length=%d, tp=%s',
+        context.currentState.gb,
+        context.currentState.gp?.length || 0,
+        context.currentState.tp || 'null'
+      );
+    }
+
+    // ═══════════════════════════════════════════════
+    // 2d. DETERMINISTIC TP EXTRACTION: For group bookings, extract time preference
     // from utterance BEFORE calling AI. This ensures tp is set even if LLM doesn't.
     // ═══════════════════════════════════════════════
     const isGroupBookingActive = context.currentState.gb === true &&
