@@ -769,7 +769,7 @@ export async function handleOpenAIConversation(
     if (context.currentState.gb) {
       console.log('[OpenAICallHandler] 👨‍👩‍👧 GROUP BOOKING STATE BEFORE AI:',
         'gb=', context.currentState.gb,
-        'gp=', context.currentState.gp?.map(p => p.name),
+        'gp=', context.currentState.gp?.map((p: { name: string; relation?: string }) => p.name),
         'tp=', context.currentState.tp,
         'np=', context.currentState.np
       );

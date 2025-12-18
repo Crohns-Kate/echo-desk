@@ -14,6 +14,7 @@
     "test:appointment": "node --import tsx server/tests/appointment-search.test.ts",
     "test:booking": "node --import tsx server/tests/booking-flow.test.ts",
     "test:multi-patient": "node --import tsx server/tests/multi-patient.test.ts",
+    "test:group-booking": "node --import tsx server/tests/group-booking-tp.test.ts",
     "test:quality": "tsx test-quality-check.ts"
   },
   "dependencies": {
