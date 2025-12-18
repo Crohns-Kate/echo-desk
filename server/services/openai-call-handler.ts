@@ -896,16 +896,17 @@ export async function handleOpenAIConversation(
             context.currentState.smsConfirmSent = true;
             console.log('[GroupBookingExecutor] ✅ SMS confirmation sent');
 
-            // Send intake forms for each patient
+            // Send intake forms for each patient with their Cliniko patient ID
             for (const result of groupBookingResults) {
               const formToken = `form_${callSid}_${result.patientId}`;
 
               await sendNewPatientForm({
                 to: callerPhone,
                 token: formToken,
-                clinicName: clinicName || 'Spinalogic'
+                clinicName: clinicName || 'Spinalogic',
+                clinikoPatientId: result.patientId  // Link form to correct Cliniko patient
               });
-              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name);
+              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId);
             }
             context.currentState.smsIntakeSent = true;
           }
