@@ -277,6 +277,83 @@ function extractTimePreferenceFromUtterance(utterance: string): string | null {
   return null;
 }
 
+/**
+ * Extract two names from an utterance for group booking
+ * Handles patterns like:
+ * - "Michael Bishop and Scott Bishop"
+ * - "John Smith and Jane Doe"
+ * - "Michael and Scott"
+ * Returns null if no two-name pattern is found
+ */
+function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; relation?: string }> | null {
+  const cleaned = utterance.trim();
+
+  // Skip if utterance is too short or empty
+  if (cleaned.length < 5) return null;
+
+  // Pattern 1: "FirstName LastName and FirstName LastName"
+  // e.g., "Michael Bishop and Scott Bishop"
+  const fullNamesPattern = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\s+and\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/i;
+  const fullNamesMatch = cleaned.match(fullNamesPattern);
+
+  if (fullNamesMatch) {
+    const name1 = `${fullNamesMatch[1]} ${fullNamesMatch[2]}`;
+    const name2 = `${fullNamesMatch[3]} ${fullNamesMatch[4]}`;
+    console.log('[extractTwoNames] Matched full names:', name1, 'and', name2);
+    return [
+      { name: name1, relation: 'caller' },
+      { name: name2, relation: 'family' }
+    ];
+  }
+
+  // Pattern 2: "FirstName and FirstName LastName" or "FirstName LastName and FirstName"
+  // e.g., "Michael and Scott Bishop" or "Michael Bishop and Scott"
+  const mixedNamesPattern = /\b([A-Z][a-z]+)(?:\s+[A-Z][a-z]+)?\s+and\s+([A-Z][a-z]+)(?:\s+([A-Z][a-z]+))?\b/i;
+  const mixedNamesMatch = cleaned.match(mixedNamesPattern);
+
+  if (mixedNamesMatch) {
+    const firstName1 = mixedNamesMatch[1];
+    const firstName2 = mixedNamesMatch[2];
+    const lastName = mixedNamesMatch[3] || '';
+
+    // If only first names, treat them as complete names
+    const name1 = firstName1;
+    const name2 = lastName ? `${firstName2} ${lastName}` : firstName2;
+
+    console.log('[extractTwoNames] Matched names:', name1, 'and', name2);
+    return [
+      { name: name1, relation: 'caller' },
+      { name: name2, relation: 'family' }
+    ];
+  }
+
+  // Pattern 3: Simple "FirstName and FirstName"
+  // e.g., "Michael and Scott"
+  const simpleNamesPattern = /\b([A-Z][a-z]{2,})\s+and\s+([A-Z][a-z]{2,})\b/i;
+  const simpleNamesMatch = cleaned.match(simpleNamesPattern);
+
+  if (simpleNamesMatch) {
+    // Check that these are actually names (not common words like "this and that")
+    const name1 = simpleNamesMatch[1];
+    const name2 = simpleNamesMatch[2];
+
+    // Filter out common non-name words
+    const nonNameWords = ['this', 'that', 'here', 'there', 'when', 'what', 'where', 'which', 'today', 'tomorrow'];
+    if (nonNameWords.includes(name1.toLowerCase()) || nonNameWords.includes(name2.toLowerCase())) {
+      return null;
+    }
+
+    console.log('[extractTwoNames] Matched simple names:', name1, 'and', name2);
+    return [
+      { name: name1, relation: 'caller' },
+      { name: name2, relation: 'family' }
+    ];
+  }
+
+  // No two-name pattern found
+  return null;
+}
+
 // ═══════════════════════════════════════════════
 // Time Preference Parsing and Slot Fetching
 // ═══════════════════════════════════════════════
@@ -774,10 +851,16 @@ export async function handleOpenAIConversation(
       // Set group booking flag
       context.currentState.gb = true;
 
-      // Seed gp with placeholder entries if empty
-      // These will be replaced with actual names when AI extracts them
-      if (!context.currentState.gp || context.currentState.gp.length < 2) {
-        // Try to extract relation from utterance (for better placeholders)
+      // Try to extract ACTUAL names from the utterance first
+      const extractedNames = extractTwoNamesFromUtterance(userUtterance);
+
+      if (extractedNames && extractedNames.length >= 2) {
+        // Found actual names - use them directly!
+        context.currentState.gp = extractedNames;
+        console.log('[OpenAICallHandler] 🎯 EXTRACTED REAL NAMES:', extractedNames.map(p => p.name).join(', '));
+      } else if (!context.currentState.gp || context.currentState.gp.length < 2) {
+        // No names found - seed with placeholders
+        // These will be replaced with actual names when AI extracts them
         let relation = 'family member';
         const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
         if (relationMatch) {
@@ -807,6 +890,22 @@ export async function handleOpenAIConversation(
         context.currentState.gp?.length || 0,
         context.currentState.tp || 'null'
       );
+    }
+
+    // ═══════════════════════════════════════════════
+    // 2c-bis. NAME EXTRACTION FOR EXISTING GROUP BOOKING
+    // If gp has placeholders and utterance contains names, replace them
+    // ═══════════════════════════════════════════════
+    const hasPlaceholders = context.currentState.gp?.some(
+      (p: { name: string }) => p.name === 'PRIMARY' || p.name === 'SECONDARY'
+    );
+
+    if (context.currentState.gb && hasPlaceholders) {
+      const extractedNames = extractTwoNamesFromUtterance(userUtterance);
+      if (extractedNames && extractedNames.length >= 2) {
+        console.log('[OpenAICallHandler] 📝 REPLACING PLACEHOLDERS with real names:', extractedNames.map(p => p.name).join(', '));
+        context.currentState.gp = extractedNames;
+      }
     }
 
     // ═══════════════════════════════════════════════
@@ -1385,6 +1484,7 @@ export async function handleOpenAIConversation(
     await saveConversationContext(callSid, context);
 
     // 6b. Check if caller wants to end the call (goodbye detection)
+    // CRITICAL: Do NOT allow goodbye if group booking is in progress
     const userUtteranceLower = (userUtterance || '').toLowerCase().trim();
     const goodbyePhrases = [
       'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
@@ -1395,12 +1495,38 @@ export async function handleOpenAIConversation(
     ];
     const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
 
-    if (wantsToEndCall) {
-      console.log('[OpenAICallHandler] Caller wants to end call - hanging up gracefully');
+    // Check if group booking is in progress (should NOT allow goodbye)
+    const groupBookingInProgress = context.currentState.gb === true &&
+                                    !context.currentState.groupBookingComplete;
+
+    if (wantsToEndCall && groupBookingInProgress) {
+      // BLOCK: Group booking in progress - don't allow premature goodbye
+      console.log('[OpenAICallHandler] ⚠️ BLOCKED goodbye - group booking in progress');
+      console.log('[OpenAICallHandler]   - gb:', context.currentState.gb);
+      console.log('[OpenAICallHandler]   - groupBookingComplete:', context.currentState.groupBookingComplete);
+      console.log('[OpenAICallHandler]   - gp:', context.currentState.gp?.map((p: { name: string }) => p.name));
+
+      // Continue with booking flow instead of hanging up
+      // AI response will handle asking for remaining info
+    } else if (wantsToEndCall && context.currentState.bc === true) {
+      // Booking confirmed - safe to say goodbye
+      console.log('[OpenAICallHandler] Caller wants to end call - booking complete, hanging up gracefully');
       const goodbyeMessages = [
-        "Perfect! We'll be in touch soon. Have a lovely day!",
-        "Beautiful! Talk to you soon. Take care!",
-        "Lovely! We'll get back to you shortly. Bye for now!"
+        "Perfect! Your appointments are all set. Have a lovely day!",
+        "Beautiful! We'll see you soon. Take care!",
+        "Wonderful! Everything's booked. Bye for now!"
+      ];
+      const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
+      saySafe(vr, randomGoodbye);
+      vr.hangup();
+      return vr;
+    } else if (wantsToEndCall && !context.currentState.gb) {
+      // Not a group booking and caller wants to leave - allow it
+      console.log('[OpenAICallHandler] Caller wants to end call - no active booking, hanging up gracefully');
+      const goodbyeMessages = [
+        "No worries! Feel free to call back anytime. Have a lovely day!",
+        "That's fine! We're here when you need us. Take care!",
+        "All good! Don't hesitate to call back. Bye for now!"
       ];
       const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
       saySafe(vr, randomGoodbye);
