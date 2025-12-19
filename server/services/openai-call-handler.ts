@@ -278,12 +278,100 @@ function extractTimePreferenceFromUtterance(utterance: string): string | null {
 }
 
 /**
+ * Check if a string is a valid person name (not a pronoun, possessive, or common word)
+ * Returns false for phrases like "myself", "my son", "for myself", etc.
+ */
+function isValidPersonName(name: string): boolean {
+  if (!name || name.trim().length === 0) return false;
+
+  const lower = name.toLowerCase().trim();
+
+  // Pronouns and self-references
+  const pronouns = [
+    'myself', 'yourself', 'himself', 'herself', 'itself', 'ourselves', 'themselves',
+    'me', 'you', 'him', 'her', 'us', 'them', 'i', 'we', 'they',
+    'my', 'your', 'his', 'its', 'our', 'their'
+  ];
+
+  // Possessive family/relationship references (these need real names)
+  const possessiveReferences = [
+    'my son', 'my daughter', 'my wife', 'my husband', 'my partner',
+    'my child', 'my kid', 'my kids', 'my children', 'my baby',
+    'my mother', 'my father', 'my mom', 'my dad', 'my mum',
+    'my brother', 'my sister', 'my friend', 'my boyfriend', 'my girlfriend',
+    'my spouse', 'my fiancé', 'my fiancee', 'my fiance',
+    'the child', 'the kid', 'the baby', 'the son', 'the daughter',
+    'son', 'daughter', 'wife', 'husband', 'partner', 'child', 'kid', 'baby'
+  ];
+
+  // Common non-name words and articles
+  const nonNameWords = [
+    'for', 'and', 'the', 'a', 'an', 'this', 'that', 'here', 'there',
+    'when', 'what', 'where', 'which', 'who', 'whom', 'whose',
+    'today', 'tomorrow', 'both', 'all', 'some', 'any', 'each',
+    'appointment', 'booking', 'please', 'thanks', 'thank', 'can', 'make'
+  ];
+
+  // Placeholder markers we use internally
+  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
+
+  // Check for exact pronoun match
+  if (pronouns.includes(lower)) {
+    console.log('[isValidPersonName] Rejected pronoun:', name);
+    return false;
+  }
+
+  // Check if name starts with possessive pronoun (e.g., "my son")
+  if (lower.startsWith('my ') || lower.startsWith('your ') ||
+      lower.startsWith('his ') || lower.startsWith('her ') ||
+      lower.startsWith('the ') || lower.startsWith('for ')) {
+    console.log('[isValidPersonName] Rejected possessive/prepositional reference:', name);
+    return false;
+  }
+
+  // Check for possessive reference matches
+  if (possessiveReferences.includes(lower)) {
+    console.log('[isValidPersonName] Rejected possessive reference:', name);
+    return false;
+  }
+
+  // Check if starts with common non-name word like "for myself"
+  for (const word of nonNameWords) {
+    if (lower.startsWith(word + ' ')) {
+      console.log('[isValidPersonName] Rejected - starts with non-name word:', name);
+      return false;
+    }
+  }
+
+  // Check for placeholder markers
+  if (placeholders.includes(lower)) {
+    console.log('[isValidPersonName] Rejected placeholder:', name);
+    return false;
+  }
+
+  // Check if it's a single non-name word
+  if (nonNameWords.includes(lower)) {
+    console.log('[isValidPersonName] Rejected non-name word:', name);
+    return false;
+  }
+
+  // Reject if name is too short (less than 2 characters)
+  if (lower.length < 2) {
+    console.log('[isValidPersonName] Rejected - too short:', name);
+    return false;
+  }
+
+  // Valid name
+  return true;
+}
+
+/**
  * Extract two names from an utterance for group booking
  * Handles patterns like:
  * - "Michael Bishop and Scott Bishop"
  * - "John Smith and Jane Doe"
  * - "Michael and Scott"
- * Returns null if no two-name pattern is found
+ * Returns null if no two-name pattern is found OR if extracted names are not valid person names
  */
 function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; relation?: string }> | null {
   const cleaned = utterance.trim();
@@ -299,6 +387,13 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
   if (fullNamesMatch) {
     const name1 = `${fullNamesMatch[1]} ${fullNamesMatch[2]}`;
     const name2 = `${fullNamesMatch[3]} ${fullNamesMatch[4]}`;
+
+    // Validate both names are real person names
+    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
+      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
+      return null;
+    }
+
     console.log('[extractTwoNames] Matched full names:', name1, 'and', name2);
     return [
       { name: name1, relation: 'caller' },
@@ -320,6 +415,12 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
     const name1 = firstName1;
     const name2 = lastName ? `${firstName2} ${lastName}` : firstName2;
 
+    // Validate both names are real person names
+    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
+      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
+      return null;
+    }
+
     console.log('[extractTwoNames] Matched names:', name1, 'and', name2);
     return [
       { name: name1, relation: 'caller' },
@@ -333,13 +434,12 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
   const simpleNamesMatch = cleaned.match(simpleNamesPattern);
 
   if (simpleNamesMatch) {
-    // Check that these are actually names (not common words like "this and that")
     const name1 = simpleNamesMatch[1];
     const name2 = simpleNamesMatch[2];
 
-    // Filter out common non-name words
-    const nonNameWords = ['this', 'that', 'here', 'there', 'when', 'what', 'where', 'which', 'today', 'tomorrow'];
-    if (nonNameWords.includes(name1.toLowerCase()) || nonNameWords.includes(name2.toLowerCase())) {
+    // Validate both names are real person names
+    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
+      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
       return null;
     }
 
@@ -946,14 +1046,13 @@ export async function handleOpenAIConversation(
     // execute immediately without calling AI. AI must NOT decide outcomes.
     // ═══════════════════════════════════════════════
 
-    // Check if gp contains ACTUAL names (not placeholders)
+    // Check if gp contains ACTUAL names (not placeholders, pronouns, or possessive references)
+    // Uses isValidPersonName() to reject phrases like "myself", "my son", "for myself", etc.
     const hasRealNames = Array.isArray(context.currentState.gp) &&
                           context.currentState.gp.length >= 2 &&
                           context.currentState.gp.every((p: { name: string }) =>
                             p.name &&
-                            p.name !== 'PRIMARY' &&
-                            p.name !== 'SECONDARY' &&
-                            p.name.trim().length > 0
+                            isValidPersonName(p.name)
                           );
 
     const groupBookingReady = context.currentState.gb === true &&
