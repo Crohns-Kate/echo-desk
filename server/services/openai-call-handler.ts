@@ -1239,6 +1239,7 @@ export async function handleOpenAIConversation(
 
           // For NEW patients, send the intake form link (only if not already sent)
           // Use context.currentState.np (accumulated state) since np was set early in conversation
+          // CRITICAL: Include clinikoPatientId so form updates the correct patient
           if (isNewPatient && !context.currentState.smsIntakeSent) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
@@ -1246,10 +1247,11 @@ export async function handleOpenAIConversation(
             await sendNewPatientForm({
               to: callerPhone,
               token: formToken,
-              clinicName: clinicName || 'Spinalogic'
+              clinicName: clinicName || 'Spinalogic',
+              clinikoPatientId: appointment.patient_id  // Link form to correct Cliniko patient
             });
             context.currentState.smsIntakeSent = true;
-            console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+            console.log('[OpenAICallHandler] ✅ New patient form SMS sent with patientId:', appointment.patient_id);
           } else if (isNewPatient) {
             console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
           }
