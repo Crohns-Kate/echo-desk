@@ -1,6 +1,5 @@
 import { Express, Request, Response } from "express";
 import { storage } from "../storage";
-import { findPatientByPhoneRobust } from "../services/cliniko";
 import { updateClinikoPatient } from "../integrations/cliniko";
 
 /**
@@ -353,39 +352,11 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit] ✅ Form data merged into context successfully');
 
       // Update patient in Cliniko with correct details
-      try {
-        let patientIdToUpdate: string | null = null;
-
-        // PREFERRED: Use clinikoPatientId if provided (most reliable)
-        if (clinikoPatientId) {
+      // CRITICAL: Only update if we have an explicit patientId - NEVER fall back to phone lookup
+      // Phone lookup can match the WRONG patient (e.g., existing patient "john smith" instead of new caller)
+      if (clinikoPatientId) {
+        try {
           console.log('[POST /api/forms/submit] Using direct clinikoPatientId:', clinikoPatientId);
-          patientIdToUpdate = clinikoPatientId;
-        } else {
-          // FALLBACK: Try phone lookup (legacy behavior for older links)
-          // Use the CALLER's phone number from the call record first
-          const callerPhone = call.fromNumber;  // Schema uses 'fromNumber' for caller phone
-          console.log('[POST /api/forms/submit] No patientId provided, falling back to phone lookup');
-          console.log('[POST /api/forms/submit] Looking up patient by caller phone:', callerPhone);
-
-          let patient = callerPhone ? await findPatientByPhoneRobust(callerPhone) : null;
-
-          // If not found by caller phone, try the phone entered in form
-          if (!patient && phone !== callerPhone) {
-            console.log('[POST /api/forms/submit] Not found by caller phone, trying form phone:', phone);
-            patient = await findPatientByPhoneRobust(phone);
-          }
-
-          if (patient) {
-            patientIdToUpdate = patient.id.toString();
-            console.log('[POST /api/forms/submit] Found Cliniko patient via phone lookup:', patientIdToUpdate);
-          } else {
-            console.log('[POST /api/forms/submit] No matching Cliniko patient found for caller phone:', callerPhone, 'or form phone:', phone);
-          }
-        }
-
-        // Update patient if we have an ID
-        if (patientIdToUpdate) {
-          console.log('[POST /api/forms/submit] Updating Cliniko patient:', patientIdToUpdate);
 
           // Update patient with correct name spelling, email, and phone
           const callerPhone = call.fromNumber;
@@ -408,18 +379,60 @@ export function registerForms(app: Express) {
             ];
           }
 
-          await updateClinikoPatient(patientIdToUpdate, updatePayload);
+          await updateClinikoPatient(clinikoPatientId, updatePayload);
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
-        }
-      } catch (clinikoError) {
-        // Log but don't fail the request - form data is saved in context
-        console.error('[POST /api/forms/submit] Cliniko update failed (non-critical):', clinikoError);
-      }
 
-      res.json({
-        success: true,
-        message: 'Form submitted successfully'
-      });
+          res.json({
+            success: true,
+            message: 'Form submitted successfully'
+          });
+        } catch (clinikoError) {
+          // Log but don't fail the request - form data is saved in context
+          console.error('[POST /api/forms/submit] Cliniko update failed (non-critical):', clinikoError);
+          res.json({
+            success: true,
+            message: 'Form submitted successfully'
+          });
+        }
+      } else {
+        // NO patientId provided - do NOT attempt phone lookup (prevents wrong patient updates)
+        // Form data is saved in conversation context - team will manually confirm details
+        console.error('[POST /api/forms/submit] ⚠️ NO patientId provided - cannot update Cliniko safely');
+        console.error('[POST /api/forms/submit]   - callSid:', callSid);
+        console.error('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+        console.error('[POST /api/forms/submit]   - formData:', formData);
+
+        // Create alert for team to manually confirm patient details
+        try {
+          // Get tenant ID from call or conversation
+          const conversation = await storage.getConversation(call.conversationId);
+          const tenantId = conversation?.tenantId;
+
+          if (tenantId) {
+            await storage.createAlert({
+              tenantId,
+              conversationId: call.conversationId || undefined,
+              reason: 'form_missing_patient_id',
+              payload: {
+                callSid,
+                formData,
+                callerPhone: call.fromNumber,
+                message: 'Intake form submitted without patient ID - manual confirmation required'
+              },
+              status: 'open'
+            });
+            console.log('[POST /api/forms/submit] ✅ Created alert for manual review');
+          }
+        } catch (alertError) {
+          console.error('[POST /api/forms/submit] Failed to create alert:', alertError);
+        }
+
+        // Return success to user - their form data is saved, team will follow up
+        res.json({
+          success: true,
+          message: 'Form received; our team will confirm your details'
+        });
+      }
 
     } catch (err) {
       console.error('[POST /api/forms/submit] Error:', err);
