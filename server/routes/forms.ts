@@ -40,7 +40,8 @@ export function registerForms(app: Express) {
       `);
     }
 
-    // Check if form already completed
+    // Check if THIS SPECIFIC TOKEN has already been submitted
+    // (Not per-callSid - group bookings have multiple tokens, one per patient)
     try {
       const callSid = token.split('_')[1];
       const call = await storage.getCallByCallSid(callSid);
@@ -49,7 +50,11 @@ export function registerForms(app: Express) {
         const conversation = await storage.getConversation(call.conversationId);
         const context = conversation?.context as any;
 
-        if (context?.formData) {
+        // Check formSubmissions map for this specific token
+        const existingSubmission = context?.formSubmissions?.[token];
+
+        if (existingSubmission) {
+          // Form was already submitted - show success with option to edit
           return res.send(`
             <!DOCTYPE html>
             <html>
@@ -59,12 +64,15 @@ export function registerForms(app: Express) {
               <style>
                 body { font-family: system-ui, -apple-system, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
                 .success { color: #2e7d32; background: #e8f5e9; padding: 20px; border-radius: 8px; }
+                .edit-link { margin-top: 15px; }
+                .edit-link a { color: #1565c0; text-decoration: none; }
               </style>
             </head>
             <body>
               <div class="success">
                 <h2>✓ Form Already Submitted</h2>
-                <p>Thanks ${context.formData.firstName}! Your details have already been received.</p>
+                <p>Thanks ${existingSubmission.firstName}! Your details have already been received.</p>
+                <p class="edit-link">Need to make changes? <a href="/intake/${token}?patientId=${patientId || ''}&edit=true">Click here to update</a></p>
               </div>
             </body>
             </html>
@@ -334,22 +342,36 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
       console.log('[POST /api/forms/submit]   - formData:', formData);
 
-      // CRITICAL FIX: Merge with existing context instead of replacing it
+      // CRITICAL FIX: Store form data PER-TOKEN (supports group booking with multiple forms)
       const conversation = await storage.getConversation(call.conversationId);
       const existingContext = (conversation?.context || {}) as any;
+      const existingFormSubmissions = existingContext.formSubmissions || {};
 
       console.log('[POST /api/forms/submit] Existing context state:', existingContext.state);
+      console.log('[POST /api/forms/submit] Existing form submissions:', Object.keys(existingFormSubmissions));
+
+      // Store this submission keyed by token (allows multiple forms for group booking)
+      const updatedFormSubmissions = {
+        ...existingFormSubmissions,
+        [token]: {
+          ...formData,
+          submittedAt: new Date().toISOString(),
+          clinikoPatientId: clinikoPatientId || null
+        }
+      };
 
       await storage.updateConversation(call.conversationId, {
         context: {
           ...existingContext,  // Preserve existing context (state, slots, etc.)
-          formToken: token,
-          formData: formData,
+          formToken: token,  // Track latest token (backward compatibility)
+          formData: formData,  // Keep legacy field (backward compatibility)
+          formSubmissions: updatedFormSubmissions,  // NEW: Per-token submissions
           formSubmittedAt: new Date().toISOString()
         }
       });
 
-      console.log('[POST /api/forms/submit] ✅ Form data merged into context successfully');
+      console.log('[POST /api/forms/submit] ✅ Form data stored for token:', token);
+      console.log('[POST /api/forms/submit] Total form submissions:', Object.keys(updatedFormSubmissions).length);
 
       // Update patient in Cliniko with correct details
       // CRITICAL: Only update if we have an explicit patientId - NEVER fall back to phone lookup
