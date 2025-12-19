@@ -842,13 +842,23 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
-    // 2d. GROUP BOOKING EXECUTOR - MUST RUN BEFORE AI
-    // If group booking is ready (gb=true, gp>=2, tp set, not complete),
+    // 2e. GROUP BOOKING EXECUTOR - MUST RUN BEFORE AI
+    // If group booking is ready (gb=true, gp>=2 with REAL names, tp set, not complete),
     // execute immediately without calling AI. AI must NOT decide outcomes.
     // ═══════════════════════════════════════════════
+
+    // Check if gp contains ACTUAL names (not placeholders)
+    const hasRealNames = Array.isArray(context.currentState.gp) &&
+                          context.currentState.gp.length >= 2 &&
+                          context.currentState.gp.every((p: { name: string }) =>
+                            p.name &&
+                            p.name !== 'PRIMARY' &&
+                            p.name !== 'SECONDARY' &&
+                            p.name.trim().length > 0
+                          );
+
     const groupBookingReady = context.currentState.gb === true &&
-                               Array.isArray(context.currentState.gp) &&
-                               context.currentState.gp.length >= 2 &&
+                               hasRealNames &&
                                context.currentState.tp &&
                                !context.currentState.groupBookingComplete;
 
@@ -856,6 +866,8 @@ export async function handleOpenAIConversation(
     console.log('[GroupBookingExecutor] CHECK:', {
       gb: context.currentState.gb,
       gpLength: Array.isArray(context.currentState.gp) ? context.currentState.gp.length : 0,
+      gpNames: context.currentState.gp?.map((p: { name: string }) => p.name) || [],
+      hasRealNames,
       tp: context.currentState.tp || 'null',
       groupBookingComplete: context.currentState.groupBookingComplete || false,
       ready: groupBookingReady
@@ -885,8 +897,35 @@ export async function handleOpenAIConversation(
 
         if (!context.availableSlots || context.availableSlots.length < groupPatients.length) {
           console.log('[GroupBookingExecutor] ⚠️ Not enough slots for group booking');
-          // Fall through to AI to handle "no slots available"
-        } else {
+          console.log('[GroupBookingExecutor] Available:', context.availableSlots?.length || 0, 'Required:', groupPatients.length);
+
+          // CRITICAL: Do NOT fall through to AI - return TwiML response directly
+          const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
+          const noSlotsMessage = `I'm sorry, I couldn't find enough back-to-back appointments for ${patientNames} at ${context.currentState.tp}. Would you like me to check a different time, or book separate appointments?`;
+
+          const gather = vr.gather({
+            input: ['speech'],
+            timeout: 8,
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            speechModel: 'phone_call',
+            bargeIn: true,
+            profanityFilter: false,
+            actionOnEmptyResult: true,
+            hints: 'different time, separate appointments, tomorrow, morning, afternoon'
+          });
+
+          saySafe(gather, noSlotsMessage);
+
+          // Save context and return - do NOT call AI
+          await saveConversationContext(callSid, context);
+          return vr;
+        }
+
+        // We have enough slots - proceed with booking
+        {
           // Execute group booking
           const groupBookingResults: Array<{ name: string; patientId: string; appointmentId: string; time: string }> = [];
 

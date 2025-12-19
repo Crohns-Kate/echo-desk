@@ -485,11 +485,23 @@ assert(
 // ─────────────────────────────────────────────────────────────
 testSection('TEST 10: Full Two-Person Group Booking Flow (Regression)');
 
+// Check if gp contains ACTUAL names (not placeholders)
+function hasRealNames(gp: Array<{ name: string; relation?: string }> | undefined): boolean {
+  return Array.isArray(gp) &&
+         gp.length >= 2 &&
+         gp.every((p) =>
+           p.name &&
+           p.name !== 'PRIMARY' &&
+           p.name !== 'SECONDARY' &&
+           p.name.trim().length > 0
+         );
+}
+
 // Simulates the executor condition check (must NOT include appointmentCreated)
+// CRITICAL: Now checks for REAL names (not placeholders)
 function groupBookingExecutorReady(state: MockCompactCallState): boolean {
   return state.gb === true &&
-         Array.isArray(state.gp) &&
-         state.gp.length >= 2 &&
+         hasRealNames(state.gp) &&
          !!state.tp &&
          !state.groupBookingComplete;
   // NOTE: appointmentCreated is NOT checked - group booking is atomic
@@ -832,11 +844,11 @@ assert(
 );
 
 // ─────────────────────────────────────────────────────────────
-// TEST 14: Executor Ready on First Turn
-// The key regression test: executor should be ready after
-// first-turn seeding when both gp placeholders AND tp are set
+// TEST 14: Executor BLOCKED With Placeholders (Critical Regression)
+// The executor must NOT run when gp contains placeholder names
+// This prevents booking with "PRIMARY" and "SECONDARY" as patient names
 // ─────────────────────────────────────────────────────────────
-testSection('TEST 14: Executor Ready on First Turn (Critical Regression)');
+testSection('TEST 14: Executor BLOCKED With Placeholders (Critical Regression)');
 
 // Simulate: User says "myself and my son for this afternoon" as FIRST utterance
 const firstUtteranceState = simulateFirstTurnDetection(
@@ -844,25 +856,48 @@ const firstUtteranceState = simulateFirstTurnDetection(
   'myself and my son for this afternoon'
 );
 
-// Check executor readiness
-// NOTE: In production, executor needs actual names, not placeholders
-// The seeding ensures gb/gp.length >= 2 is true, triggering further name collection
-const executorConditionsMet =
-  firstUtteranceState.gb === true &&
-  Array.isArray(firstUtteranceState.gp) &&
-  firstUtteranceState.gp.length >= 2 &&
-  !!firstUtteranceState.tp;
-
-assert(
-  executorConditionsMet === true,
-  'First turn: All executor PRE-CONDITIONS met (gb, gp.length>=2, tp)'
-);
-
-// Note: Actual executor needs real names, so it will ask AI to collect them
-// But the important thing is that the state is SEEDED so AI knows it's a group booking
+// Verify placeholders are set
 assert(
   firstUtteranceState.gp?.[0]?.name === 'PRIMARY',
-  'Placeholder names indicate names still need collection'
+  'First turn: gp[0].name is "PRIMARY" placeholder'
+);
+
+assert(
+  firstUtteranceState.gp?.[1]?.name === 'SECONDARY',
+  'First turn: gp[1].name is "SECONDARY" placeholder'
+);
+
+// CRITICAL: Executor should NOT be ready with placeholders
+assert(
+  groupBookingExecutorReady(firstUtteranceState) === false,
+  'CRITICAL: Executor is BLOCKED when gp has placeholder names'
+);
+
+// Verify hasRealNames correctly rejects placeholders
+assert(
+  hasRealNames(firstUtteranceState.gp) === false,
+  'hasRealNames returns false for placeholder names'
+);
+
+// Test edge cases for hasRealNames
+assert(
+  hasRealNames([{ name: 'PRIMARY' }, { name: 'John Smith' }]) === false,
+  'hasRealNames returns false when ANY name is placeholder'
+);
+
+assert(
+  hasRealNames([{ name: '' }, { name: 'John Smith' }]) === false,
+  'hasRealNames returns false when ANY name is empty'
+);
+
+assert(
+  hasRealNames([{ name: '  ' }, { name: 'John Smith' }]) === false,
+  'hasRealNames returns false when ANY name is whitespace-only'
+);
+
+assert(
+  hasRealNames([{ name: 'Jane Doe' }, { name: 'John Smith' }]) === true,
+  'hasRealNames returns true when ALL names are real'
 );
 
 // ─────────────────────────────────────────────────────────────
@@ -947,6 +982,9 @@ console.log('  - First-utterance group booking detection (pre-AI regex)');
 console.log('  - Placeholder seeding: gp=[PRIMARY, SECONDARY] on detection');
 console.log('  - Combined detection: "myself and my son for this afternoon"');
 console.log('  - Relation extraction: son, daughter, kids, husband, wife, etc.');
+console.log('  - CRITICAL: Executor BLOCKED when gp has placeholder names');
+console.log('  - hasRealNames() rejects PRIMARY, SECONDARY, empty, whitespace');
+console.log('  - Executor only runs after AI provides actual patient names');
 console.log('  - First-turn flow: detection → seeding → AI names → executor');
 
 process.exit(failed > 0 ? 1 : 0);
