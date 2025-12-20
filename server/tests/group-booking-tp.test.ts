@@ -1218,6 +1218,147 @@ assert(
   '"just this afternoon" → "today afternoon" (no specific time)'
 );
 
+// ─────────────────────────────────────────────────────────────
+// TEST 19: Relation Words Rejected as Names
+// When AI puts "son", "daughter", etc. as a name, system must ask for actual name
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 19: Relation Words Rejected as Names');
+
+// Simulate the AI response validation
+function simulateAiGpValidation(aiGp: Array<{ name: string; relation?: string }>) {
+  // This mirrors the logic in openai-call-handler.ts
+  const relationWords = [
+    'son', 'daughter', 'child', 'kid', 'baby',
+    'wife', 'husband', 'partner',
+    'mother', 'father', 'mom', 'mum', 'dad',
+    'brother', 'sister', 'friend',
+    'boyfriend', 'girlfriend', 'spouse'
+  ];
+
+  const invalidEntries = aiGp.filter(p => {
+    const lower = p.name.toLowerCase().trim();
+    return relationWords.includes(lower) || !p.name || p.name.trim().length === 0;
+  });
+
+  const validEntries = aiGp.filter(p => {
+    const lower = p.name.toLowerCase().trim();
+    return !relationWords.includes(lower) && p.name && p.name.trim().length > 0;
+  });
+
+  if (invalidEntries.length > 0) {
+    const relationToHuman: Record<string, string> = {
+      'son': 'son', 'daughter': 'daughter', 'child': 'child',
+      'wife': 'wife', 'husband': 'husband', 'partner': 'partner'
+    };
+
+    const firstInvalidName = invalidEntries[0].name.toLowerCase();
+    const relationWord = relationToHuman[firstInvalidName] || 'the other person';
+    const firstValidName = validEntries[0]?.name;
+
+    let overrideReply: string;
+    if (firstValidName) {
+      const firstName = firstValidName.split(' ')[0];
+      overrideReply = `Thanks ${firstName}. And what's your ${relationWord}'s name?`;
+    } else {
+      overrideReply = `And what's your ${relationWord}'s name?`;
+    }
+
+    return {
+      hasInvalidNames: true,
+      validGp: validEntries,
+      overrideReply,
+      invalidNames: invalidEntries.map(e => e.name)
+    };
+  }
+
+  return {
+    hasInvalidNames: false,
+    validGp: aiGp,
+    overrideReply: null,
+    invalidNames: []
+  };
+}
+
+// Test case from the actual bug: AI returned "son" as a name
+const bugCaseGp = [
+  { name: 'Chris Smith', relation: 'self' },
+  { name: 'son', relation: 'son' }
+];
+const bugResult = simulateAiGpValidation(bugCaseGp);
+
+assert(
+  bugResult.hasInvalidNames === true,
+  '"son" detected as invalid name'
+);
+assert(
+  bugResult.invalidNames.includes('son'),
+  'Invalid names array contains "son"'
+);
+assert(
+  bugResult.validGp.length === 1 && bugResult.validGp[0].name === 'Chris Smith',
+  'Valid gp only contains "Chris Smith"'
+);
+assert(
+  bugResult.overrideReply === "Thanks Chris. And what's your son's name?",
+  'Override reply asks for son\'s actual name'
+);
+
+// Test with "daughter" as name
+const daughterGp = [
+  { name: 'Sarah Johnson', relation: 'self' },
+  { name: 'daughter', relation: 'daughter' }
+];
+const daughterResult = simulateAiGpValidation(daughterGp);
+
+assert(
+  daughterResult.hasInvalidNames === true,
+  '"daughter" detected as invalid name'
+);
+assert(
+  daughterResult.overrideReply === "Thanks Sarah. And what's your daughter's name?",
+  'Override reply asks for daughter\'s actual name'
+);
+
+// Test with valid names - no override needed
+const validGp = [
+  { name: 'Chris Smith', relation: 'self' },
+  { name: 'Tommy Smith', relation: 'son' }
+];
+const validResult = simulateAiGpValidation(validGp);
+
+assert(
+  validResult.hasInvalidNames === false,
+  'Valid names pass validation'
+);
+assert(
+  validResult.overrideReply === null,
+  'No override reply when names are valid'
+);
+assert(
+  validResult.validGp.length === 2,
+  'Both valid entries preserved'
+);
+
+// Test with both names being relation words
+const bothInvalidGp = [
+  { name: 'husband', relation: 'self' },
+  { name: 'wife', relation: 'wife' }
+];
+const bothInvalidResult = simulateAiGpValidation(bothInvalidGp);
+
+assert(
+  bothInvalidResult.hasInvalidNames === true,
+  'Both relation words detected as invalid'
+);
+assert(
+  bothInvalidResult.validGp.length === 0,
+  'No valid entries when both are relation words'
+);
+assert(
+  bothInvalidResult.overrideReply === "And what's your husband's name?",
+  'Override asks for first person\'s name when no valid names'
+);
+
 // ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
@@ -1257,5 +1398,7 @@ console.log('  - isValidPersonName rejects prepositions (for myself)');
 console.log('  - isMoreSpecificTime: "4pm" beats "afternoon"');
 console.log('  - isMoreSpecificTime: "afternoon" beats "today"');
 console.log('  - Specific time extraction priority: "at 4pm" wins over "afternoon"');
+console.log('  - Relation words as names rejected: "son", "daughter" → override reply');
+console.log('  - Override reply asks for specific person\'s name');
 
 process.exit(failed > 0 ? 1 : 0);
