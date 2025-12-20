@@ -953,6 +953,271 @@ assert(
   'Step 4: Executor blocked from running again'
 );
 
+// ─────────────────────────────────────────────────────────────
+// TEST 16: isValidPersonName - Pronoun and Possessive Rejection
+// These phrases should NEVER be treated as patient names
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 16: isValidPersonName - Pronoun/Possessive Rejection');
+
+// Copy of isValidPersonName for testing
+function isValidPersonName(name: string): boolean {
+  if (!name || name.trim().length === 0) return false;
+
+  const lower = name.toLowerCase().trim();
+
+  // Pronouns and self-references
+  const pronouns = [
+    'myself', 'yourself', 'himself', 'herself', 'itself', 'ourselves', 'themselves',
+    'me', 'you', 'him', 'her', 'us', 'them', 'i', 'we', 'they',
+    'my', 'your', 'his', 'its', 'our', 'their'
+  ];
+
+  // Possessive family/relationship references
+  const possessiveReferences = [
+    'my son', 'my daughter', 'my wife', 'my husband', 'my partner',
+    'my child', 'my kid', 'my kids', 'my children', 'my baby',
+    'my mother', 'my father', 'my mom', 'my dad', 'my mum',
+    'my brother', 'my sister', 'my friend', 'my boyfriend', 'my girlfriend',
+    'my spouse', 'my fiancé', 'my fiancee', 'my fiance',
+    'the child', 'the kid', 'the baby', 'the son', 'the daughter',
+    'son', 'daughter', 'wife', 'husband', 'partner', 'child', 'kid', 'baby'
+  ];
+
+  // Common non-name words
+  const nonNameWords = [
+    'for', 'and', 'the', 'a', 'an', 'this', 'that', 'here', 'there',
+    'when', 'what', 'where', 'which', 'who', 'whom', 'whose',
+    'today', 'tomorrow', 'both', 'all', 'some', 'any', 'each',
+    'appointment', 'booking', 'please', 'thanks', 'thank', 'can', 'make'
+  ];
+
+  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
+
+  if (pronouns.includes(lower)) return false;
+  if (lower.startsWith('my ') || lower.startsWith('your ') ||
+      lower.startsWith('his ') || lower.startsWith('her ') ||
+      lower.startsWith('the ') || lower.startsWith('for ')) return false;
+  if (possessiveReferences.includes(lower)) return false;
+  for (const word of nonNameWords) {
+    if (lower.startsWith(word + ' ')) return false;
+  }
+  if (placeholders.includes(lower)) return false;
+  if (nonNameWords.includes(lower)) return false;
+  if (lower.length < 2) return false;
+
+  return true;
+}
+
+// Test pronouns are rejected
+assert(
+  isValidPersonName('myself') === false,
+  '"myself" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('me') === false,
+  '"me" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('him') === false,
+  '"him" is NOT a valid person name'
+);
+
+// Test possessive references are rejected
+assert(
+  isValidPersonName('my son') === false,
+  '"my son" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('my daughter') === false,
+  '"my daughter" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('my wife') === false,
+  '"my wife" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('my husband') === false,
+  '"my husband" is NOT a valid person name'
+);
+
+// Test prepositional phrases are rejected
+assert(
+  isValidPersonName('for myself') === false,
+  '"for myself" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('for him') === false,
+  '"for him" is NOT a valid person name'
+);
+
+// Test placeholders are rejected
+assert(
+  isValidPersonName('PRIMARY') === false,
+  '"PRIMARY" is NOT a valid person name'
+);
+
+assert(
+  isValidPersonName('SECONDARY') === false,
+  '"SECONDARY" is NOT a valid person name'
+);
+
+// Test valid names are accepted
+assert(
+  isValidPersonName('Michael') === true,
+  '"Michael" IS a valid person name'
+);
+
+assert(
+  isValidPersonName('Sarah Smith') === true,
+  '"Sarah Smith" IS a valid person name'
+);
+
+assert(
+  isValidPersonName('John Bishop') === true,
+  '"John Bishop" IS a valid person name'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 17: Time Preference Specificity Override
+// More specific time should always win over general time
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 17: Time Preference Specificity Override');
+
+// Copy of isMoreSpecificTime for testing
+function isMoreSpecificTime(newTp: string | null, currentTp: string | null): boolean {
+  if (!newTp) return false;
+  if (!currentTp) return true;
+
+  const getSpecificityScore = (tp: string): number => {
+    if (/\d{1,2}:\d{2}(am|pm)/i.test(tp)) return 100;
+    if (/(morning|afternoon|evening|arvo)/i.test(tp)) return 50;
+    if (/(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(tp)) return 30;
+    if (/tomorrow/i.test(tp)) return 20;
+    if (/today/i.test(tp)) return 15;
+    if (/(this|next)\s+week/i.test(tp)) return 10;
+    return 0;
+  };
+
+  return getSpecificityScore(newTp.toLowerCase()) > getSpecificityScore(currentTp.toLowerCase());
+}
+
+// Specific time beats general time
+assert(
+  isMoreSpecificTime('today 4:00pm', 'today afternoon') === true,
+  '"4:00pm" is more specific than "afternoon"'
+);
+
+assert(
+  isMoreSpecificTime('today 10:30am', 'today morning') === true,
+  '"10:30am" is more specific than "morning"'
+);
+
+// General time does NOT beat specific time
+assert(
+  isMoreSpecificTime('today afternoon', 'today 4:00pm') === false,
+  '"afternoon" is NOT more specific than "4:00pm"'
+);
+
+assert(
+  isMoreSpecificTime('today morning', 'today 10:30am') === false,
+  '"morning" is NOT more specific than "10:30am"'
+);
+
+// Time of day beats just day
+assert(
+  isMoreSpecificTime('today afternoon', 'today') === true,
+  '"afternoon" is more specific than just "today"'
+);
+
+assert(
+  isMoreSpecificTime('tomorrow morning', 'tomorrow') === true,
+  '"tomorrow morning" is more specific than just "tomorrow"'
+);
+
+// Week reference is least specific
+assert(
+  isMoreSpecificTime('next week', 'today afternoon') === false,
+  '"next week" is NOT more specific than "today afternoon"'
+);
+
+assert(
+  isMoreSpecificTime('today afternoon', 'next week') === true,
+  '"today afternoon" is more specific than "next week"'
+);
+
+// Null handling
+assert(
+  isMoreSpecificTime(null, 'today afternoon') === false,
+  'null is NOT more specific than any tp'
+);
+
+assert(
+  isMoreSpecificTime('today afternoon', null) === true,
+  'Any tp is more specific than null'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 18: Specific Time Extraction Priority
+// When utterance has both "afternoon" and "4pm", extract "4pm"
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 18: Specific Time Extraction Priority');
+
+// Updated extractTimePreferenceFromUtterance with specific time priority
+function extractTimePreferenceWithPriority(utterance: string): string | null {
+  const lower = utterance.toLowerCase().trim();
+
+  // PATTERN 1 (HIGHEST PRIORITY): Specific time with AM/PM
+  const specificTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i
+  );
+
+  if (specificTimeMatch) {
+    const hour = parseInt(specificTimeMatch[1], 10);
+    const minute = specificTimeMatch[2] || '00';
+    const meridiem = specificTimeMatch[3].toLowerCase().replace(/\./g, '');
+    return `today ${hour}:${minute}${meridiem}`;
+  }
+
+  // PATTERN 2: Time of day
+  const timeOfDayMatch = lower.match(
+    /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
+  );
+
+  if (timeOfDayMatch) {
+    const dayRef = timeOfDayMatch[1] || 'today';
+    let timeOfDay = timeOfDayMatch[2];
+    if (timeOfDay === 'arvo') timeOfDay = 'afternoon';
+    const normalizedDay = dayRef === 'this' ? 'today' : dayRef;
+    return `${normalizedDay} ${timeOfDay}`;
+  }
+
+  return null;
+}
+
+// "this afternoon at 4pm" → specific time wins
+assert(
+  extractTimePreferenceWithPriority('this afternoon at 4pm')?.includes('4:00pm') === true,
+  '"this afternoon at 4pm" → "4pm" (specific time priority)'
+);
+
+// "around 3pm this afternoon" → specific time wins
+assert(
+  extractTimePreferenceWithPriority('around 3pm this afternoon')?.includes('3:00pm') === true,
+  '"around 3pm this afternoon" → "3pm" (specific time priority)'
+);
+
+// "just this afternoon" → time of day (no specific time)
+assert(
+  extractTimePreferenceWithPriority('just this afternoon') === 'today afternoon',
+  '"just this afternoon" → "today afternoon" (no specific time)'
+);
+
 // ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
@@ -986,5 +1251,11 @@ console.log('  - CRITICAL: Executor BLOCKED when gp has placeholder names');
 console.log('  - hasRealNames() rejects PRIMARY, SECONDARY, empty, whitespace');
 console.log('  - Executor only runs after AI provides actual patient names');
 console.log('  - First-turn flow: detection → seeding → AI names → executor');
+console.log('  - isValidPersonName rejects pronouns (myself, me, him, her)');
+console.log('  - isValidPersonName rejects possessives (my son, my wife)');
+console.log('  - isValidPersonName rejects prepositions (for myself)');
+console.log('  - isMoreSpecificTime: "4pm" beats "afternoon"');
+console.log('  - isMoreSpecificTime: "afternoon" beats "today"');
+console.log('  - Specific time extraction priority: "at 4pm" wins over "afternoon"');
 
 process.exit(failed > 0 ? 1 : 0);

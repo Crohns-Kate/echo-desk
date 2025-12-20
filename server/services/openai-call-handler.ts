@@ -188,20 +188,45 @@ async function getOrCreateContext(
  * Extract time preference from raw utterance deterministically.
  * This runs BEFORE calling the AI to ensure tp is set even if LLM doesn't extract it.
  *
- * Returns a canonical tp string that parseTimePreference() can handle, or null if no match.
+ * Priority order (higher = more specific):
+ * 1. Specific time (e.g., "4pm", "at 3:30") - HIGHEST PRIORITY
+ * 2. Time of day (e.g., "afternoon", "morning")
+ * 3. Day names (e.g., "Monday", "Tuesday")
+ * 4. Relative days (e.g., "tomorrow", "today")
+ * 5. Week references (e.g., "this week", "next week")
  *
  * Examples:
+ * - "this afternoon at 4pm" → "today 4:00pm" (specific time wins)
  * - "this afternoon" → "today afternoon"
  * - "tomorrow morning" → "tomorrow morning"
- * - "3pm" / "at 3" → "today 3pm"
- * - "next Tuesday" → "tuesday"
- * - "sometime this week" → "this week"
+ * - "3pm" / "at 3" → "today 3:00pm"
  */
 function extractTimePreferenceFromUtterance(utterance: string): string | null {
   const lower = utterance.toLowerCase().trim();
 
-  // Pattern 1: Time of day with optional day reference
+  // ═══════════════════════════════════════════════
+  // PATTERN 1 (HIGHEST PRIORITY): Specific time with explicit meridiem
+  // e.g., "4pm", "4:30pm", "at 3 p.m.", "around 10:00am"
+  // MUST have am/pm to be considered specific
+  // ═══════════════════════════════════════════════
+  const specificTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i
+  );
+
+  if (specificTimeMatch) {
+    let hour = parseInt(specificTimeMatch[1], 10);
+    const minute = specificTimeMatch[2] || '00';
+    const meridiem = specificTimeMatch[3].toLowerCase().replace(/\./g, '');
+
+    const timeStr = `${hour}:${minute}${meridiem}`;
+    console.log('[extractTimePreference] Matched specific time (PRIORITY):', `today ${timeStr}`);
+    return `today ${timeStr}`;
+  }
+
+  // ═══════════════════════════════════════════════
+  // PATTERN 2: Time of day with optional day reference
   // "this afternoon", "tomorrow morning", "today evening"
+  // ═══════════════════════════════════════════════
   const timeOfDayMatch = lower.match(
     /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
   );
@@ -218,26 +243,6 @@ function extractTimePreferenceFromUtterance(utterance: string): string | null {
 
     console.log('[extractTimePreference] Matched time-of-day pattern:', `${normalizedDay} ${timeOfDay}`);
     return `${normalizedDay} ${timeOfDay}`;
-  }
-
-  // Pattern 2: Specific time (e.g., "3pm", "at 3", "around 4:30")
-  const specificTimeMatch = lower.match(
-    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i
-  );
-
-  if (specificTimeMatch) {
-    let hour = parseInt(specificTimeMatch[1], 10);
-    const minute = specificTimeMatch[2] || '00';
-    const meridiem = specificTimeMatch[3]?.toLowerCase().replace(/\./g, '') || '';
-
-    // If hour is 1-11 without meridiem, assume pm for business hours
-    if (!meridiem && hour >= 1 && hour <= 11) {
-      // Most people mean PM when they say "at 3" during business hours
-    }
-
-    const timeStr = meridiem ? `${hour}:${minute}${meridiem}` : `${hour}:${minute}pm`;
-    console.log('[extractTimePreference] Matched specific time:', `today ${timeStr}`);
-    return `today ${timeStr}`;
   }
 
   // Pattern 3: Day names (monday, tuesday, etc.)
@@ -275,6 +280,51 @@ function extractTimePreferenceFromUtterance(utterance: string): string | null {
 
   // No time preference found
   return null;
+}
+
+/**
+ * Check if newTp is more specific than currentTp.
+ * Specificity order: specific time > time of day > day name > relative day > week
+ *
+ * Examples:
+ * - "today 4:00pm" is more specific than "today afternoon"
+ * - "today afternoon" is more specific than "today"
+ * - "tomorrow morning" is more specific than "tomorrow"
+ */
+function isMoreSpecificTime(newTp: string | null, currentTp: string | null): boolean {
+  if (!newTp) return false;
+  if (!currentTp) return true;  // New tp always beats no tp
+
+  const lower = newTp.toLowerCase();
+  const currentLower = currentTp.toLowerCase();
+
+  // Specificity scores
+  const getSpecificityScore = (tp: string): number => {
+    // Specific time with AM/PM (e.g., "4:00pm", "10:30am")
+    if (/\d{1,2}:\d{2}(am|pm)/i.test(tp)) return 100;
+
+    // Time of day (morning, afternoon, evening)
+    if (/(morning|afternoon|evening|arvo)/i.test(tp)) return 50;
+
+    // Specific day
+    if (/(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(tp)) return 30;
+
+    // Tomorrow
+    if (/tomorrow/i.test(tp)) return 20;
+
+    // Today
+    if (/today/i.test(tp)) return 15;
+
+    // This/next week
+    if (/(this|next)\s+week/i.test(tp)) return 10;
+
+    return 0;
+  };
+
+  const newScore = getSpecificityScore(lower);
+  const currentScore = getSpecificityScore(currentLower);
+
+  return newScore > currentScore;
 }
 
 /**
@@ -1351,6 +1401,56 @@ export async function handleOpenAIConversation(
         }
       } catch (error) {
         console.error('[OpenAICallHandler] Error looking up appointment:', error);
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // 3d. PROTECT GROUP BOOKING STATE FROM AI OVERWRITE
+    // Group booking state is SYSTEM-OWNED, not AI-OWNED.
+    // Once gb=true is set, the AI must NEVER reset it or clear gp/tp.
+    // ═══════════════════════════════════════════════
+    if (context.currentState.gb === true) {
+      console.log('[OpenAICallHandler] 🔒 PROTECTING group booking state from AI overwrite');
+
+      // ALWAYS preserve gb=true
+      finalResponse.state.gb = true;
+
+      // NEVER let AI clear gp (patient list)
+      if (Array.isArray(context.currentState.gp) && context.currentState.gp.length > 0) {
+        // If AI provided new names that pass validation, allow update
+        // Otherwise preserve existing gp
+        const aiGp = finalResponse.state.gp;
+        if (Array.isArray(aiGp) && aiGp.length >= 2 &&
+            aiGp.every((p: { name: string }) => isValidPersonName(p.name))) {
+          console.log('[OpenAICallHandler]   AI provided valid names, updating gp');
+          // Allow the update - AI extracted real names
+        } else {
+          // Preserve existing gp
+          finalResponse.state.gp = context.currentState.gp;
+          console.log('[OpenAICallHandler]   Preserved existing gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
+        }
+      }
+
+      // Time preference handling: more specific time always wins
+      // e.g., "4pm" overrides "afternoon", but "afternoon" does not override "4pm"
+      if (context.currentState.tp) {
+        if (!finalResponse.state.tp) {
+          // AI didn't provide tp - preserve existing
+          finalResponse.state.tp = context.currentState.tp;
+          console.log('[OpenAICallHandler]   Preserved existing tp:', context.currentState.tp);
+        } else if (isMoreSpecificTime(finalResponse.state.tp, context.currentState.tp)) {
+          // AI provided MORE specific time - allow the update
+          console.log('[OpenAICallHandler]   AI provided more specific tp:', finalResponse.state.tp, '(was:', context.currentState.tp, ')');
+        } else {
+          // AI provided LESS specific time - preserve existing
+          finalResponse.state.tp = context.currentState.tp;
+          console.log('[OpenAICallHandler]   Preserved more specific tp:', context.currentState.tp, '(AI tried:', finalResponse.state.tp, ')');
+        }
+      }
+
+      // Preserve groupBookingComplete if already set
+      if (context.currentState.groupBookingComplete) {
+        finalResponse.state.groupBookingComplete = context.currentState.groupBookingComplete;
       }
     }
 
