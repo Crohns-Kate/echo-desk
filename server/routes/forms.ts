@@ -15,7 +15,7 @@ export function registerForms(app: Express) {
    */
   app.get("/intake/:token", async (req: Request, res: Response) => {
     const { token } = req.params;
-    const { patientId } = req.query;  // Cliniko patient ID if available
+    const { patientId, edit } = req.query;  // Cliniko patient ID if available, edit flag
 
     // Validate token format
     if (!token || !token.startsWith('form_')) {
@@ -42,6 +42,7 @@ export function registerForms(app: Express) {
 
     // Check if THIS SPECIFIC TOKEN has already been submitted
     // (Not per-callSid - group bookings have multiple tokens, one per patient)
+    let existingSubmission: any = null;
     try {
       const callSid = token.split('_')[1];
       const call = await storage.getCallByCallSid(callSid);
@@ -51,10 +52,10 @@ export function registerForms(app: Express) {
         const context = conversation?.context as any;
 
         // Check formSubmissions map for this specific token
-        const existingSubmission = context?.formSubmissions?.[token];
+        existingSubmission = context?.formSubmissions?.[token];
 
-        if (existingSubmission) {
-          // Form was already submitted - show success with option to edit
+        // If already submitted AND NOT in edit mode, show success message
+        if (existingSubmission && edit !== 'true') {
           return res.send(`
             <!DOCTYPE html>
             <html>
@@ -72,7 +73,7 @@ export function registerForms(app: Express) {
               <div class="success">
                 <h2>✓ Form Already Submitted</h2>
                 <p>Thanks ${existingSubmission.firstName}! Your details have already been received.</p>
-                <p class="edit-link">Need to make changes? <a href="/intake/${token}?patientId=${patientId || ''}&edit=true">Click here to update</a></p>
+                <p class="edit-link">Need to make changes? <a href="/intake/${token}?patientId=${patientId || existingSubmission.clinikoPatientId || ''}&edit=true">Click here to update</a></p>
               </div>
             </body>
             </html>
@@ -83,7 +84,14 @@ export function registerForms(app: Express) {
       console.error('[GET /intake/:token] Error checking form status:', err);
     }
 
-    // Display form
+    // Determine if this is an edit (pre-fill form with existing data)
+    const isEdit = edit === 'true' && existingSubmission;
+    const prefillFirstName = isEdit ? existingSubmission.firstName || '' : '';
+    const prefillLastName = isEdit ? existingSubmission.lastName || '' : '';
+    const prefillEmail = isEdit ? existingSubmission.email || '' : '';
+    const prefillPhone = isEdit ? existingSubmission.phone || '' : '';
+
+    // Display form (fresh or edit mode)
     res.send(`
       <!DOCTYPE html>
       <html>
@@ -197,39 +205,39 @@ export function registerForms(app: Express) {
       </head>
       <body>
         <div class="container">
-          <h1>Welcome to Echo Desk</h1>
-          <p class="subtitle">Please complete your details below (takes 30 seconds)</p>
+          <h1>${isEdit ? 'Update Your Details' : 'Welcome to Echo Desk'}</h1>
+          <p class="subtitle">${isEdit ? 'Update your information below' : 'Please complete your details below (takes 30 seconds)'}</p>
 
           <form id="intakeForm">
             <div class="form-group">
               <label for="firstName">First Name <span class="required">*</span></label>
-              <input type="text" id="firstName" name="firstName" required autocomplete="given-name">
+              <input type="text" id="firstName" name="firstName" required autocomplete="given-name" value="${prefillFirstName}">
             </div>
 
             <div class="form-group">
               <label for="lastName">Last Name <span class="required">*</span></label>
-              <input type="text" id="lastName" name="lastName" required autocomplete="family-name">
+              <input type="text" id="lastName" name="lastName" required autocomplete="family-name" value="${prefillLastName}">
             </div>
 
             <div class="form-group">
               <label for="email">Email Address <span class="required">*</span></label>
-              <input type="email" id="email" name="email" required autocomplete="email">
+              <input type="email" id="email" name="email" required autocomplete="email" value="${prefillEmail}">
             </div>
 
             <div class="form-group">
               <label for="phone">Mobile Number <span class="required">*</span></label>
-              <input type="tel" id="phone" name="phone" required autocomplete="tel" placeholder="04XX XXX XXX">
+              <input type="tel" id="phone" name="phone" required autocomplete="tel" placeholder="04XX XXX XXX" value="${prefillPhone}">
             </div>
 
             <button type="submit" id="submitBtn">
-              <span id="btnText">Submit</span>
+              <span id="btnText">${isEdit ? 'Update' : 'Submit'}</span>
               <span id="btnSpinner" class="spinner" style="display:none;"></span>
             </button>
           </form>
 
           <div class="error-message" id="errorMessage"></div>
           <div class="success-message" id="successMessage">
-            ✓ Thanks! Your details have been received. You can return to your call now.
+            ✓ Thanks! Your details have been ${isEdit ? 'updated' : 'received'}. You can return to your call now.
           </div>
         </div>
 
@@ -241,7 +249,8 @@ export function registerForms(app: Express) {
           const errorMessage = document.getElementById('errorMessage');
           const successMessage = document.getElementById('successMessage');
           const token = '${token}';
-          const clinikoPatientId = '${patientId || ''}';
+          // Use patientId from URL, or from existing submission (for edit mode)
+          const clinikoPatientId = '${patientId || (existingSubmission?.clinikoPatientId) || ''}';
 
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
