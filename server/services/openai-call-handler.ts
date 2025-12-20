@@ -1062,21 +1062,22 @@ export async function handleOpenAIConversation(
     // 2d. DETERMINISTIC TP EXTRACTION: For group bookings, extract time preference
     // from utterance BEFORE calling AI. This ensures tp is set even if LLM doesn't.
     // ═══════════════════════════════════════════════
-    const isGroupBookingActive = context.currentState.gb === true &&
-                                  Array.isArray(context.currentState.gp) &&
-                                  context.currentState.gp.length >= 2;
+    // CRITICAL: Extract TP even when gp.length < 2, because caller might say
+    // "Tommy Brown, this afternoon" - we need to capture the time even if
+    // we're still collecting names. The executor will only run when gp is complete.
+    const isGroupBookingMode = context.currentState.gb === true;
 
-    if (isGroupBookingActive && !context.currentState.tp) {
+    if (isGroupBookingMode && !context.currentState.tp) {
       const extractedTp = extractTimePreferenceFromUtterance(userUtterance);
       if (extractedTp) {
-        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking detected, extracted tp from utterance:', extractedTp);
+        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking mode, extracted tp from utterance:', extractedTp);
         context.currentState.tp = extractedTp;
 
         // Also set request_slots since we now have tp
         context.currentState.rs = true;
         console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Set tp="%s" and rs=true for group booking', extractedTp);
       } else {
-        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking active but no time preference found in utterance:', userUtterance);
+        console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking mode but no time preference found in utterance:', userUtterance);
       }
     }
 
