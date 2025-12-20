@@ -1431,6 +1431,81 @@ export async function handleOpenAIConversation(
         }
       }
 
+      // ═══════════════════════════════════════════════
+      // CRITICAL FIX: Check if AI returned gp with invalid names (relation words)
+      // and override AI reply to ask for the actual names
+      // ═══════════════════════════════════════════════
+      const aiGp = finalResponse.state.gp;
+      if (Array.isArray(aiGp) && aiGp.length >= 1) {
+        // Find entries with invalid names (relation words like "son", "daughter", etc.)
+        const invalidEntries = aiGp.filter((p: { name: string; relation?: string }) =>
+          !isValidPersonName(p.name)
+        );
+
+        if (invalidEntries.length > 0) {
+          // AI put a relation word as a name - we need to ask for the actual name
+          const invalidNames = invalidEntries.map((p: { name: string; relation?: string }) => p.name);
+          console.log('[OpenAICallHandler] ⚠️ AI returned invalid gp names (relation words as names):', invalidNames);
+
+          // Find the VALID name(s) that AI extracted correctly
+          const validEntries = aiGp.filter((p: { name: string }) => isValidPersonName(p.name));
+          const validNames = validEntries.map((p: { name: string }) => p.name);
+
+          // Keep only the valid entries in gp
+          if (validEntries.length > 0) {
+            finalResponse.state.gp = validEntries;
+            console.log('[OpenAICallHandler]   Keeping valid names:', validNames.join(', '));
+          } else {
+            // No valid names - clear gp
+            finalResponse.state.gp = [];
+            console.log('[OpenAICallHandler]   No valid names found, clearing gp');
+          }
+
+          // Determine what relation word was used, to ask for that person's name
+          // Common relation words the AI might put as names
+          const relationToHuman: Record<string, string> = {
+            'son': 'son',
+            'daughter': 'daughter',
+            'child': 'child',
+            'kid': 'child',
+            'baby': 'baby',
+            'wife': 'wife',
+            'husband': 'husband',
+            'partner': 'partner',
+            'mother': 'mother',
+            'father': 'father',
+            'mom': 'mother',
+            'mum': 'mother',
+            'dad': 'father',
+            'brother': 'brother',
+            'sister': 'sister',
+            'friend': 'friend',
+            'boyfriend': 'boyfriend',
+            'girlfriend': 'girlfriend',
+            'spouse': 'spouse',
+            'fiancé': 'fiancé',
+            'fiancee': 'fiancée',
+            'fiance': 'fiancé'
+          };
+
+          // Build the ask-for-name reply
+          const firstInvalidName = invalidNames[0]?.toLowerCase();
+          const relationWord = relationToHuman[firstInvalidName] || 'the other person';
+
+          // If we have a valid first name, use it in the reply
+          const firstValidName = validNames[0];
+          if (firstValidName) {
+            // Extract first name only for the reply
+            const firstName = firstValidName.split(' ')[0];
+            finalResponse.reply = `Thanks ${firstName}. And what's your ${relationWord}'s name?`;
+          } else {
+            finalResponse.reply = `And what's your ${relationWord}'s name?`;
+          }
+
+          console.log('[OpenAICallHandler]   Overriding AI reply to ask for name:', finalResponse.reply);
+        }
+      }
+
       // Time preference handling: more specific time always wins
       // e.g., "4pm" overrides "afternoon", but "afternoon" does not override "4pm"
       if (context.currentState.tp) {
