@@ -11,16 +11,23 @@ export async function sendAppointmentConfirmation(params: {
   practitionerName?: string;  // Optional practitioner name
   address?: string;           // Optional clinic address
   mapUrl?: string;            // Optional Google Maps URL
+  customMessage?: string;     // Optional custom message (for fallback scenarios)
 }): Promise<void> {
   try {
     // Build the message with available info
     let messageParts: string[] = [];
 
-    // Core confirmation
-    if (params.practitionerName) {
-      messageParts.push(`Your appointment at ${params.clinicName} with ${params.practitionerName} is confirmed for ${params.appointmentDate}.`);
+    // If custom message provided, use it instead of standard confirmation
+    if (params.customMessage) {
+      messageParts.push(params.customMessage);
+      messageParts.push(`${params.clinicName}: ${params.appointmentDate}`);
     } else {
-      messageParts.push(`Your appointment at ${params.clinicName} is confirmed for ${params.appointmentDate}.`);
+      // Core confirmation
+      if (params.practitionerName) {
+        messageParts.push(`Your appointment at ${params.clinicName} with ${params.practitionerName} is confirmed for ${params.appointmentDate}.`);
+      } else {
+        messageParts.push(`Your appointment at ${params.clinicName} is confirmed for ${params.appointmentDate}.`);
+      }
     }
 
     // Add address if provided
