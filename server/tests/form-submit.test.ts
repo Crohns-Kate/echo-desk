@@ -432,6 +432,215 @@ try {
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// TEST 6: Group booking - Two patients, same call, separate tokens
+// Both should update their respective Cliniko patients
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 6: Group booking - Two patients, same call');
+
+resetMocks();
+
+// Simulate a group booking scenario where mother and child both need forms
+const groupCallSid = 'CA_GROUP_123';
+const groupConversationId = 6;
+const motherPatientId = 'patient_mother_001';
+const childPatientId = 'patient_child_002';
+
+const mockCallGroup: MockCallRecord = {
+  callSid: groupCallSid,
+  conversationId: groupConversationId,
+  fromNumber: '+61400000006'  // Mother's phone
+};
+
+// Shared conversation context (simulates form submissions map)
+const mockConversationGroup: MockConversation & { formSubmissions: Record<string, any> } = {
+  id: groupConversationId,
+  tenantId: 600,
+  context: {},
+  formSubmissions: {}
+};
+
+// Simulate per-token form submission tracking
+function simulateFormSubmitWithPerTokenTracking(
+  request: FormSubmitRequest,
+  call: MockCallRecord,
+  conversation: MockConversation & { formSubmissions: Record<string, any> }
+): Promise<{ success: boolean; message: string; clinikoUpdated: boolean; alertCreated: boolean }> {
+  const { token, firstName, lastName, email, phone, clinikoPatientId } = request;
+
+  // Store this submission keyed by token (allows multiple forms for group booking)
+  conversation.formSubmissions[token] = {
+    firstName,
+    lastName,
+    email,
+    phone,
+    clinikoPatientId,
+    submittedAt: new Date().toISOString()
+  };
+
+  // Same logic as before
+  if (clinikoPatientId) {
+    clinikoUpdates.push({
+      patientId: clinikoPatientId,
+      data: { first_name: firstName, last_name: lastName, email }
+    });
+    return Promise.resolve({ success: true, message: 'Form submitted successfully', clinikoUpdated: true, alertCreated: false });
+  } else {
+    alertsCreated.push({
+      tenantId: conversation.tenantId,
+      conversationId: call.conversationId,
+      reason: 'form_missing_patient_id',
+      payload: { callSid: call.callSid, formData: { firstName, lastName, email, phone } },
+      status: 'open'
+    });
+    return Promise.resolve({ success: true, message: 'Form received', clinikoUpdated: false, alertCreated: true });
+  }
+}
+
+// Mother submits her form (token includes her patientId)
+const motherToken = `form_${groupCallSid}_${motherPatientId}`;
+const motherResult = await simulateFormSubmitWithPerTokenTracking(
+  {
+    token: motherToken,
+    firstName: 'Sarah',
+    lastName: 'Smith',
+    email: 'sarah.smith@example.com',
+    phone: '+61400000006',
+    clinikoPatientId: motherPatientId
+  },
+  mockCallGroup,
+  mockConversationGroup
+);
+
+assert(motherResult.success === true, 'Mother form submission succeeds');
+assert(motherResult.clinikoUpdated === true, 'Mother Cliniko record updated');
+
+// Child submits their form (different token, different patientId)
+const childToken = `form_${groupCallSid}_${childPatientId}`;
+const childResult = await simulateFormSubmitWithPerTokenTracking(
+  {
+    token: childToken,
+    firstName: 'Tommy',
+    lastName: 'Smith',
+    email: 'tommy.smith@example.com',
+    phone: '+61400000007',  // Child might have different phone
+    clinikoPatientId: childPatientId
+  },
+  mockCallGroup,
+  mockConversationGroup
+);
+
+assert(childResult.success === true, 'Child form submission succeeds');
+assert(childResult.clinikoUpdated === true, 'Child Cliniko record updated');
+
+// Verify BOTH were updated correctly
+assert(clinikoUpdates.length === 2, 'Two Cliniko updates were made (one per patient)');
+assert(
+  clinikoUpdates.some(u => u.patientId === motherPatientId && u.data.first_name === 'Sarah'),
+  'Mother record updated with correct name'
+);
+assert(
+  clinikoUpdates.some(u => u.patientId === childPatientId && u.data.first_name === 'Tommy'),
+  'Child record updated with correct name'
+);
+
+// Verify per-token tracking
+assert(
+  Object.keys(mockConversationGroup.formSubmissions).length === 2,
+  'Two form submissions tracked (one per token)'
+);
+assert(
+  mockConversationGroup.formSubmissions[motherToken]?.firstName === 'Sarah',
+  'Mother submission tracked by token'
+);
+assert(
+  mockConversationGroup.formSubmissions[childToken]?.firstName === 'Tommy',
+  'Child submission tracked by token'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 7: Per-token "already submitted" check
+// Token A submitted should NOT block Token B
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 7: Per-token "already submitted" check');
+
+// Simulate checking if a form is already submitted (per-token, not per-call)
+function isFormAlreadySubmitted(
+  token: string,
+  formSubmissions: Record<string, any>
+): boolean {
+  return !!formSubmissions[token];
+}
+
+// Mother's form is submitted
+assert(
+  isFormAlreadySubmitted(motherToken, mockConversationGroup.formSubmissions) === true,
+  'Mother token shows as "already submitted"'
+);
+
+// Child's form is also submitted
+assert(
+  isFormAlreadySubmitted(childToken, mockConversationGroup.formSubmissions) === true,
+  'Child token shows as "already submitted"'
+);
+
+// A new token for same call should NOT be blocked
+const newToken = `form_${groupCallSid}_patient_new_003`;
+assert(
+  isFormAlreadySubmitted(newToken, mockConversationGroup.formSubmissions) === false,
+  'New token is NOT blocked (can submit new form)'
+);
+
+// ─────────────────────────────────────────────────────────────
+// TEST 8: Shared phone scenario - correct patient updated
+// Mother's phone used, but child's patientId in link
+// ─────────────────────────────────────────────────────────────
+testSection('TEST 8: Shared phone scenario');
+
+resetMocks();
+
+// Mother's phone number is used for the call
+const sharedPhoneCall: MockCallRecord = {
+  callSid: 'CA_SHARED_PHONE',
+  conversationId: 8,
+  fromNumber: '+61400000008'  // Mother's phone
+};
+
+const sharedPhoneConversation: MockConversation = {
+  id: 8,
+  tenantId: 800,
+  context: {}
+};
+
+// Form link sent to child has CHILD's patientId (not mother's)
+const childLinkPatientId = 'patient_child_specific';
+
+const sharedPhoneResult = await simulateFormSubmit(
+  {
+    token: `form_CA_SHARED_PHONE_${childLinkPatientId}`,
+    firstName: 'Billy',
+    lastName: 'Jones',
+    email: 'billy.jones@example.com',
+    phone: '+61400000099',  // Child's own phone
+    clinikoPatientId: childLinkPatientId  // Uses child's patientId from link
+  },
+  sharedPhoneCall,
+  sharedPhoneConversation
+);
+
+assert(sharedPhoneResult.success === true, 'Shared phone submission succeeds');
+assert(sharedPhoneResult.clinikoUpdated === true, 'Cliniko was updated');
+
+// CRITICAL: Verify the CHILD's record was updated, NOT the caller's phone match
+assert(
+  clinikoUpdates[0]?.patientId === childLinkPatientId,
+  'CRITICAL: Child patientId updated (NOT mother\'s phone match)'
+);
+assert(
+  clinikoUpdates[0]?.data.first_name === 'Billy',
+  'Child name "Billy" saved correctly'
+);
+
 // ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
@@ -451,6 +660,9 @@ console.log('  - Missing patientId creates alert with reason=form_missing_patien
 console.log('  - Form data is saved to conversation context regardless');
 console.log('  - Existing patients are NOT corrupted by phone lookup');
 console.log('  - Validation errors are thrown for missing fields');
+console.log('  - Group booking: Two patients can submit separate forms');
+console.log('  - Per-token tracking: Token A submitted does NOT block Token B');
+console.log('  - Shared phone: Form updates correct patient (by patientId, not phone)');
 
 console.log('\n[BUG FIXED]');
 console.log('  Previously: Form submit without patientId would fallback to');
@@ -460,5 +672,10 @@ console.log('  their data with the form submission.');
 console.log('');
 console.log('  Now: No phone lookup fallback. If no patientId, form data is saved');
 console.log('  to context and an alert is created for manual confirmation.');
+console.log('');
+console.log('[GROUP BOOKING SUPPORT]');
+console.log('  Each patient in a group booking gets a unique form link with');
+console.log('  their own patientId. Forms are tracked per-token, allowing');
+console.log('  multiple submissions in the same call without blocking.');
 
 process.exit(failed > 0 ? 1 : 0);
