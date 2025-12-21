@@ -157,6 +157,19 @@ export interface CompactCallState {
    * Allowed: FAQ, directions, price, "book another appointment", explicit cancel/reschedule
    */
   terminalLock?: boolean;
+
+  // ═══════════════════════════════════════════════
+  // Booking Error Tracking (backend-only)
+  // ═══════════════════════════════════════════════
+
+  /** bookingFailed = true if Cliniko booking failed */
+  bookingFailed?: boolean;
+
+  /** bookingError = error message if booking failed */
+  bookingError?: string;
+
+  /** lastAppointmentId = Cliniko appointment ID of last successful booking */
+  lastAppointmentId?: string;
 }
 
 /**
@@ -742,6 +755,9 @@ export interface ConversationTurn {
 export interface ConversationContext {
   /** Call SID for tracking */
   callSid: string;
+
+  /** Conversation ID in database for tracing */
+  conversationId?: number;
 
   /** Caller phone number */
   callerPhone: string;

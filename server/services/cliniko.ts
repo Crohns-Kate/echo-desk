@@ -733,58 +733,103 @@ export async function createAppointmentForPatient(phone: string, payload: {
   fullName?: string;
   email?: string;
   tenantCtx?: TenantContext;
+  callSid?: string;  // For traceability
+  conversationId?: number;  // For traceability
 }): Promise<ClinikoAppointment> {
+  const startTime = Date.now();
+  const traceId = payload.callSid || `booking_${Date.now()}`;
+
+  console.log('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
+  console.log('[Cliniko][BOOKING] 📋 CREATE APPOINTMENT REQUEST');
+  console.log('[Cliniko][BOOKING] TraceID:', traceId);
+  console.log('[Cliniko][BOOKING] ConversationID:', payload.conversationId || 'N/A');
+  console.log('[Cliniko][BOOKING] Phone:', phone);
+  console.log('[Cliniko][BOOKING] FullName:', payload.fullName);
+  console.log('[Cliniko][BOOKING] PractitionerID:', payload.practitionerId);
+  console.log('[Cliniko][BOOKING] AppointmentTypeID:', payload.appointmentTypeId);
+  console.log('[Cliniko][BOOKING] StartsAt:', payload.startsAt);
+  console.log('[Cliniko][BOOKING] Tenant:', payload.tenantCtx?.slug || 'default (env)');
+  console.log('[Cliniko][BOOKING] Shard:', payload.tenantCtx?.cliniko?.shard || env.CLINIKO_REGION);
+  console.log('[Cliniko][BOOKING] ───────────────────────────────────────────────');
+
   const { base, headers } = getClinikoConfig(payload.tenantCtx);
 
-  console.log('[createAppointmentForPatient] Called with:');
-  console.log('[createAppointmentForPatient]   - phone:', phone);
-  console.log('[createAppointmentForPatient]   - fullName:', payload.fullName);
-  console.log('[createAppointmentForPatient]   - email:', payload.email);
+  try {
+    // Step 1: Get or create patient
+    console.log('[Cliniko][BOOKING] Step 1: Getting/creating patient...');
+    const patient = await getOrCreatePatient({
+      phone,
+      fullName: payload.fullName,
+      email: payload.email
+    });
 
-  const patient = await getOrCreatePatient({
-    phone,
-    fullName: payload.fullName,
-    email: payload.email
-  });
+    console.log('[Cliniko][BOOKING] ✅ Patient resolved:');
+    console.log('[Cliniko][BOOKING]   - PatientID:', patient.id);
+    console.log('[Cliniko][BOOKING]   - Name:', patient.first_name, patient.last_name);
 
-  console.log('[createAppointmentForPatient] Patient returned from getOrCreatePatient:');
-  console.log('[createAppointmentForPatient]   - ID:', patient.id);
-  console.log('[createAppointmentForPatient]   - Name:', patient.first_name, patient.last_name);
-  console.log('[createAppointmentForPatient]   - Email:', patient.email);
-
-  // Get business ID if not provided
-  let businessId = payload.businessId;
-  if (!businessId) {
-    const businesses = await getBusinesses(payload.tenantCtx);
-    businessId = businesses[0]?.id;
+    // Step 2: Get business ID if not provided
+    let businessId = payload.businessId;
     if (!businessId) {
-      throw new Error('No business found in Cliniko account');
+      console.log('[Cliniko][BOOKING] Step 2: Fetching business ID...');
+      const businesses = await getBusinesses(payload.tenantCtx);
+      businessId = businesses[0]?.id;
+      if (!businessId) {
+        const error = new Error('No business found in Cliniko account');
+        console.error('[Cliniko][BOOKING] ❌ FAILED: No business found');
+        throw error;
+      }
+      console.log('[Cliniko][BOOKING] ✅ BusinessID:', businessId);
     }
+
+    // Step 3: Get appointment type duration if not provided
+    let duration = payload.duration;
+    if (!duration) {
+      console.log('[Cliniko][BOOKING] Step 3: Fetching appointment type duration...');
+      const appointmentTypes = await getAppointmentTypes(payload.practitionerId, payload.tenantCtx);
+      const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
+      duration = appointmentType?.duration_in_minutes || 30;
+      console.log('[Cliniko][BOOKING] ✅ Duration:', duration, 'minutes');
+    }
+
+    // Step 4: Compute times and create appointment
+    const startsAt = new Date(payload.startsAt);
+    const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
+
+    const requestBody = {
+      business_id: businessId,
+      patient_id: patient.id,
+      practitioner_id: payload.practitionerId,
+      appointment_type_id: payload.appointmentTypeId,
+      starts_at: payload.startsAt,
+      ends_at: endsAt.toISOString(),
+      notes: payload.notes || null
+    };
+
+    console.log('[Cliniko][BOOKING] Step 4: Creating appointment...');
+    console.log('[Cliniko][BOOKING] Request payload:', JSON.stringify(requestBody, null, 2));
+
+    const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', requestBody, base, headers);
+
+    const latency = Date.now() - startTime;
+    console.log('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
+    console.log('[Cliniko][BOOKING] ✅ SUCCESS - APPOINTMENT CREATED');
+    console.log('[Cliniko][BOOKING] AppointmentID:', appointment.id);
+    console.log('[Cliniko][BOOKING] PatientID:', appointment.patient_id);
+    console.log('[Cliniko][BOOKING] StartsAt:', appointment.starts_at);
+    console.log('[Cliniko][BOOKING] Latency:', latency, 'ms');
+    console.log('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
+
+    return appointment;
+  } catch (error: any) {
+    const latency = Date.now() - startTime;
+    console.error('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
+    console.error('[Cliniko][BOOKING] ❌ FAILED - APPOINTMENT NOT CREATED');
+    console.error('[Cliniko][BOOKING] TraceID:', traceId);
+    console.error('[Cliniko][BOOKING] Error:', error.message || error);
+    console.error('[Cliniko][BOOKING] Latency:', latency, 'ms');
+    console.error('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
+    throw error;  // Re-throw so caller can handle
   }
-
-  // Get appointment type duration if not provided
-  let duration = payload.duration;
-  if (!duration) {
-    const appointmentTypes = await getAppointmentTypes(payload.practitionerId, payload.tenantCtx);
-    const appointmentType = appointmentTypes.find(at => at.id === payload.appointmentTypeId);
-    duration = appointmentType?.duration_in_minutes || 30; // default 30 min
-  }
-
-  // CRITICAL FIX: Compute ends_at from starts_at + duration
-  const startsAt = new Date(payload.startsAt);
-  const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
-
-  const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', {
-    business_id: businessId,
-    patient_id: patient.id,
-    practitioner_id: payload.practitionerId,
-    appointment_type_id: payload.appointmentTypeId,
-    starts_at: payload.startsAt,
-    ends_at: endsAt.toISOString(),
-    notes: payload.notes || null
-  }, base, headers);
-
-  return appointment;
 }
 
 export async function findPatientByPhoneRobust(e164Phone: string, tenantCtx?: TenantContext): Promise<{ id: string; first_name: string; last_name: string } | null> {

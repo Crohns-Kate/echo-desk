@@ -1219,8 +1219,16 @@ export async function handleOpenAIConversation(
               notes: context.currentState.sym
                 ? `Symptom: ${context.currentState.sym} (Group booking: ${member.relation || 'family'})`
                 : `Group booking: ${member.relation || 'family'}`,
-              tenantCtx
+              tenantCtx,
+              callSid,  // For traceability
+              conversationId: context.conversationId  // For traceability
             });
+
+            // CRITICAL: Verify appointment was actually created (has ID)
+            if (!appointment || !appointment.id) {
+              console.error('[GroupBookingExecutor] ❌ CRITICAL: Cliniko returned no appointment ID!');
+              throw new Error('Cliniko booking failed - no appointment ID returned');
+            }
 
             console.log('[GroupBookingExecutor] ✅ Appointment created:', appointment.id, 'patient:', appointment.patient_id);
 
@@ -1299,11 +1307,71 @@ export async function handleOpenAIConversation(
           // Return immediately - do NOT call AI
           return vr;
         }
-      } catch (error) {
-        console.error('[GroupBookingExecutor] ❌ Error:', error);
-        // Reset state on failure and fall through to AI
+      } catch (error: any) {
+        console.error('[GroupBookingExecutor] ❌ BOOKING FAILED:', error?.message || error);
+
+        // Reset state on failure
         context.currentState.callStage = 'offer_slots';
         context.currentState.bookingLockUntil = undefined;
+        context.currentState.bookingFailed = true;
+        context.currentState.bookingError = error?.message || String(error);
+
+        // Create alert for manual follow-up
+        try {
+          await storage.createAlert({
+            tenantId: tenantId || 1,
+            conversationId: context.conversationId || 0,
+            reason: 'booking_failed',
+            payload: {
+              callSid,
+              callerPhone,
+              groupPatients: context.currentState.gp?.map((p: { name: string }) => p.name),
+              requestedTime: context.currentState.tp,
+              error: error?.message || String(error),
+              errorStack: error?.stack,
+              type: 'group_booking'
+            },
+            status: 'open'
+          });
+          console.log('[GroupBookingExecutor] ✅ Alert created for booking failure');
+        } catch (alertError) {
+          console.error('[GroupBookingExecutor] Failed to create alert:', alertError);
+        }
+
+        // Send SMS fallback notification
+        try {
+          await sendAppointmentConfirmation({
+            to: callerPhone,
+            appointmentDate: `Requested: ${context.currentState.tp || 'your preferred time'} - PENDING CONFIRMATION`,
+            clinicName: clinicName || 'Spinalogic',
+            customMessage: 'We received your group booking request. Our team will confirm shortly.'
+          });
+          console.log('[GroupBookingExecutor] ✅ Fallback SMS sent');
+        } catch (smsError) {
+          console.error('[GroupBookingExecutor] Failed to send fallback SMS:', smsError);
+        }
+
+        // CRITICAL: Return a fallback TwiML response - do NOT fall through to AI
+        // AI might say "booked" when booking failed!
+        const failureMessage = "I couldn't complete the booking just now. I'll have reception confirm your appointments by text in a moment. Is there anything else I can help with?";
+
+        const failGather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          profanityFilter: false,
+          actionOnEmptyResult: true
+        });
+
+        saySafe(failGather, failureMessage);
+
+        await saveConversationContext(callSid, context);
+        return vr;  // Return immediately - do NOT call AI
       }
     }
 
@@ -1433,77 +1501,77 @@ export async function handleOpenAIConversation(
       }
 
       // ═══════════════════════════════════════════════
-      // CRITICAL FIX: Check if AI returned gp with invalid names (relation words)
-      // and override AI reply to ask for the actual names
+      // CRITICAL FIX: Check if AI returned gp with REAL relation words as names
+      // (like "son", "daughter" - NOT placeholders like PRIMARY/SECONDARY)
+      // Only override AI reply if it's NOT already asking for names
       // ═══════════════════════════════════════════════
       const aiGp = finalResponse.state.gp;
       if (Array.isArray(aiGp) && aiGp.length >= 1) {
-        // Find entries with invalid names (relation words like "son", "daughter", etc.)
-        const invalidEntries = aiGp.filter((p: { name: string; relation?: string }) =>
-          !isValidPersonName(p.name)
-        );
+        // Find entries with relation words as names (NOT placeholders - those are expected)
+        // Placeholders (PRIMARY, SECONDARY) are fine - AI will update them later
+        const placeholderNames = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
+        const relationWords = ['son', 'daughter', 'child', 'kid', 'baby', 'wife', 'husband',
+                               'partner', 'mother', 'father', 'mom', 'mum', 'dad',
+                               'brother', 'sister', 'friend', 'boyfriend', 'girlfriend',
+                               'spouse', 'fiancé', 'fiancee', 'fiance'];
 
-        if (invalidEntries.length > 0) {
-          // AI put a relation word as a name - we need to ask for the actual name
+        const invalidEntries = aiGp.filter((p: { name: string; relation?: string }) => {
+          const lower = (p.name || '').toLowerCase().trim();
+          // Only flag as invalid if it's a RELATION WORD used as a name (not placeholder)
+          return relationWords.includes(lower) && !placeholderNames.includes(lower);
+        });
+
+        // Check if AI is already asking for names (don't override if so)
+        const replyLower = finalResponse.reply.toLowerCase();
+        const isAlreadyAskingForNames = replyLower.includes('name') &&
+          (replyLower.includes('get') || replyLower.includes('what') || replyLower.includes('who'));
+
+        if (invalidEntries.length > 0 && !isAlreadyAskingForNames) {
+          // AI put a relation word as a name AND is NOT asking for the name
           const invalidNames = invalidEntries.map((p: { name: string; relation?: string }) => p.name);
-          console.log('[OpenAICallHandler] ⚠️ AI returned invalid gp names (relation words as names):', invalidNames);
+          console.log('[OpenAICallHandler] ⚠️ AI used relation words as actual names:', invalidNames);
 
           // Find the VALID name(s) that AI extracted correctly
-          const validEntries = aiGp.filter((p: { name: string }) => isValidPersonName(p.name));
+          const validEntries = aiGp.filter((p: { name: string }) => {
+            const lower = (p.name || '').toLowerCase().trim();
+            return !relationWords.includes(lower) && !placeholderNames.includes(lower) && p.name.trim().length > 0;
+          });
           const validNames = validEntries.map((p: { name: string }) => p.name);
 
-          // Keep only the valid entries in gp
+          // Keep the gp structure but only with valid entries (so executor knows count)
+          // DON'T clear completely - keep structure for group booking flow
           if (validEntries.length > 0) {
             finalResponse.state.gp = validEntries;
             console.log('[OpenAICallHandler]   Keeping valid names:', validNames.join(', '));
-          } else {
-            // No valid names - clear gp
-            finalResponse.state.gp = [];
-            console.log('[OpenAICallHandler]   No valid names found, clearing gp');
           }
+          // If no valid names, keep gp as-is so AI can fix it in next turn
+          // DON'T clear gp - that breaks the group booking flow
 
           // Determine what relation word was used, to ask for that person's name
-          // Common relation words the AI might put as names
           const relationToHuman: Record<string, string> = {
-            'son': 'son',
-            'daughter': 'daughter',
-            'child': 'child',
-            'kid': 'child',
-            'baby': 'baby',
-            'wife': 'wife',
-            'husband': 'husband',
-            'partner': 'partner',
-            'mother': 'mother',
-            'father': 'father',
-            'mom': 'mother',
-            'mum': 'mother',
-            'dad': 'father',
-            'brother': 'brother',
-            'sister': 'sister',
-            'friend': 'friend',
-            'boyfriend': 'boyfriend',
-            'girlfriend': 'girlfriend',
-            'spouse': 'spouse',
-            'fiancé': 'fiancé',
-            'fiancee': 'fiancée',
-            'fiance': 'fiancé'
+            'son': 'son', 'daughter': 'daughter', 'child': 'child', 'kid': 'child',
+            'baby': 'baby', 'wife': 'wife', 'husband': 'husband', 'partner': 'partner',
+            'mother': 'mother', 'father': 'father', 'mom': 'mother', 'mum': 'mother',
+            'dad': 'father', 'brother': 'brother', 'sister': 'sister', 'friend': 'friend',
+            'boyfriend': 'boyfriend', 'girlfriend': 'girlfriend', 'spouse': 'spouse',
+            'fiancé': 'fiancé', 'fiancee': 'fiancée', 'fiance': 'fiancé'
           };
 
-          // Build the ask-for-name reply
           const firstInvalidName = invalidNames[0]?.toLowerCase();
           const relationWord = relationToHuman[firstInvalidName] || 'the other person';
 
-          // If we have a valid first name, use it in the reply
+          // Override reply to ask for the missing name
           const firstValidName = validNames[0];
           if (firstValidName) {
-            // Extract first name only for the reply
             const firstName = firstValidName.split(' ')[0];
             finalResponse.reply = `Thanks ${firstName}. And what's your ${relationWord}'s name?`;
           } else {
-            finalResponse.reply = `And what's your ${relationWord}'s name?`;
+            finalResponse.reply = `Can I get your ${relationWord}'s name please?`;
           }
 
           console.log('[OpenAICallHandler]   Overriding AI reply to ask for name:', finalResponse.reply);
+        } else if (invalidEntries.length > 0) {
+          console.log('[OpenAICallHandler]   AI has invalid names but is already asking for names, not overriding');
         }
       }
 
@@ -1618,10 +1686,21 @@ export async function handleOpenAIConversation(
             startsAt: selectedSlot.startISO,
             fullName: patientName,
             notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
-            tenantCtx
+            tenantCtx,
+            callSid,  // For traceability
+            conversationId: context.conversationId  // For traceability
           });
 
+          // CRITICAL: Verify appointment was actually created (has ID)
+          if (!appointment || !appointment.id) {
+            console.error('[OpenAICallHandler] ❌ CRITICAL: Cliniko returned no appointment ID!');
+            throw new Error('Cliniko booking failed - no appointment ID returned');
+          }
+
           console.log('[OpenAICallHandler] ✅ Appointment created:', appointment.id);
+
+          // Store appointment ID in context for verification
+          context.currentState.lastAppointmentId = appointment.id;
 
           // Format appointment date for SMS
           const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
@@ -1682,8 +1761,55 @@ export async function handleOpenAIConversation(
           // Save booked slot time for reference in FAQ answers
           context.bookedSlotTime = selectedSlot.speakable;
 
-        } catch (error) {
-          console.error('[OpenAICallHandler] ❌ Error creating appointment:', error);
+        } catch (error: any) {
+          console.error('[OpenAICallHandler] ❌ BOOKING FAILED:', error?.message || error);
+
+          // CRITICAL: Override AI reply - do NOT say "booked" when booking failed
+          finalResponse.reply = "I couldn't complete the booking just now. I'll have reception confirm your appointment by text in a moment. Is there anything else I can help with?";
+
+          // Create alert for manual follow-up
+          try {
+            await storage.createAlert({
+              tenantId: tenantId || 1,
+              conversationId: context.conversationId || 0,
+              reason: 'booking_failed',
+              payload: {
+                callSid,
+                callerPhone,
+                patientName: finalResponse.state.nm || 'unknown',
+                requestedSlot: selectedSlot?.speakable || 'unknown',
+                requestedTime: selectedSlot?.startISO || 'unknown',
+                practitionerId: selectedSlot?.clinikoPractitionerId || 'unknown',
+                appointmentTypeId: selectedSlot?.appointmentTypeId || 'unknown',
+                error: error?.message || String(error),
+                errorStack: error?.stack
+              },
+              status: 'open'
+            });
+            console.log('[OpenAICallHandler] ✅ Alert created for booking failure');
+          } catch (alertError) {
+            console.error('[OpenAICallHandler] Failed to create alert:', alertError);
+          }
+
+          // Send SMS fallback notification
+          try {
+            await sendAppointmentConfirmation({
+              to: callerPhone,
+              appointmentDate: `Requested: ${selectedSlot?.speakable || 'your preferred time'} - PENDING CONFIRMATION`,
+              clinicName: clinicName || 'Spinalogic',
+              practitionerName: selectedSlot?.practitionerDisplayName,
+              address: clinicAddress || context.tenantInfo?.address,
+              customMessage: 'We received your booking request. Our team will confirm shortly.'
+            });
+            console.log('[OpenAICallHandler] ✅ Fallback SMS sent');
+          } catch (smsError) {
+            console.error('[OpenAICallHandler] Failed to send fallback SMS:', smsError);
+          }
+
+          // Mark booking as NOT created
+          context.currentState.appointmentCreated = false;
+          context.currentState.bookingFailed = true;
+          context.currentState.bookingError = error?.message || String(error);
         }
       } else if (!selectedSlot) {
         console.warn('[OpenAICallHandler] Invalid slot index:', finalResponse.state.si);
