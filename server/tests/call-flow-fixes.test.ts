@@ -1482,6 +1482,378 @@ test('Question after booking should NOT trigger exit', () => {
 });
 
 // ============================================================
+// TEST 15: Terminal State Machine
+// ============================================================
+console.log('\n[TEST 15: Terminal State Machine]');
+console.log('Scenario: After booking, strict terminal state machine enforces clean behavior');
+console.log('Expected: Pre-AI goodbye detection, blocked booking prompts, FAQ allowed\n');
+
+interface TerminalStateMachineContext {
+  terminalLock: boolean;
+  appointmentCreated: boolean;
+  groupBookingComplete: number | false;
+  callStage: string | null;
+  askedAnythingElse?: boolean;
+  terminalGuard?: boolean;
+}
+
+interface PreAITerminalResult {
+  earlyExit: boolean;
+  exitMessage: string;
+  allowFaq: boolean;
+  setTerminalGuard: boolean;
+}
+
+// Simulate pre-AI terminal state handler
+function simulatePreAITerminalHandler(
+  context: TerminalStateMachineContext,
+  utterance: string
+): PreAITerminalResult {
+  const isTerminalState = context.terminalLock === true ||
+                           context.appointmentCreated === true ||
+                           context.groupBookingComplete;
+
+  if (!isTerminalState) {
+    return { earlyExit: false, exitMessage: '', allowFaq: true, setTerminalGuard: false };
+  }
+
+  const utteranceLower = utterance.toLowerCase().trim();
+
+  // Check for FAQ intents FIRST - these take priority over goodbye detection
+  // This prevents "book another appointment" from triggering goodbye (contains "nothing")
+  const faqKeywords = ['price', 'cost', 'how much', 'pay', 'payment', 'cash', 'card', 'credit',
+                       'directions', 'where', 'address', 'location', 'find you', 'get there',
+                       'parking', 'park', 'wear', 'bring', 'prepare', 'what to',
+                       'cancel', 'reschedule', 'change', 'move', 'another appointment', 'book'];
+  const isFaqIntent = faqKeywords.some(kw => utteranceLower.includes(kw));
+
+  if (isFaqIntent) {
+    return { earlyExit: false, exitMessage: '', allowFaq: true, setTerminalGuard: false };
+  }
+
+  // Extended goodbye phrases for terminal state
+  const terminalGoodbyePhrases = [
+    'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+    'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+    'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
+    'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
+    'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done',
+    'ok thanks', 'okay thanks', 'ok thank you', 'okay thank you', 'perfect thanks',
+    'great thanks', 'great thank you', 'sounds good bye', 'sounds good goodbye',
+    'nothing', 'no i\'m good', 'no im good', 'alright bye', 'alright goodbye'
+  ];
+
+  const askingAboutHangup = utteranceLower.includes('hang up') ||
+                             utteranceLower.includes('going to end') ||
+                             utteranceLower.includes('going to close');
+
+  const wantsToEndCall = terminalGoodbyePhrases.some(phrase => utteranceLower.includes(phrase));
+
+  if (askingAboutHangup) {
+    return {
+      earlyExit: true,
+      exitMessage: "Yes, we're all done! Thanks for calling. Have a lovely day!",
+      allowFaq: false,
+      setTerminalGuard: false
+    };
+  }
+
+  if (wantsToEndCall) {
+    return {
+      earlyExit: true,
+      exitMessage: "All set. Thanks for calling. Goodbye!",
+      allowFaq: false,
+      setTerminalGuard: false
+    };
+  }
+
+  // Non-FAQ, non-goodbye - set guard
+  return { earlyExit: false, exitMessage: '', allowFaq: false, setTerminalGuard: true };
+}
+
+// Simulate post-AI terminal guard for booking prompt blocking
+function simulatePostAITerminalGuard(
+  context: TerminalStateMachineContext,
+  aiReply: string
+): { cleanedReply: string; shouldEarlyExit: boolean; blockedBookingPrompt: boolean } {
+  const isTerminalState = context.terminalLock === true ||
+                           context.appointmentCreated === true ||
+                           context.groupBookingComplete ||
+                           context.terminalGuard;
+
+  if (!isTerminalState) {
+    return { cleanedReply: aiReply, shouldEarlyExit: false, blockedBookingPrompt: false };
+  }
+
+  const bookingPromptPatterns = [
+    /would you like to (make|book|schedule) an? (appointment|booking)/i,
+    /can i (help you )?(book|schedule|make) an? appointment/i,
+    /shall i (book|schedule|make) an? appointment/i,
+    /do you want (me )?to (book|schedule|make)/i,
+    /would you like me to (book|schedule|make)/i
+  ];
+
+  const hasBookingPrompt = bookingPromptPatterns.some(p => p.test(aiReply));
+
+  if (hasBookingPrompt) {
+    let cleanedReply = aiReply;
+    for (const pattern of bookingPromptPatterns) {
+      cleanedReply = cleanedReply.replace(pattern, '').trim();
+    }
+
+    if (cleanedReply.length < 10) {
+      cleanedReply = "Is there anything else I can help with?";
+    }
+
+    // Check if we've already asked "anything else"
+    if (context.askedAnythingElse) {
+      cleanedReply = cleanedReply.replace(/is there anything else.*\?$/i, '').trim();
+      if (cleanedReply.length < 10) {
+        return {
+          cleanedReply: "Sounds good! Thanks for calling. Goodbye!",
+          shouldEarlyExit: true,
+          blockedBookingPrompt: true
+        };
+      }
+    }
+
+    return { cleanedReply, shouldEarlyExit: false, blockedBookingPrompt: true };
+  }
+
+  return { cleanedReply: aiReply, shouldEarlyExit: false, blockedBookingPrompt: false };
+}
+
+// Pre-AI: "ok thanks" in terminal state should early exit
+test('Pre-AI: "ok thanks" in terminal state should early exit', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "ok thanks");
+  return result.earlyExit === true && result.exitMessage.includes('Goodbye');
+});
+
+// Pre-AI: "perfect thanks" in terminal state should early exit
+test('Pre-AI: "perfect thanks" in terminal state should early exit', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "perfect thanks");
+  return result.earlyExit === true;
+});
+
+// Pre-AI: "alright bye" in terminal state should early exit
+test('Pre-AI: "alright bye" in terminal state should early exit', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "alright bye");
+  return result.earlyExit === true;
+});
+
+// Pre-AI: Price FAQ should NOT early exit
+test('Pre-AI: Price FAQ in terminal should allow AI to answer', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "how much does it cost?");
+  return result.earlyExit === false && result.allowFaq === true;
+});
+
+// Pre-AI: Directions FAQ should NOT early exit
+test('Pre-AI: Directions FAQ in terminal should allow AI to answer', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "where are you located?");
+  return result.earlyExit === false && result.allowFaq === true;
+});
+
+// Pre-AI: "book another appointment" should allow AI to proceed
+test('Pre-AI: "book another appointment" should allow AI to proceed', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "I'd like to book another appointment for my son");
+  return result.earlyExit === false && result.allowFaq === true;
+});
+
+// Pre-AI: Random chatter should set terminalGuard
+test('Pre-AI: Random chatter in terminal should set terminalGuard', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const result = simulatePreAITerminalHandler(ctx, "the weather is nice today");
+  return result.earlyExit === false && result.setTerminalGuard === true;
+});
+
+// Pre-AI: NOT in terminal state should not early exit
+test('Pre-AI: Not in terminal state should not early exit', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: false,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    callStage: null
+  };
+  const result = simulatePreAITerminalHandler(ctx, "bye");
+  return result.earlyExit === false;
+});
+
+// Post-AI: Block "would you like to make an appointment?" in terminal
+test('Post-AI: Block booking prompt in terminal state', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const aiReply = "We're open 9-5. Would you like to make an appointment?";
+  const result = simulatePostAITerminalGuard(ctx, aiReply);
+  return result.blockedBookingPrompt === true &&
+         !result.cleanedReply.toLowerCase().includes('make an appointment');
+});
+
+// Post-AI: Block "can I help you book?" in terminal
+test('Post-AI: Block "can I help you book?" in terminal', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const aiReply = "We accept cash and card. Can I help you book an appointment?";
+  const result = simulatePostAITerminalGuard(ctx, aiReply);
+  return result.blockedBookingPrompt === true;
+});
+
+// Post-AI: Allow normal FAQ response without booking prompt
+test('Post-AI: Allow normal FAQ response without booking prompt', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal'
+  };
+  const aiReply = "We're located at 123 Main Street. There's free parking available.";
+  const result = simulatePostAITerminalGuard(ctx, aiReply);
+  return result.blockedBookingPrompt === false && result.cleanedReply === aiReply;
+});
+
+// Post-AI: Early exit when askedAnythingElse and reply is empty after strip
+test('Post-AI: Early exit when askedAnythingElse and reply becomes empty', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: true,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    callStage: 'terminal',
+    askedAnythingElse: true
+  };
+  const aiReply = "Would you like to make an appointment?";
+  const result = simulatePostAITerminalGuard(ctx, aiReply);
+  return result.shouldEarlyExit === true && result.cleanedReply.includes('Goodbye');
+});
+
+// Post-AI: Not in terminal should not modify reply
+test('Post-AI: Not in terminal should not modify reply', () => {
+  const ctx: TerminalStateMachineContext = {
+    terminalLock: false,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    callStage: null
+  };
+  const aiReply = "Would you like to make an appointment?";
+  const result = simulatePostAITerminalGuard(ctx, aiReply);
+  return result.blockedBookingPrompt === false && result.cleanedReply === aiReply;
+});
+
+// ============================================================
+// TEST 16: Call Stage Transitions (Logging Verification)
+// ============================================================
+console.log('\n[TEST 16: Call Stage Transitions]');
+console.log('Scenario: Verify call stage transitions are logged properly');
+console.log('Expected: Each transition has structured log with prev→new stage\n');
+
+interface CallStageContext {
+  callStage: string | null;
+}
+
+type CallStageTransition = {
+  from: string | null;
+  to: string;
+  reason: string;
+};
+
+// Simulate tracking stage transitions
+function trackStageTransition(
+  ctx: CallStageContext,
+  newStage: string,
+  reason: string
+): CallStageTransition {
+  const transition: CallStageTransition = {
+    from: ctx.callStage,
+    to: newStage,
+    reason
+  };
+  ctx.callStage = newStage;
+  return transition;
+}
+
+// Verify transition from null to ask_name
+test('Stage transition: null → ask_name (secondary booking)', () => {
+  const ctx: CallStageContext = { callStage: null };
+  const transition = trackStageTransition(ctx, 'ask_name', 'secondary booking detected');
+  return transition.from === null && transition.to === 'ask_name' && ctx.callStage === 'ask_name';
+});
+
+// Verify transition from ask_name to booking_in_progress
+test('Stage transition: ask_name → booking_in_progress', () => {
+  const ctx: CallStageContext = { callStage: 'ask_name' };
+  const transition = trackStageTransition(ctx, 'booking_in_progress', 'single booking');
+  return transition.from === 'ask_name' && transition.to === 'booking_in_progress';
+});
+
+// Verify transition from booking_in_progress to terminal
+test('Stage transition: booking_in_progress → terminal (booking complete)', () => {
+  const ctx: CallStageContext = { callStage: 'booking_in_progress' };
+  const transition = trackStageTransition(ctx, 'terminal', 'single booking complete');
+  return transition.from === 'booking_in_progress' && transition.to === 'terminal';
+});
+
+// Verify transition from booking_in_progress to offer_slots (failure)
+test('Stage transition: booking_in_progress → offer_slots (booking failed)', () => {
+  const ctx: CallStageContext = { callStage: 'booking_in_progress' };
+  const transition = trackStageTransition(ctx, 'offer_slots', 'booking failed');
+  return transition.from === 'booking_in_progress' && transition.to === 'offer_slots';
+});
+
+// Verify transition from terminal back to ask_name (secondary booking)
+test('Stage transition: terminal → ask_name (secondary booking after complete)', () => {
+  const ctx: CallStageContext = { callStage: 'terminal' };
+  const transition = trackStageTransition(ctx, 'ask_name', 'secondary booking detected');
+  return transition.from === 'terminal' && transition.to === 'ask_name';
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');

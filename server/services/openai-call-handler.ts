@@ -905,8 +905,10 @@ export async function handleOpenAIConversation(
         context.availableSlots = undefined; // Will fetch fresh slots
 
         // CRITICAL: Reset terminal lock so empty speech prompts work
+        const prevStage = context.currentState.callStage;
         context.currentState.terminalLock = false;
         context.currentState.callStage = 'ask_name'; // We need to ask for child's name
+        console.log('[CallStage] 📍 TRANSITION:', prevStage, '→ ask_name (secondary booking detected)');
 
         // CRITICAL: Reset SMS flags for secondary booking session
         // Store primary SMS state and allow new SMS for secondary patient
@@ -1111,6 +1113,80 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
+    // 2f. TERMINAL STATE HANDLER - MUST RUN BEFORE AI
+    // If booking is complete (terminalLock=true OR appointmentCreated OR groupBookingComplete),
+    // detect goodbye phrases and hangup IMMEDIATELY without calling AI.
+    // This prevents AI from asking "would you like to make an appointment?" after booking.
+    // ═══════════════════════════════════════════════
+    const isTerminalState = context.currentState.terminalLock === true ||
+                             context.currentState.appointmentCreated === true ||
+                             context.currentState.groupBookingComplete;
+
+    if (isTerminalState) {
+      console.log('[TerminalState] 🔐 TERMINAL STATE ACTIVE - checking for goodbye phrases');
+      console.log('[TerminalState]   terminalLock:', context.currentState.terminalLock);
+      console.log('[TerminalState]   appointmentCreated:', context.currentState.appointmentCreated);
+      console.log('[TerminalState]   groupBookingComplete:', context.currentState.groupBookingComplete);
+      console.log('[TerminalState]   callStage:', context.currentState.callStage);
+
+      const utteranceLower = (userUtterance || '').toLowerCase().trim();
+
+      // Terminal goodbye phrases - bypass AI entirely
+      const terminalGoodbyePhrases = [
+        'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+        'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+        'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
+        'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
+        'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done',
+        'ok thanks', 'okay thanks', 'ok thank you', 'okay thank you', 'perfect thanks',
+        'great thanks', 'great thank you', 'sounds good bye', 'sounds good goodbye',
+        'nothing', 'no i\'m good', 'no im good', 'alright bye', 'alright goodbye'
+      ];
+
+      // Check for FAQ intents FIRST - these take priority over goodbye detection
+      // This prevents "book another appointment" from triggering goodbye (contains "nothing")
+      const faqKeywords = ['price', 'cost', 'how much', 'pay', 'payment', 'cash', 'card', 'credit',
+                           'directions', 'where', 'address', 'location', 'find you', 'get there',
+                           'parking', 'park', 'wear', 'bring', 'prepare', 'what to',
+                           'cancel', 'reschedule', 'change', 'move', 'another appointment', 'book'];
+      const isFaqIntent = faqKeywords.some(kw => utteranceLower.includes(kw));
+
+      if (isFaqIntent) {
+        console.log('[TerminalState] ✅ FAQ/booking intent detected, allowing AI to answer:', utteranceLower);
+        // Don't early exit - let AI handle this
+      } else {
+        // Check for "hang up" question
+        const askingAboutHangup = utteranceLower.includes('hang up') ||
+                                   utteranceLower.includes('going to end') ||
+                                   utteranceLower.includes('going to close');
+
+        // Check for goodbye intent
+        const wantsToEndCall = terminalGoodbyePhrases.some(phrase => utteranceLower.includes(phrase));
+
+        if (askingAboutHangup) {
+          console.log('[TerminalState] 🚪 Caller asked about hanging up - confirming and ending immediately');
+          saySafe(vr, "Yes, we're all done! Thanks for calling. Have a lovely day!");
+          vr.hangup();
+          await saveConversationContext(callSid, context);
+          return vr;
+        }
+
+        if (wantsToEndCall) {
+          console.log('[TerminalState] 🚪 Goodbye detected in terminal state - hanging up immediately');
+          console.log('[TerminalState]   Matched phrase in:', utteranceLower);
+          saySafe(vr, "All set. Thanks for calling. Goodbye!");
+          vr.hangup();
+          await saveConversationContext(callSid, context);
+          return vr;
+        }
+
+        // Non-FAQ, non-goodbye - set guard to prevent AI from asking booking questions
+        console.log('[TerminalState] ⚠️ Non-FAQ, non-goodbye in terminal - proceeding to AI with guard');
+        context.currentState.terminalGuard = true;
+      }
+    }
+
+    // ═══════════════════════════════════════════════
     // 2e. GROUP BOOKING EXECUTOR - MUST RUN BEFORE AI
     // If group booking is ready (gb=true, gp>=2 with REAL names, tp set, not complete),
     // execute immediately without calling AI. AI must NOT decide outcomes.
@@ -1199,7 +1275,9 @@ export async function handleOpenAIConversation(
 
           // Set booking lock
           context.currentState.bookingLockUntil = Date.now() + 20_000;
+          const prevStage1 = context.currentState.callStage;
           context.currentState.callStage = 'booking_in_progress';
+          console.log('[CallStage] 📍 TRANSITION:', prevStage1 || 'null', '→ booking_in_progress (group booking executor)');
           console.log('[GroupBookingExecutor] 🔒 Booking lock acquired');
 
           // Get tenant context
@@ -1295,8 +1373,11 @@ export async function handleOpenAIConversation(
           // Mark group booking complete ONLY after all operations succeed
           context.currentState.groupBookingComplete = groupBookingResults.length;
           context.currentState.terminalLock = true;
+          const prevStage2 = context.currentState.callStage;
           context.currentState.callStage = 'terminal';
           context.currentState.bc = true;
+          console.log('[CallStage] 📍 TRANSITION:', prevStage2 || 'booking_in_progress', '→ terminal (group booking complete)');
+          console.log('[TerminalLock] 🔐 LOCKED - terminalLock=true, bc=true, groupBookingComplete=', groupBookingResults.length);
           console.log('[GroupBookingExecutor] 🎉 COMPLETE!', groupBookingResults.length, 'appointments created');
 
           // Save context
@@ -1330,7 +1411,9 @@ export async function handleOpenAIConversation(
         console.error('[GroupBookingExecutor] ❌ BOOKING FAILED:', error?.message || error);
 
         // Reset state on failure
+        const prevStage3 = context.currentState.callStage;
         context.currentState.callStage = 'offer_slots';
+        console.log('[CallStage] 📍 TRANSITION:', prevStage3 || 'booking_in_progress', '→ offer_slots (booking failed)');
         context.currentState.bookingLockUntil = undefined;
         context.currentState.bookingFailed = true;
         context.currentState.bookingError = error?.message || String(error);
@@ -1675,8 +1758,10 @@ export async function handleOpenAIConversation(
         // Set booking lock for 10 seconds to prevent race conditions
         context.currentState.bookingLockUntil = now + 10_000;
         // CALL STAGE: Mark as booking in progress (suppresses empty speech prompts)
+        const prevStage4 = context.currentState.callStage;
         context.currentState.callStage = 'booking_in_progress';
-        console.log('[OpenAICallHandler] 🔒 Booking lock acquired for 10 seconds, stage: booking_in_progress');
+        console.log('[CallStage] 📍 TRANSITION:', prevStage4 || 'null', '→ booking_in_progress (single booking)');
+        console.log('[OpenAICallHandler] 🔒 Booking lock acquired for 10 seconds');
 
         try {
           // CRITICAL: Use enriched slot's practitioner and appointment type (from multi-practitioner query)
@@ -1808,8 +1893,10 @@ export async function handleOpenAIConversation(
           // - Identity prompts, empty speech retries, duplicate confirmations
           // Allowed: FAQ, directions, price, "book another appointment"
           context.currentState.terminalLock = true;
+          const prevStage5 = context.currentState.callStage;
           context.currentState.callStage = 'terminal';
-          console.log('[OpenAICallHandler] 🔐 Terminal lock engaged - stage: terminal');
+          console.log('[CallStage] 📍 TRANSITION:', prevStage5 || 'booking_in_progress', '→ terminal (single booking complete)');
+          console.log('[TerminalLock] 🔐 LOCKED - terminalLock=true, appointmentCreated=true');
 
           // Save booked slot time for reference in FAQ answers
           context.bookedSlotTime = selectedSlot.speakable;
@@ -1991,6 +2078,63 @@ export async function handleOpenAIConversation(
       saySafe(vr, "No worries! Feel free to call back anytime. Goodbye!");
       vr.hangup();
       return vr;
+    }
+
+    // ═══════════════════════════════════════════════
+    // 6c. TERMINAL STATE GUARD - Block booking prompts in AI response
+    // If we're in terminal state (booking complete), ensure AI doesn't ask:
+    // - "Would you like to make an appointment?"
+    // - "Is there anything else I can help with?" (if already asked once)
+    // ═══════════════════════════════════════════════
+    if (isTerminalState || context.currentState.terminalGuard) {
+      const replyLower = finalResponse.reply.toLowerCase();
+
+      // Block booking prompts after appointment is already created
+      const bookingPromptPatterns = [
+        /would you like to (make|book|schedule) an? (appointment|booking)/i,
+        /can i (help you )?(book|schedule|make) an? appointment/i,
+        /shall i (book|schedule|make) an? appointment/i,
+        /do you want (me )?to (book|schedule|make)/i,
+        /would you like me to (book|schedule|make)/i
+      ];
+
+      let shouldStripBookingPrompt = bookingPromptPatterns.some(p => p.test(finalResponse.reply));
+
+      if (shouldStripBookingPrompt) {
+        console.log('[TerminalGuard] ⛔ BLOCKING booking prompt in terminal state');
+        console.log('[TerminalGuard]   Original reply:', finalResponse.reply);
+
+        // Strip out the booking prompt, keep any FAQ answer
+        let cleanedReply = finalResponse.reply;
+        for (const pattern of bookingPromptPatterns) {
+          cleanedReply = cleanedReply.replace(pattern, '').trim();
+        }
+
+        // If reply becomes empty or too short, use a safe closing
+        if (cleanedReply.length < 10) {
+          cleanedReply = "Is there anything else I can help with?";
+        }
+
+        // Remove trailing "Is there anything else" if we're clearly wrapping up
+        if (context.currentState.askedAnythingElse) {
+          cleanedReply = cleanedReply.replace(/is there anything else.*\?$/i, '').trim();
+          if (cleanedReply.length < 10) {
+            // Nothing left to say - just confirm and end
+            saySafe(vr, "Sounds good! Thanks for calling. Goodbye!");
+            vr.hangup();
+            await saveConversationContext(callSid, context);
+            return vr;
+          }
+        }
+
+        finalResponse.reply = cleanedReply;
+        console.log('[TerminalGuard]   Cleaned reply:', finalResponse.reply);
+      }
+
+      // Track if we've asked "anything else" to avoid repeating
+      if (replyLower.includes('anything else') || replyLower.includes('help with anything')) {
+        context.currentState.askedAnythingElse = true;
+      }
     }
 
     // 7. Gather next user input with barge-in enabled (Say INSIDE Gather)
