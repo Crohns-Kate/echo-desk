@@ -1315,6 +1315,173 @@ test('Reschedule intent: should NOT extract', () => {
 });
 
 // ============================================================
+// TEST 14: Terminal Call Exit
+// ============================================================
+console.log('\n[TEST 14: Terminal Call Exit]');
+console.log('Scenario: After booking, caller says goodbye');
+console.log('Expected: Clean exit with "All set. Thanks for calling. Goodbye!"\n');
+
+interface TerminalExitContext {
+  bc: boolean;
+  appointmentCreated: boolean;
+  groupBookingComplete: number | false;
+  gb: boolean;
+}
+
+interface TerminalExitResult {
+  shouldHangup: boolean;
+  message: string;
+  blocked: boolean;
+}
+
+function simulateTerminalExit(
+  context: TerminalExitContext,
+  utterance: string
+): TerminalExitResult {
+  const userUtteranceLower = utterance.toLowerCase().trim();
+
+  const goodbyePhrases = [
+    'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+    'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+    'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
+    'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
+    'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done'
+  ];
+  const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
+
+  const groupBookingInProgress = context.gb === true && !context.groupBookingComplete;
+
+  const bookingComplete = context.bc === true ||
+                          context.appointmentCreated === true ||
+                          context.groupBookingComplete;
+
+  const askingAboutHangup = userUtteranceLower.includes('hang up') ||
+                             userUtteranceLower.includes('going to end');
+
+  if (askingAboutHangup) {
+    return {
+      shouldHangup: true,
+      message: "Yes, we're all done! Thanks for calling. Have a lovely day!",
+      blocked: false
+    };
+  }
+
+  if (wantsToEndCall && groupBookingInProgress) {
+    return { shouldHangup: false, message: '', blocked: true };
+  } else if (wantsToEndCall && bookingComplete) {
+    return {
+      shouldHangup: true,
+      message: "All set. Thanks for calling. Goodbye!",
+      blocked: false
+    };
+  } else if (wantsToEndCall && !context.gb) {
+    return {
+      shouldHangup: true,
+      message: "No worries! Feel free to call back anytime. Goodbye!",
+      blocked: false
+    };
+  }
+
+  return { shouldHangup: false, message: '', blocked: false };
+}
+
+// After single booking (bc=true), "no thanks" should hang up
+test('After booking (bc=true), "no thanks" should hang up', () => {
+  const ctx: TerminalExitContext = {
+    bc: true,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "no thanks");
+  return result.shouldHangup === true && result.message.includes('Goodbye');
+});
+
+// After single booking (appointmentCreated=true), "that's all" should hang up
+test('After booking (appointmentCreated=true), "that\'s all" should hang up', () => {
+  const ctx: TerminalExitContext = {
+    bc: false,
+    appointmentCreated: true,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "that's all");
+  return result.shouldHangup === true && result.message.includes('Goodbye');
+});
+
+// After group booking complete, "bye" should hang up
+test('After group booking complete, "bye" should hang up', () => {
+  const ctx: TerminalExitContext = {
+    bc: true,
+    appointmentCreated: false,
+    groupBookingComplete: 2,
+    gb: true
+  };
+  const result = simulateTerminalExit(ctx, "bye");
+  return result.shouldHangup === true && result.message.includes('Goodbye');
+});
+
+// Group booking in progress, "bye" should be BLOCKED
+test('Group booking in progress, "bye" should be BLOCKED', () => {
+  const ctx: TerminalExitContext = {
+    bc: false,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: true
+  };
+  const result = simulateTerminalExit(ctx, "bye");
+  return result.blocked === true && result.shouldHangup === false;
+});
+
+// "Are you going to hang up?" should confirm and hang up
+test('"Are you going to hang up?" should confirm and hang up', () => {
+  const ctx: TerminalExitContext = {
+    bc: true,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "are you going to hang up?");
+  return result.shouldHangup === true && result.message.includes('all done');
+});
+
+// "finished" should trigger exit
+test('"finished" should trigger clean exit', () => {
+  const ctx: TerminalExitContext = {
+    bc: true,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "I'm finished");
+  return result.shouldHangup === true;
+});
+
+// No booking, "no thanks" should still exit gracefully
+test('No booking, "no thanks" should exit with different message', () => {
+  const ctx: TerminalExitContext = {
+    bc: false,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "no thanks");
+  return result.shouldHangup === true && result.message.includes('call back');
+});
+
+// Non-goodbye phrase should NOT trigger exit
+test('Question after booking should NOT trigger exit', () => {
+  const ctx: TerminalExitContext = {
+    bc: true,
+    appointmentCreated: false,
+    groupBookingComplete: false,
+    gb: false
+  };
+  const result = simulateTerminalExit(ctx, "what's the price?");
+  return result.shouldHangup === false && result.blocked === false;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
