@@ -170,6 +170,22 @@ export interface CompactCallState {
 
   /** lastAppointmentId = Cliniko appointment ID of last successful booking */
   lastAppointmentId?: string;
+
+  // ═══════════════════════════════════════════════
+  // Terminal State Machine (backend-only)
+  // ═══════════════════════════════════════════════
+
+  /**
+   * terminalGuard = true when non-FAQ, non-goodbye detected in terminal state
+   * Prevents AI from asking booking questions when response is generated
+   */
+  terminalGuard?: boolean;
+
+  /**
+   * askedAnythingElse = true after AI has asked "Is there anything else?"
+   * Prevents repeating this question multiple times in terminal state
+   */
+  askedAnythingElse?: boolean;
 }
 
 /**
