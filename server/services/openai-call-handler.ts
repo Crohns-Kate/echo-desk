@@ -1501,41 +1501,33 @@ export async function handleOpenAIConversation(
       }
 
       // ═══════════════════════════════════════════════
-      // CRITICAL FIX: Check if AI returned gp with REAL relation words as names
-      // (like "son", "daughter" - NOT placeholders like PRIMARY/SECONDARY)
+      // CRITICAL FIX: Check if AI returned gp with INVALID names
+      // (pronouns like "myself", "I", relation words like "son", "daughter")
+      // Uses isValidPersonName() for comprehensive validation
       // Only override AI reply if it's NOT already asking for names
       // ═══════════════════════════════════════════════
       const aiGp = finalResponse.state.gp;
       if (Array.isArray(aiGp) && aiGp.length >= 1) {
-        // Find entries with relation words as names (NOT placeholders - those are expected)
-        // Placeholders (PRIMARY, SECONDARY) are fine - AI will update them later
-        const placeholderNames = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
-        const relationWords = ['son', 'daughter', 'child', 'kid', 'baby', 'wife', 'husband',
-                               'partner', 'mother', 'father', 'mom', 'mum', 'dad',
-                               'brother', 'sister', 'friend', 'boyfriend', 'girlfriend',
-                               'spouse', 'fiancé', 'fiancee', 'fiance'];
-
+        // Use isValidPersonName() to find ALL invalid entries (pronouns, relations, etc.)
         const invalidEntries = aiGp.filter((p: { name: string; relation?: string }) => {
-          const lower = (p.name || '').toLowerCase().trim();
-          // Only flag as invalid if it's a RELATION WORD used as a name (not placeholder)
-          return relationWords.includes(lower) && !placeholderNames.includes(lower);
+          return !isValidPersonName(p.name);
+        });
+
+        const validEntries = aiGp.filter((p: { name: string; relation?: string }) => {
+          return isValidPersonName(p.name);
         });
 
         // Check if AI is already asking for names (don't override if so)
         const replyLower = finalResponse.reply.toLowerCase();
         const isAlreadyAskingForNames = replyLower.includes('name') &&
-          (replyLower.includes('get') || replyLower.includes('what') || replyLower.includes('who'));
+          (replyLower.includes('get') || replyLower.includes('what') || replyLower.includes('who') ||
+           replyLower.includes('full') || replyLower.includes('both') || replyLower.includes('can i'));
 
         if (invalidEntries.length > 0 && !isAlreadyAskingForNames) {
-          // AI put a relation word as a name AND is NOT asking for the name
+          // AI put invalid names AND is NOT asking for the name
           const invalidNames = invalidEntries.map((p: { name: string; relation?: string }) => p.name);
-          console.log('[OpenAICallHandler] ⚠️ AI used relation words as actual names:', invalidNames);
+          console.log('[OpenAICallHandler] ⚠️ AI returned invalid names in gp:', invalidNames);
 
-          // Find the VALID name(s) that AI extracted correctly
-          const validEntries = aiGp.filter((p: { name: string }) => {
-            const lower = (p.name || '').toLowerCase().trim();
-            return !relationWords.includes(lower) && !placeholderNames.includes(lower) && p.name.trim().length > 0;
-          });
           const validNames = validEntries.map((p: { name: string }) => p.name);
 
           // Keep the gp structure but only with valid entries (so executor knows count)
@@ -1543,33 +1535,40 @@ export async function handleOpenAIConversation(
           if (validEntries.length > 0) {
             finalResponse.state.gp = validEntries;
             console.log('[OpenAICallHandler]   Keeping valid names:', validNames.join(', '));
+          } else {
+            // No valid names at all - clear gp to force re-collection
+            finalResponse.state.gp = [];
+            console.log('[OpenAICallHandler]   No valid names found, clearing gp');
           }
-          // If no valid names, keep gp as-is so AI can fix it in next turn
-          // DON'T clear gp - that breaks the group booking flow
 
-          // Determine what relation word was used, to ask for that person's name
+          // Determine what the invalid entry was to ask for that person's name
           const relationToHuman: Record<string, string> = {
             'son': 'son', 'daughter': 'daughter', 'child': 'child', 'kid': 'child',
             'baby': 'baby', 'wife': 'wife', 'husband': 'husband', 'partner': 'partner',
             'mother': 'mother', 'father': 'father', 'mom': 'mother', 'mum': 'mother',
             'dad': 'father', 'brother': 'brother', 'sister': 'sister', 'friend': 'friend',
             'boyfriend': 'boyfriend', 'girlfriend': 'girlfriend', 'spouse': 'spouse',
-            'fiancé': 'fiancé', 'fiancee': 'fiancée', 'fiance': 'fiancé'
+            'fiancé': 'fiancé', 'fiancee': 'fiancée', 'fiance': 'fiancé',
+            // Add pronouns for better error messages
+            'myself': 'your', 'me': 'your', 'i': 'your', 'self': 'your'
           };
 
-          const firstInvalidName = invalidNames[0]?.toLowerCase();
+          const firstInvalidName = invalidNames[0]?.toLowerCase()?.trim();
           const relationWord = relationToHuman[firstInvalidName] || 'the other person';
 
-          // Override reply to ask for the missing name
+          // Override reply to ask for the missing name(s)
           const firstValidName = validNames[0];
-          if (firstValidName) {
+          if (validEntries.length === 0) {
+            // No valid names - ask for both
+            finalResponse.reply = "I can book for both of you — may I have both full names please?";
+          } else if (firstValidName) {
             const firstName = firstValidName.split(' ')[0];
-            finalResponse.reply = `Thanks ${firstName}. And what's your ${relationWord}'s name?`;
+            finalResponse.reply = `Thanks ${firstName}. And what's ${relationWord === 'your' ? 'your' : 'your ' + relationWord + "'s"} full name?`;
           } else {
-            finalResponse.reply = `Can I get your ${relationWord}'s name please?`;
+            finalResponse.reply = `And what's ${relationWord === 'your' ? 'your' : 'your ' + relationWord + "'s"} full name?`;
           }
 
-          console.log('[OpenAICallHandler]   Overriding AI reply to ask for name:', finalResponse.reply);
+          console.log('[OpenAICallHandler]   Overriding AI reply to ask for names:', finalResponse.reply);
         } else if (invalidEntries.length > 0) {
           console.log('[OpenAICallHandler]   AI has invalid names but is already asking for names, not overriding');
         }

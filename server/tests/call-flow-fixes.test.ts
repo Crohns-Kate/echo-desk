@@ -738,6 +738,217 @@ test('"Chris Link appointment" should sanitize to "Chris Link"', () => {
 });
 
 // ============================================================
+// TEST 9: isValidPersonName - Group Booking Name Validation
+// ============================================================
+console.log('\n[TEST 9: isValidPersonName - Group Booking Name Validation]');
+console.log('Scenario: Validate names for group booking - reject pronouns, relations, placeholders');
+console.log('Expected: "John Smith" valid, "myself" invalid, "my son" invalid\n');
+
+/**
+ * Mirrors the isValidPersonName function from openai-call-handler.ts
+ */
+function isValidPersonName(name: string): boolean {
+  if (!name || name.trim().length === 0) return false;
+
+  const lower = name.toLowerCase().trim();
+
+  // Pronouns and self-references
+  const pronouns = [
+    'myself', 'yourself', 'himself', 'herself', 'itself', 'ourselves', 'themselves',
+    'me', 'you', 'him', 'her', 'us', 'them', 'i', 'we', 'they',
+    'my', 'your', 'his', 'its', 'our', 'their'
+  ];
+
+  // Possessive family/relationship references (these need real names)
+  const possessiveReferences = [
+    'my son', 'my daughter', 'my wife', 'my husband', 'my partner',
+    'my child', 'my kid', 'my kids', 'my children', 'my baby',
+    'my mother', 'my father', 'my mom', 'my dad', 'my mum',
+    'my brother', 'my sister', 'my friend', 'my boyfriend', 'my girlfriend',
+    'my spouse', 'my fiancé', 'my fiancee', 'my fiance',
+    'the child', 'the kid', 'the baby', 'the son', 'the daughter',
+    'son', 'daughter', 'wife', 'husband', 'partner', 'child', 'kid', 'baby'
+  ];
+
+  // Common non-name words and articles
+  const nonNameWords = [
+    'for', 'and', 'the', 'a', 'an', 'this', 'that', 'here', 'there',
+    'when', 'what', 'where', 'which', 'who', 'whom', 'whose',
+    'today', 'tomorrow', 'both', 'all', 'some', 'any', 'each',
+    'appointment', 'booking', 'please', 'thanks', 'thank', 'can', 'make'
+  ];
+
+  // Placeholder markers
+  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
+
+  // Check for exact pronoun match
+  if (pronouns.includes(lower)) return false;
+
+  // Check if name starts with possessive pronoun
+  if (lower.startsWith('my ') || lower.startsWith('your ') ||
+      lower.startsWith('his ') || lower.startsWith('her ') ||
+      lower.startsWith('the ') || lower.startsWith('for ')) {
+    return false;
+  }
+
+  // Check for possessive reference matches
+  if (possessiveReferences.includes(lower)) return false;
+
+  // Check if starts with common non-name word
+  for (const word of nonNameWords) {
+    if (lower.startsWith(word + ' ')) return false;
+  }
+
+  // Check for placeholder markers
+  if (placeholders.includes(lower)) return false;
+
+  // Check if it's a single non-name word
+  if (nonNameWords.includes(lower)) return false;
+
+  // Reject if name is too short
+  if (lower.length < 2) return false;
+
+  return true;
+}
+
+// Valid names should pass
+test('"John Smith" should be valid', () => isValidPersonName('John Smith'));
+test('"Sarah" should be valid', () => isValidPersonName('Sarah'));
+test('"Chris Brown" should be valid', () => isValidPersonName('Chris Brown'));
+test('"Tommy" should be valid', () => isValidPersonName('Tommy'));
+
+// Pronouns should be rejected
+test('"myself" should be INVALID (pronoun)', () => !isValidPersonName('myself'));
+test('"me" should be INVALID (pronoun)', () => !isValidPersonName('me'));
+test('"I" should be INVALID (pronoun)', () => !isValidPersonName('I'));
+test('"him" should be INVALID (pronoun)', () => !isValidPersonName('him'));
+test('"her" should be INVALID (pronoun)', () => !isValidPersonName('her'));
+
+// Relation words used as names should be rejected
+test('"son" should be INVALID (relation word)', () => !isValidPersonName('son'));
+test('"daughter" should be INVALID (relation word)', () => !isValidPersonName('daughter'));
+test('"wife" should be INVALID (relation word)', () => !isValidPersonName('wife'));
+test('"husband" should be INVALID (relation word)', () => !isValidPersonName('husband'));
+test('"child" should be INVALID (relation word)', () => !isValidPersonName('child'));
+test('"kid" should be INVALID (relation word)', () => !isValidPersonName('kid'));
+test('"baby" should be INVALID (relation word)', () => !isValidPersonName('baby'));
+
+// Possessive references should be rejected
+test('"my son" should be INVALID (possessive)', () => !isValidPersonName('my son'));
+test('"my daughter" should be INVALID (possessive)', () => !isValidPersonName('my daughter'));
+test('"my wife" should be INVALID (possessive)', () => !isValidPersonName('my wife'));
+test('"the child" should be INVALID (possessive)', () => !isValidPersonName('the child'));
+
+// Placeholders should be rejected
+test('"primary" should be INVALID (placeholder)', () => !isValidPersonName('primary'));
+test('"secondary" should be INVALID (placeholder)', () => !isValidPersonName('secondary'));
+test('"caller" should be INVALID (placeholder)', () => !isValidPersonName('caller'));
+test('"patient1" should be INVALID (placeholder)', () => !isValidPersonName('patient1'));
+
+// Common words should be rejected
+test('"for" should be INVALID (common word)', () => !isValidPersonName('for'));
+test('"and" should be INVALID (common word)', () => !isValidPersonName('and'));
+test('"please" should be INVALID (common word)', () => !isValidPersonName('please'));
+
+// Edge cases
+test('Empty string should be INVALID', () => !isValidPersonName(''));
+test('Whitespace only should be INVALID', () => !isValidPersonName('   '));
+test('Single character should be INVALID', () => !isValidPersonName('A'));
+
+// ============================================================
+// TEST 10: Group Booking Flow with Invalid Names
+// ============================================================
+console.log('\n[TEST 10: Group Booking Flow with Invalid Names]');
+console.log('Scenario: User says "my son and I" - should detect intent but require real names');
+console.log('Expected: gb=true, but executor should NOT run until real names provided\n');
+
+interface GroupBookingState {
+  gb: boolean;
+  gp: Array<{ name: string; relation?: string }>;
+  tp: string | null;
+  hasRealNames: boolean;
+  groupBookingReady: boolean;
+}
+
+function evaluateGroupBookingState(state: GroupBookingState): GroupBookingState {
+  // Check if gp contains ACTUAL names (not placeholders, pronouns, or relations)
+  const hasRealNames = Array.isArray(state.gp) &&
+                       state.gp.length >= 2 &&
+                       state.gp.every(p => p.name && isValidPersonName(p.name));
+
+  const groupBookingReady = state.gb === true &&
+                            hasRealNames &&
+                            state.tp !== null;
+
+  return { ...state, hasRealNames, groupBookingReady };
+}
+
+// "my son and I" -> gb=true but no valid names yet
+test('Group booking with "myself" and "son" should NOT be ready (invalid names)', () => {
+  const state: GroupBookingState = {
+    gb: true,
+    gp: [{ name: 'myself', relation: 'self' }, { name: 'son', relation: 'son' }],
+    tp: 'today afternoon',
+    hasRealNames: false,
+    groupBookingReady: false
+  };
+  const result = evaluateGroupBookingState(state);
+  return result.hasRealNames === false && result.groupBookingReady === false;
+});
+
+// Real names provided -> ready to book
+test('Group booking with "John Smith" and "Tommy Smith" should be ready', () => {
+  const state: GroupBookingState = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }, { name: 'Tommy Smith', relation: 'son' }],
+    tp: 'today afternoon',
+    hasRealNames: false,
+    groupBookingReady: false
+  };
+  const result = evaluateGroupBookingState(state);
+  return result.hasRealNames === true && result.groupBookingReady === true;
+});
+
+// One valid name, one invalid -> not ready
+test('Group booking with one valid and one invalid name should NOT be ready', () => {
+  const state: GroupBookingState = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }, { name: 'son', relation: 'son' }],
+    tp: 'today afternoon',
+    hasRealNames: false,
+    groupBookingReady: false
+  };
+  const result = evaluateGroupBookingState(state);
+  return result.hasRealNames === false && result.groupBookingReady === false;
+});
+
+// Valid names but no time preference -> not ready
+test('Group booking with valid names but no tp should NOT be ready', () => {
+  const state: GroupBookingState = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }, { name: 'Tommy Smith', relation: 'son' }],
+    tp: null,
+    hasRealNames: false,
+    groupBookingReady: false
+  };
+  const result = evaluateGroupBookingState(state);
+  return result.hasRealNames === true && result.groupBookingReady === false;
+});
+
+// Only one person in gp -> not ready (need at least 2 for group)
+test('Group booking with only 1 person should NOT be ready', () => {
+  const state: GroupBookingState = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }],
+    tp: 'today afternoon',
+    hasRealNames: false,
+    groupBookingReady: false
+  };
+  const result = evaluateGroupBookingState(state);
+  return result.hasRealNames === false && result.groupBookingReady === false;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
