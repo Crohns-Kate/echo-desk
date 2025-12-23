@@ -1854,6 +1854,379 @@ test('Stage transition: terminal → ask_name (secondary booking after complete)
 });
 
 // ============================================================
+// TEST 17: Backend-Only Field Protection (Group Booking Fix)
+// ============================================================
+console.log('\n[TEST 17: Backend-Only Field Protection]');
+console.log('Scenario: AI should NEVER set backend-only fields like groupBookingComplete');
+console.log('Expected: These fields should be stripped from AI response before merging\n');
+
+interface AIResponse {
+  reply: string;
+  state: Record<string, any>;
+}
+
+// Simulate stripping backend-only fields from AI response
+function stripBackendOnlyFields(response: AIResponse): AIResponse {
+  const backendOnlyFields = [
+    'groupBookingComplete',
+    'appointmentCreated',
+    'terminalLock',
+    'callStage',
+    'bookingLockUntil',
+    'bookingFailed',
+    'bookingError',
+    'lastAppointmentId',
+    'smsConfirmSent',
+    'smsIntakeSent',
+    'smsMapSent',
+    'confirmSmsIncludedMap',
+    'emptyCount',
+    'lastEmptyAt',
+    'terminalGuard',
+    'askedAnythingElse'
+  ];
+
+  const cleanedState = { ...response.state };
+  const strippedFields: string[] = [];
+
+  for (const field of backendOnlyFields) {
+    if (field in cleanedState) {
+      strippedFields.push(field);
+      delete cleanedState[field];
+    }
+  }
+
+  return { reply: response.reply, state: cleanedState };
+}
+
+// AI returns groupBookingComplete=2 → should be stripped
+test('Backend field: groupBookingComplete should be stripped from AI response', () => {
+  const aiResponse: AIResponse = {
+    reply: "I've booked both of you!",
+    state: { gb: true, groupBookingComplete: 2, tp: 'today morning' }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return !('groupBookingComplete' in cleaned.state) && cleaned.state.gb === true;
+});
+
+// AI returns appointmentCreated=true → should be stripped
+test('Backend field: appointmentCreated should be stripped from AI response', () => {
+  const aiResponse: AIResponse = {
+    reply: "All booked!",
+    state: { bc: true, appointmentCreated: true }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return !('appointmentCreated' in cleaned.state) && cleaned.state.bc === true;
+});
+
+// AI returns terminalLock=true → should be stripped
+test('Backend field: terminalLock should be stripped from AI response', () => {
+  const aiResponse: AIResponse = {
+    reply: "You're all set!",
+    state: { bc: true, terminalLock: true }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return !('terminalLock' in cleaned.state);
+});
+
+// AI returns callStage → should be stripped
+test('Backend field: callStage should be stripped from AI response', () => {
+  const aiResponse: AIResponse = {
+    reply: "Booking now...",
+    state: { bc: true, callStage: 'terminal' }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return !('callStage' in cleaned.state);
+});
+
+// AI returns smsConfirmSent=true → should be stripped
+test('Backend field: smsConfirmSent should be stripped from AI response', () => {
+  const aiResponse: AIResponse = {
+    reply: "I've sent you a text!",
+    state: { smsConfirmSent: true }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return !('smsConfirmSent' in cleaned.state);
+});
+
+// Non-backend fields should be preserved
+test('Non-backend fields (gb, gp, tp) should be preserved', () => {
+  const aiResponse: AIResponse = {
+    reply: "I can book for both of you!",
+    state: {
+      gb: true,
+      gp: [{ name: 'John Smith' }, { name: 'Tommy Smith' }],
+      tp: 'today 11:00am',
+      groupBookingComplete: 2  // Should be stripped
+    }
+  };
+  const cleaned = stripBackendOnlyFields(aiResponse);
+  return cleaned.state.gb === true &&
+         Array.isArray(cleaned.state.gp) &&
+         cleaned.state.gp.length === 2 &&
+         cleaned.state.tp === 'today 11:00am' &&
+         !('groupBookingComplete' in cleaned.state);
+});
+
+// ============================================================
+// TEST 18: Group Booking Executor Gating
+// ============================================================
+console.log('\n[TEST 18: Group Booking Executor Gating]');
+console.log('Scenario: Executor should only run when ALL conditions are met');
+console.log('Expected: ready=true only when gb=true, hasRealNames, tp, !groupBookingComplete\n');
+
+interface ExecutorGatingContext {
+  gb?: boolean;
+  gp?: Array<{ name: string; relation?: string }>;
+  tp?: string | null;
+  groupBookingComplete?: number;
+}
+
+function checkExecutorReady(context: ExecutorGatingContext): {
+  ready: boolean;
+  hasRealNames: boolean;
+  missingRequirements: string[];
+} {
+  const missingRequirements: string[] = [];
+
+  // Check gb flag
+  if (!context.gb) {
+    missingRequirements.push('gb=false');
+  }
+
+  // Check gp with real names
+  const hasRealNames = Array.isArray(context.gp) &&
+                        context.gp.length >= 2 &&
+                        context.gp.every((p: { name: string }) => isValidPersonName(p.name));
+
+  if (!hasRealNames) {
+    if (!Array.isArray(context.gp) || context.gp.length === 0) {
+      missingRequirements.push('gp empty');
+    } else if (context.gp.length < 2) {
+      missingRequirements.push('gp < 2 people');
+    } else {
+      const invalidNames = context.gp.filter((p: { name: string }) => !isValidPersonName(p.name));
+      missingRequirements.push(`invalid names: ${invalidNames.map((p: { name: string }) => p.name).join(', ')}`);
+    }
+  }
+
+  // Check tp
+  if (!context.tp) {
+    missingRequirements.push('tp missing');
+  }
+
+  // Check groupBookingComplete
+  if (context.groupBookingComplete) {
+    missingRequirements.push(`groupBookingComplete=${context.groupBookingComplete}`);
+  }
+
+  const ready = context.gb === true &&
+                hasRealNames &&
+                !!context.tp &&
+                !context.groupBookingComplete;
+
+  return { ready, hasRealNames, missingRequirements };
+}
+
+// Valid group booking should be ready
+test('Executor: Valid group booking (2 real names, tp, !complete) should be ready', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith' }, { name: 'Tommy Smith' }],
+    tp: 'today 11:00am',
+    groupBookingComplete: undefined
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === true && result.hasRealNames === true;
+});
+
+// groupBookingComplete set → should NOT be ready
+test('Executor: groupBookingComplete=2 should NOT be ready (already completed)', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith' }, { name: 'Tommy Smith' }],
+    tp: 'today 11:00am',
+    groupBookingComplete: 2
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === false && result.missingRequirements.includes('groupBookingComplete=2');
+});
+
+// Invalid names → should NOT be ready
+test('Executor: gp with "myself" and "my son" should NOT be ready', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: true,
+    gp: [{ name: 'myself' }, { name: 'my son' }],
+    tp: 'today morning',
+    groupBookingComplete: undefined
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === false && result.hasRealNames === false;
+});
+
+// One valid, one invalid → should NOT be ready
+test('Executor: gp with "John Smith" and "my son" should NOT be ready', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith' }, { name: 'my son' }],
+    tp: 'today morning',
+    groupBookingComplete: undefined
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === false;
+});
+
+// Missing tp → should NOT be ready
+test('Executor: Missing tp should NOT be ready', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith' }, { name: 'Tommy Smith' }],
+    tp: null,
+    groupBookingComplete: undefined
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === false && result.missingRequirements.includes('tp missing');
+});
+
+// gb=false → should NOT be ready
+test('Executor: gb=false should NOT be ready', () => {
+  const ctx: ExecutorGatingContext = {
+    gb: false,
+    gp: [{ name: 'John Smith' }, { name: 'Tommy Smith' }],
+    tp: 'today morning',
+    groupBookingComplete: undefined
+  };
+  const result = checkExecutorReady(ctx);
+  return result.ready === false;
+});
+
+// ============================================================
+// TEST 19: Time Preference Extraction with Specific Times
+// ============================================================
+console.log('\n[TEST 19: Time Preference Extraction - Specific Times]');
+console.log('Scenario: Specific times like "11am" should take priority');
+console.log('Expected: "book for my son and I this morning 11am" → "today 11:00am"\n');
+
+function extractTimePreferenceTest(utterance: string): string | null {
+  const lower = utterance.toLowerCase().trim();
+
+  // PATTERN 1 (HIGHEST PRIORITY): Specific time with explicit meridiem
+  const specificTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i
+  );
+
+  if (specificTimeMatch) {
+    const hour = parseInt(specificTimeMatch[1], 10);
+    const minute = specificTimeMatch[2] || '00';
+    const meridiem = specificTimeMatch[3].toLowerCase().replace(/\./g, '');
+    return `today ${hour}:${minute}${meridiem}`;
+  }
+
+  // PATTERN 2: Time of day with optional day reference
+  const timeOfDayMatch = lower.match(
+    /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
+  );
+
+  if (timeOfDayMatch) {
+    const dayRef = timeOfDayMatch[1] || 'today';
+    let timeOfDay = timeOfDayMatch[2];
+    if (timeOfDay === 'arvo') timeOfDay = 'afternoon';
+    const normalizedDay = dayRef === 'this' ? 'today' : dayRef;
+    return `${normalizedDay} ${timeOfDay}`;
+  }
+
+  // Pattern 3: Day names
+  const dayNameMatch = lower.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+  if (dayNameMatch) return dayNameMatch[1].toLowerCase();
+
+  // Pattern 4: Relative days
+  if (/\btomorrow\b/i.test(lower)) return 'tomorrow';
+  if (/\btoday\b/i.test(lower)) return 'today';
+
+  return null;
+}
+
+// "11am" should extract specific time
+test('Time: "11am" should extract "today 11:00am"', () => {
+  const result = extractTimePreferenceTest('11am');
+  return result === 'today 11:00am';
+});
+
+// "this morning 11am" should prioritize "11am" over "morning"
+test('Time: "this morning 11am" should extract "today 11:00am" (specific time priority)', () => {
+  const result = extractTimePreferenceTest('this morning 11am');
+  return result === 'today 11:00am';
+});
+
+// "book for my son and I this morning 11am" should extract 11am
+test('Time: "book for my son and I this morning 11am" should extract "today 11:00am"', () => {
+  const result = extractTimePreferenceTest('book for my son and I this morning 11am');
+  return result === 'today 11:00am';
+});
+
+// "4:30pm" should extract specific time
+test('Time: "4:30pm" should extract "today 4:30pm"', () => {
+  const result = extractTimePreferenceTest('4:30pm');
+  return result === 'today 4:30pm';
+});
+
+// "at 3 p.m." should extract specific time
+test('Time: "at 3 p.m." should extract "today 3:00pm"', () => {
+  const result = extractTimePreferenceTest('at 3 p.m.');
+  return result === 'today 3:00pm';
+});
+
+// "this afternoon" without specific time
+test('Time: "this afternoon" should extract "today afternoon"', () => {
+  const result = extractTimePreferenceTest('this afternoon');
+  return result === 'today afternoon';
+});
+
+// ============================================================
+// TEST 20: Group Booking SMS Token Uniqueness
+// ============================================================
+console.log('\n[TEST 20: Group Booking SMS Token Uniqueness]');
+console.log('Scenario: Each patient should get a unique intake form token');
+console.log('Expected: form_CALLSID_PATIENTID1 and form_CALLSID_PATIENTID2\n');
+
+interface BookingResult {
+  name: string;
+  patientId: string;
+  appointmentId: string;
+  time: string;
+}
+
+function generateFormToken(callSid: string, result: BookingResult): string {
+  return `form_${callSid}_${result.patientId}`;
+}
+
+// Two patients should get different tokens
+test('SMS: Two patients should get unique form tokens', () => {
+  const callSid = 'CA123456789';
+  const results: BookingResult[] = [
+    { name: 'John Smith', patientId: 'P001', appointmentId: 'A001', time: '11:00 AM' },
+    { name: 'Tommy Smith', patientId: 'P002', appointmentId: 'A002', time: '11:15 AM' }
+  ];
+
+  const tokens = results.map(r => generateFormToken(callSid, r));
+  return tokens[0] === 'form_CA123456789_P001' &&
+         tokens[1] === 'form_CA123456789_P002' &&
+         tokens[0] !== tokens[1];
+});
+
+// Same patient ID across calls should get different tokens (different callSid)
+test('SMS: Same patient in different calls should get different tokens', () => {
+  const results: BookingResult = { name: 'John Smith', patientId: 'P001', appointmentId: 'A001', time: '11:00 AM' };
+
+  const token1 = generateFormToken('CA111', results);
+  const token2 = generateFormToken('CA222', results);
+
+  return token1 === 'form_CA111_P001' &&
+         token2 === 'form_CA222_P001' &&
+         token1 !== token2;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
@@ -1905,3 +2278,26 @@ console.log('8. Name Sanitizer (REGRESSION FIX):');
 console.log('   - "Chris message" → "Chris"');
 console.log('   - "John text" → "John"');
 console.log('   - Strips speech-to-text artifacts from patient names');
+console.log('');
+console.log('9. Group Booking End-to-End (NEW):');
+console.log('   TEST A: "book for my son and I this morning 11am"');
+console.log('   - Should ask: "I can book for both of you — may I have both full names please?"');
+console.log('   - Should NOT book "myself" or "my son" as literal names');
+console.log('   - Should extract tp="today 11:00am" (specific time priority)');
+console.log('');
+console.log('   TEST B: "Michael Bishop and Merrick Bishop this morning 11am"');
+console.log('   - Should book TWO appointments near 11am');
+console.log('   - Should send ONE confirmation SMS with both times');
+console.log('   - Should send TWO intake form SMS (unique tokens)');
+console.log('   - After FAQ like "how much?", should NOT re-enter booking');
+console.log('   - Should NOT ask "would you like to make an appointment?"');
+console.log('');
+console.log('   TEST C: Invalid names rejected');
+console.log('   - "myself" → rejected, ask for real name');
+console.log('   - "my son" → rejected, ask for real name');
+console.log('   - "me" → rejected, ask for real name');
+console.log('');
+console.log('   TEST D: groupBookingComplete protection');
+console.log('   - Check logs: groupBookingComplete should ONLY be set after Cliniko returns appointment IDs');
+console.log('   - AI should NEVER set groupBookingComplete (stripped from response)');
+console.log('   - If logs show "STRIPPED backend-only field: groupBookingComplete", protection is working');
