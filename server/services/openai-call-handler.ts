@@ -1737,6 +1737,41 @@ export async function handleOpenAIConversation(
     // 4. Update conversation history
     context = addTurnToHistory(context, 'user', userUtterance);
     context = addTurnToHistory(context, 'assistant', finalResponse.reply);
+
+    // ═══════════════════════════════════════════════
+    // CRITICAL: Strip BACKEND-ONLY fields from AI response before merging
+    // The AI should NEVER set these - they are set by the backend ONLY after
+    // actual Cliniko operations succeed. Allowing AI to set them causes:
+    // - False confirmations (says "booked" when nothing created)
+    // - Executor skipping (groupBookingComplete set before actual booking)
+    // - State corruption
+    // ═══════════════════════════════════════════════
+    const backendOnlyFields = [
+      'groupBookingComplete',  // ONLY set after Cliniko appointments created
+      'appointmentCreated',    // ONLY set after Cliniko appointment created
+      'terminalLock',          // ONLY set by backend after booking success
+      'callStage',             // ONLY set by backend during state transitions
+      'bookingLockUntil',      // ONLY set by backend for race condition prevention
+      'bookingFailed',         // ONLY set by backend on Cliniko error
+      'bookingError',          // ONLY set by backend on Cliniko error
+      'lastAppointmentId',     // ONLY set by backend after Cliniko success
+      'smsConfirmSent',        // ONLY set by backend after SMS sent
+      'smsIntakeSent',         // ONLY set by backend after SMS sent
+      'smsMapSent',            // ONLY set by backend after SMS sent
+      'confirmSmsIncludedMap', // ONLY set by backend
+      'emptyCount',            // ONLY set by backend for empty speech tracking
+      'lastEmptyAt',           // ONLY set by backend for empty speech tracking
+      'terminalGuard',         // ONLY set by backend in terminal state
+      'askedAnythingElse'      // ONLY set by backend in terminal state
+    ];
+
+    for (const field of backendOnlyFields) {
+      if (field in finalResponse.state) {
+        console.log('[OpenAICallHandler] ⛔ STRIPPED backend-only field from AI response:', field, '=', (finalResponse.state as any)[field]);
+        delete (finalResponse.state as any)[field];
+      }
+    }
+
     context = updateConversationState(context, finalResponse.state);
 
     // 5. Check if booking is confirmed and create appointment
