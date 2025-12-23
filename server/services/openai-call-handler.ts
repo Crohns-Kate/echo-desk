@@ -1595,6 +1595,41 @@ export async function handleOpenAIConversation(
       if (context.currentState.groupBookingComplete) {
         finalResponse.state.groupBookingComplete = context.currentState.groupBookingComplete;
       }
+
+      // ═══════════════════════════════════════════════
+      // CRITICAL: Block AI from confirming group booking when executor hasn't run
+      // If AI sets bc=true but groupBookingComplete is false, the executor didn't run
+      // → Override reply, reset bc, prevent false confirmation
+      // ═══════════════════════════════════════════════
+      if (finalResponse.state.bc === true && !context.currentState.groupBookingComplete) {
+        console.log('[OpenAICallHandler] ⛔ BLOCKED: AI tried to confirm group booking but executor never ran!');
+        console.log('[OpenAICallHandler]   - gb:', context.currentState.gb);
+        console.log('[OpenAICallHandler]   - gp:', context.currentState.gp?.map((p: { name: string }) => p.name));
+        console.log('[OpenAICallHandler]   - hasRealNames:', hasRealNames);
+        console.log('[OpenAICallHandler]   - groupBookingComplete:', context.currentState.groupBookingComplete);
+
+        // Reset bc - booking was NOT confirmed
+        finalResponse.state.bc = false;
+
+        // Check what's missing and ask for it
+        const gpLength = Array.isArray(context.currentState.gp) ? context.currentState.gp.length : 0;
+        const needsNames = gpLength < 2 || !hasRealNames;
+        const needsTime = !context.currentState.tp;
+
+        if (needsNames && needsTime) {
+          finalResponse.reply = "I can book for both of you — may I have both full names and when you'd like to come in?";
+        } else if (needsNames) {
+          finalResponse.reply = "I can book for both of you — may I have both full names please?";
+        } else if (needsTime) {
+          finalResponse.reply = "When would you both like to come in?";
+        } else {
+          // All info present but executor didn't run for some reason - try again next turn
+          finalResponse.reply = "Let me book that for you. Just a moment...";
+          // Re-trigger executor on next turn by NOT setting bc
+        }
+
+        console.log('[OpenAICallHandler]   Overriding AI reply:', finalResponse.reply);
+      }
     }
 
     // 4. Update conversation history
