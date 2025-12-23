@@ -949,6 +949,154 @@ test('Group booking with only 1 person should NOT be ready', () => {
 });
 
 // ============================================================
+// TEST 11: Group Booking Executor Control Flow
+// ============================================================
+console.log('\n[TEST 11: Group Booking Executor Control Flow]');
+console.log('Scenario: Executor runs BEFORE AI, blocks false confirmations');
+console.log('Expected: AI cannot say "booked" when executor hasn\'t run\n');
+
+interface GroupBookingContext {
+  gb: boolean;
+  gp: Array<{ name: string; relation?: string }>;
+  tp: string | null;
+  groupBookingComplete: number | false;
+  bc: boolean;
+}
+
+interface AIResponse {
+  reply: string;
+  state: {
+    bc: boolean;
+    gp?: Array<{ name: string; relation?: string }>;
+  };
+}
+
+/**
+ * Simulates the control flow check:
+ * If AI sets bc=true but groupBookingComplete is false, block it
+ */
+function simulateGroupBookingControlFlow(
+  context: GroupBookingContext,
+  aiResponse: AIResponse
+): { blocked: boolean; overriddenReply: string | null; bcReset: boolean } {
+  // Check if gp contains ACTUAL names
+  const hasRealNames = Array.isArray(context.gp) &&
+                       context.gp.length >= 2 &&
+                       context.gp.every(p => p.name && isValidPersonName(p.name));
+
+  // If AI sets bc=true but executor never ran (groupBookingComplete is false)
+  if (context.gb && aiResponse.state.bc === true && !context.groupBookingComplete) {
+    const gpLength = context.gp.length;
+    const needsNames = gpLength < 2 || !hasRealNames;
+    const needsTime = !context.tp;
+
+    let overriddenReply: string;
+    if (needsNames && needsTime) {
+      overriddenReply = "I can book for both of you — may I have both full names and when you'd like to come in?";
+    } else if (needsNames) {
+      overriddenReply = "I can book for both of you — may I have both full names please?";
+    } else if (needsTime) {
+      overriddenReply = "When would you both like to come in?";
+    } else {
+      overriddenReply = "Let me book that for you. Just a moment...";
+    }
+
+    return { blocked: true, overriddenReply, bcReset: true };
+  }
+
+  return { blocked: false, overriddenReply: null, bcReset: false };
+}
+
+// AI says "I've booked you" but executor never ran (no real names)
+test('Block AI confirmation when gp has invalid names', () => {
+  const context: GroupBookingContext = {
+    gb: true,
+    gp: [{ name: 'myself', relation: 'self' }, { name: 'son', relation: 'son' }],
+    tp: 'today 3pm',
+    groupBookingComplete: false,
+    bc: false
+  };
+  const aiResponse: AIResponse = {
+    reply: "Great, I've booked you both for 3pm and 3:15pm!",
+    state: { bc: true }
+  };
+  const result = simulateGroupBookingControlFlow(context, aiResponse);
+  return result.blocked === true &&
+         result.bcReset === true &&
+         result.overriddenReply?.includes('full names');
+});
+
+// AI says "I've booked you" but executor never ran (missing time)
+test('Block AI confirmation when tp is missing', () => {
+  const context: GroupBookingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }, { name: 'Tommy Smith', relation: 'son' }],
+    tp: null,
+    groupBookingComplete: false,
+    bc: false
+  };
+  const aiResponse: AIResponse = {
+    reply: "Perfect, I've booked you both!",
+    state: { bc: true }
+  };
+  const result = simulateGroupBookingControlFlow(context, aiResponse);
+  return result.blocked === true &&
+         result.bcReset === true &&
+         result.overriddenReply?.includes('When would you');
+});
+
+// Executor DID run (groupBookingComplete > 0) - should NOT block
+test('Allow AI reply when executor completed successfully', () => {
+  const context: GroupBookingContext = {
+    gb: true,
+    gp: [{ name: 'John Smith', relation: 'self' }, { name: 'Tommy Smith', relation: 'son' }],
+    tp: 'today 3pm',
+    groupBookingComplete: 2,  // Executor created 2 appointments
+    bc: true
+  };
+  const aiResponse: AIResponse = {
+    reply: "Your appointments are confirmed!",
+    state: { bc: true }
+  };
+  const result = simulateGroupBookingControlFlow(context, aiResponse);
+  return result.blocked === false && result.bcReset === false;
+});
+
+// AI doesn't set bc=true - should NOT block
+test('No blocking when AI doesn\'t confirm', () => {
+  const context: GroupBookingContext = {
+    gb: true,
+    gp: [{ name: 'myself', relation: 'self' }, { name: 'son', relation: 'son' }],
+    tp: 'today 3pm',
+    groupBookingComplete: false,
+    bc: false
+  };
+  const aiResponse: AIResponse = {
+    reply: "And what's your son's name?",
+    state: { bc: false }
+  };
+  const result = simulateGroupBookingControlFlow(context, aiResponse);
+  return result.blocked === false && result.bcReset === false;
+});
+
+// Not a group booking - should NOT block single booking confirmation
+test('No blocking for single (non-group) booking', () => {
+  const context: GroupBookingContext = {
+    gb: false,  // Not a group booking
+    gp: [],
+    tp: 'today 3pm',
+    groupBookingComplete: false,
+    bc: false
+  };
+  const aiResponse: AIResponse = {
+    reply: "I've booked you for 3pm!",
+    state: { bc: true }
+  };
+  const result = simulateGroupBookingControlFlow(context, aiResponse);
+  return result.blocked === false;
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');
