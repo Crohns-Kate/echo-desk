@@ -1097,6 +1097,224 @@ test('No blocking for single (non-group) booking', () => {
 });
 
 // ============================================================
+// TEST 12: Deterministic Time Preference Extraction
+// ============================================================
+console.log('\n[TEST 12: Deterministic Time Preference Extraction]');
+console.log('Scenario: Extract time preference from utterance BEFORE AI');
+console.log('Expected: "this morning" → tp set, ask_time skipped\n');
+
+/**
+ * Mirrors the extractTimePreferenceFromUtterance function from openai-call-handler.ts
+ */
+function extractTimePreferenceFromUtterance(utterance: string): string | null {
+  const lower = utterance.toLowerCase().trim();
+
+  // Pattern 1: Specific time with explicit meridiem
+  const specificTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i
+  );
+
+  if (specificTimeMatch) {
+    const hour = parseInt(specificTimeMatch[1], 10);
+    const minute = specificTimeMatch[2] || '00';
+    const meridiem = specificTimeMatch[3].toLowerCase().replace(/\./g, '');
+    return `today ${hour}:${minute}${meridiem}`;
+  }
+
+  // Pattern 2: Time of day with optional day reference
+  const timeOfDayMatch = lower.match(
+    /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
+  );
+
+  if (timeOfDayMatch) {
+    const dayRef = timeOfDayMatch[1] || 'today';
+    let timeOfDay = timeOfDayMatch[2];
+    if (timeOfDay === 'arvo') timeOfDay = 'afternoon';
+    const normalizedDay = dayRef === 'this' ? 'today' : dayRef;
+    return `${normalizedDay} ${timeOfDay}`;
+  }
+
+  // Pattern 3: Day names
+  const dayNameMatch = lower.match(
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (dayNameMatch) {
+    return dayNameMatch[1].toLowerCase();
+  }
+
+  // Pattern 4: Relative days
+  if (/\btomorrow\b/i.test(lower)) return 'tomorrow';
+  if (/\btoday\b/i.test(lower)) return 'today';
+
+  // Pattern 5: Week references
+  if (/\bnext\s+week\b/i.test(lower)) return 'next week';
+  if (/\bthis\s+week\b/i.test(lower)) return 'today';
+
+  return null;
+}
+
+// Time of day patterns
+test('"this morning" → "today morning"', () => {
+  return extractTimePreferenceFromUtterance('I need an appointment this morning') === 'today morning';
+});
+
+test('"this afternoon" → "today afternoon"', () => {
+  return extractTimePreferenceFromUtterance('Can I come in this afternoon') === 'today afternoon';
+});
+
+test('"this arvo" → "today afternoon" (Australian slang)', () => {
+  return extractTimePreferenceFromUtterance('I need an appointment this arvo') === 'today afternoon';
+});
+
+test('"tomorrow morning" → "tomorrow morning"', () => {
+  return extractTimePreferenceFromUtterance('How about tomorrow morning') === 'tomorrow morning';
+});
+
+test('"tomorrow afternoon" → "tomorrow afternoon"', () => {
+  return extractTimePreferenceFromUtterance('Can you fit me in tomorrow afternoon') === 'tomorrow afternoon';
+});
+
+// Specific time patterns
+test('"at 9am" → "today 9:00am"', () => {
+  return extractTimePreferenceFromUtterance('I want to come at 9am') === 'today 9:00am';
+});
+
+test('"4:30pm" → "today 4:30pm"', () => {
+  return extractTimePreferenceFromUtterance('How about 4:30pm?') === 'today 4:30pm';
+});
+
+test('"around 3 p.m." → "today 3:00pm"', () => {
+  const result = extractTimePreferenceFromUtterance('I can come around 3 p.m.');
+  return result === 'today 3:00pm' || result === 'today 3:00p.m.';
+});
+
+// Day name patterns
+test('"on Monday" → "monday"', () => {
+  return extractTimePreferenceFromUtterance('Can I book for Monday') === 'monday';
+});
+
+test('"tuesday afternoon" → detects tuesday or afternoon', () => {
+  const result = extractTimePreferenceFromUtterance('I want to come Tuesday afternoon');
+  return result !== null;  // Should extract something
+});
+
+// Relative day patterns
+test('"today" → "today"', () => {
+  return extractTimePreferenceFromUtterance("I need to be seen today") === 'today';
+});
+
+test('"tomorrow" → "tomorrow"', () => {
+  return extractTimePreferenceFromUtterance("Can I come tomorrow?") === 'tomorrow';
+});
+
+// Week patterns
+test('"next week" → "next week"', () => {
+  return extractTimePreferenceFromUtterance("Maybe sometime next week") === 'next week';
+});
+
+// No time preference
+test('No time phrase → null', () => {
+  return extractTimePreferenceFromUtterance("I need an appointment") === null;
+});
+
+test('Name only → null', () => {
+  return extractTimePreferenceFromUtterance("My name is John Smith") === null;
+});
+
+// ============================================================
+// TEST 13: Universal TP Extraction Flow
+// ============================================================
+console.log('\n[TEST 13: Universal TP Extraction Flow]');
+console.log('Scenario: TP extraction runs for ALL booking intents, not just group');
+console.log('Expected: Single booking also benefits from deterministic TP\n');
+
+interface BookingContext {
+  im: string | null;  // intent
+  tp: string | null;  // time preference
+  rs: boolean;        // ready to offer slots
+  gb: boolean;        // group booking
+  bookingFor?: string;
+}
+
+function simulateUniversalTpExtraction(
+  context: BookingContext,
+  utterance: string
+): BookingContext {
+  const isBookingIntent = context.im === 'book' ||
+                          !context.im ||
+                          context.bookingFor === 'someone_else';
+
+  if (isBookingIntent && !context.tp) {
+    const extractedTp = extractTimePreferenceFromUtterance(utterance);
+    if (extractedTp) {
+      return {
+        ...context,
+        tp: extractedTp,
+        rs: true
+      };
+    }
+  }
+
+  return context;
+}
+
+test('Single booking: "this morning" sets tp and rs=true', () => {
+  const context: BookingContext = {
+    im: 'book',
+    tp: null,
+    rs: false,
+    gb: false
+  };
+  const result = simulateUniversalTpExtraction(context, "I need an appointment this morning");
+  return result.tp === 'today morning' && result.rs === true;
+});
+
+test('Secondary booking: "this afternoon" sets tp and rs=true', () => {
+  const context: BookingContext = {
+    im: 'book',
+    tp: null,
+    rs: false,
+    gb: false,
+    bookingFor: 'someone_else'
+  };
+  const result = simulateUniversalTpExtraction(context, "Same time this afternoon for my son");
+  return result.tp === 'today afternoon' && result.rs === true;
+});
+
+test('No intent (default): "tomorrow" sets tp', () => {
+  const context: BookingContext = {
+    im: null,  // No intent set yet (first turn)
+    tp: null,
+    rs: false,
+    gb: false
+  };
+  const result = simulateUniversalTpExtraction(context, "I want to book tomorrow");
+  return result.tp === 'tomorrow' && result.rs === true;
+});
+
+test('TP already set: should NOT override', () => {
+  const context: BookingContext = {
+    im: 'book',
+    tp: 'today 4:00pm',  // Already set
+    rs: true,
+    gb: false
+  };
+  const result = simulateUniversalTpExtraction(context, "Actually this morning");
+  return result.tp === 'today 4:00pm';  // Unchanged
+});
+
+test('Reschedule intent: should NOT extract', () => {
+  const context: BookingContext = {
+    im: 'change',  // Reschedule, not book
+    tp: null,
+    rs: false,
+    gb: false
+  };
+  const result = simulateUniversalTpExtraction(context, "I want to reschedule to tomorrow");
+  return result.tp === null;  // Not extracted for reschedule
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 console.log('\n============================================================');

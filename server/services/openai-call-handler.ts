@@ -1092,6 +1092,25 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
+    // 2d-bis. UNIVERSAL DETERMINISTIC TP EXTRACTION
+    // For ALL booking intents (not just group), extract time preference
+    // from utterance BEFORE calling AI. This prevents AI from asking again.
+    // ═══════════════════════════════════════════════
+    const isBookingIntent = context.currentState.im === 'book' ||
+                            !context.currentState.im ||  // Default intent is booking
+                            context.currentState.bookingFor === 'someone_else';
+
+    if (isBookingIntent && !context.currentState.tp) {
+      const universalExtractedTp = extractTimePreferenceFromUtterance(userUtterance);
+      if (universalExtractedTp) {
+        console.log('[OpenAICallHandler] 🕐 UNIVERSAL TP EXTRACTION: Detected time preference:', universalExtractedTp);
+        context.currentState.tp = universalExtractedTp;
+        context.currentState.rs = true;  // Ready to fetch slots
+        console.log('[OpenAICallHandler] 🕐 UNIVERSAL TP: Set tp="%s" and rs=true', universalExtractedTp);
+      }
+    }
+
+    // ═══════════════════════════════════════════════
     // 2e. GROUP BOOKING EXECUTOR - MUST RUN BEFORE AI
     // If group booking is ready (gb=true, gp>=2 with REAL names, tp set, not complete),
     // execute immediately without calling AI. AI must NOT decide outcomes.
