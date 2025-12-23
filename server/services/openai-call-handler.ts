@@ -1945,13 +1945,30 @@ export async function handleOpenAIConversation(
       'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
       'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
       'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
-      'no thank you', 'no more', 'nothing more'
+      'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done'
     ];
     const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
 
     // Check if group booking is in progress (should NOT allow goodbye)
     const groupBookingInProgress = context.currentState.gb === true &&
                                     !context.currentState.groupBookingComplete;
+
+    // Check if ANY booking is complete (single or group)
+    const bookingComplete = context.currentState.bc === true ||
+                            context.currentState.appointmentCreated === true ||
+                            context.currentState.groupBookingComplete;
+
+    // Special handling: "are you going to hang up?" or similar
+    const askingAboutHangup = userUtteranceLower.includes('hang up') ||
+                               userUtteranceLower.includes('going to end') ||
+                               userUtteranceLower.includes('going to close');
+
+    if (askingAboutHangup) {
+      console.log('[OpenAICallHandler] Caller asked about hanging up - confirming and ending');
+      saySafe(vr, "Yes, we're all done! Thanks for calling. Have a lovely day!");
+      vr.hangup();
+      return vr;
+    }
 
     if (wantsToEndCall && groupBookingInProgress) {
       // BLOCK: Group booking in progress - don't allow premature goodbye
@@ -1962,28 +1979,16 @@ export async function handleOpenAIConversation(
 
       // Continue with booking flow instead of hanging up
       // AI response will handle asking for remaining info
-    } else if (wantsToEndCall && context.currentState.bc === true) {
-      // Booking confirmed - safe to say goodbye
+    } else if (wantsToEndCall && bookingComplete) {
+      // Booking confirmed (single OR group) - safe to say goodbye
       console.log('[OpenAICallHandler] Caller wants to end call - booking complete, hanging up gracefully');
-      const goodbyeMessages = [
-        "Perfect! Your appointments are all set. Have a lovely day!",
-        "Beautiful! We'll see you soon. Take care!",
-        "Wonderful! Everything's booked. Bye for now!"
-      ];
-      const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
-      saySafe(vr, randomGoodbye);
+      saySafe(vr, "All set. Thanks for calling. Goodbye!");
       vr.hangup();
       return vr;
     } else if (wantsToEndCall && !context.currentState.gb) {
       // Not a group booking and caller wants to leave - allow it
       console.log('[OpenAICallHandler] Caller wants to end call - no active booking, hanging up gracefully');
-      const goodbyeMessages = [
-        "No worries! Feel free to call back anytime. Have a lovely day!",
-        "That's fine! We're here when you need us. Take care!",
-        "All good! Don't hesitate to call back. Bye for now!"
-      ];
-      const randomGoodbye = goodbyeMessages[Math.floor(Math.random() * goodbyeMessages.length)];
-      saySafe(vr, randomGoodbye);
+      saySafe(vr, "No worries! Feel free to call back anytime. Goodbye!");
       vr.hangup();
       return vr;
     }
