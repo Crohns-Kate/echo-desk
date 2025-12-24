@@ -98,6 +98,13 @@ export interface CompactCallState {
   lastEmptyAt?: number;
 
   // ═══════════════════════════════════════════════
+  // Slot Confirmation Guard (backend-only)
+  // ═══════════════════════════════════════════════
+
+  /** slotsOfferedAt = timestamp when slots were first offered to user (guards against same-turn booking) */
+  slotsOfferedAt?: number;
+
+  // ═══════════════════════════════════════════════
   // Secondary Booking (for family members after primary booking)
   // ═══════════════════════════════════════════════
 

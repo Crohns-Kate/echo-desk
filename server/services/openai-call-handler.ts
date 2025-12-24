@@ -1113,6 +1113,53 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
+    // 2e-bis. UNIVERSAL HANG UP DETECTION
+    // If caller explicitly says "hang up" as a command (not a question),
+    // hang up immediately regardless of state. This prevents awkward AI responses.
+    // ═══════════════════════════════════════════════
+    const utteranceLowerForHangup = (userUtterance || '').toLowerCase().trim();
+
+    // Direct hang up commands - these always trigger hang up
+    const directHangupCommands = [
+      'hang up',
+      'end the call',
+      'end call',
+      'close the call',
+      'disconnect',
+      'i want to hang up',
+      'please hang up',
+      'you can hang up',
+      'just hang up',
+      'go ahead and hang up',
+      'okay hang up'
+    ];
+
+    const isDirectHangupCommand = directHangupCommands.some(cmd => utteranceLowerForHangup.includes(cmd));
+
+    // Check if it's a question about hanging up (different handling)
+    const isHangupQuestion = (utteranceLowerForHangup.includes('are you going to') ||
+                              utteranceLowerForHangup.includes('will you') ||
+                              utteranceLowerForHangup.includes('can you') ||
+                              utteranceLowerForHangup.includes('should i')) &&
+                             utteranceLowerForHangup.includes('hang up');
+
+    if (isDirectHangupCommand && !isHangupQuestion) {
+      console.log('[UniversalHangup] 🚪 Direct hang up command detected:', userUtterance);
+      saySafe(vr, "All set. Thanks for calling. Goodbye!");
+      vr.hangup();
+      await saveConversationContext(callSid, context);
+      return vr;
+    }
+
+    if (isHangupQuestion) {
+      console.log('[UniversalHangup] 🚪 Hang up question detected, confirming:', userUtterance);
+      saySafe(vr, "Yes, we're all done! Thanks for calling. Have a lovely day!");
+      vr.hangup();
+      await saveConversationContext(callSid, context);
+      return vr;
+    }
+
+    // ═══════════════════════════════════════════════
     // 2f. TERMINAL STATE HANDLER - MUST RUN BEFORE AI
     // If booking is complete (terminalLock=true OR appointmentCreated OR groupBookingComplete),
     // detect goodbye phrases and hangup IMMEDIATELY without calling AI.
@@ -1883,7 +1930,8 @@ export async function handleOpenAIConversation(
       'emptyCount',            // ONLY set by backend for empty speech tracking
       'lastEmptyAt',           // ONLY set by backend for empty speech tracking
       'terminalGuard',         // ONLY set by backend in terminal state
-      'askedAnythingElse'      // ONLY set by backend in terminal state
+      'askedAnythingElse',     // ONLY set by backend in terminal state
+      'slotsOfferedAt'         // ONLY set by backend when slots are offered (slot confirmation guard)
     ];
 
     for (const field of backendOnlyFields) {
@@ -1896,10 +1944,44 @@ export async function handleOpenAIConversation(
     context = updateConversationState(context, finalResponse.state);
 
     // 5. Check if booking is confirmed and create appointment
-    if (finalResponse.state.bc && finalResponse.state.nm && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
-      console.log('[OpenAICallHandler] 🎯 Booking confirmed! Creating appointment...');
+    // GUARD: Track if slots were offered BEFORE this turn - if not, user hasn't had a chance to confirm
+    // slotsOfferedAt must exist from a PREVIOUS turn (meaning user has seen and responded to slots)
+    const slotsWereOfferedPreviously = context.currentState.slotsOfferedAt !== undefined;
+    const slotsExistNow = context.availableSlots && context.availableSlots.length > 0;
 
-      const selectedSlot = context.availableSlots[finalResponse.state.si];
+    // If slots exist but weren't offered yet, mark them as offered NOW (for next turn check)
+    if (slotsExistNow && !slotsWereOfferedPreviously) {
+      context.currentState.slotsOfferedAt = Date.now();
+      console.log('[OpenAICallHandler] 📋 Slots just offered to user this turn - must wait for next turn confirmation');
+    }
+
+    // Check if booking should proceed
+    const shouldAttemptBooking = finalResponse.state.bc &&
+                                  finalResponse.state.nm &&
+                                  context.availableSlots &&
+                                  finalResponse.state.si !== undefined &&
+                                  finalResponse.state.si !== null;
+
+    // GUARD: If slots were just offered THIS turn (not previously), block booking
+    // User MUST have had a turn to respond and pick a slot
+    const bookingBlockedBySlotGuard = shouldAttemptBooking && !slotsWereOfferedPreviously;
+
+    if (bookingBlockedBySlotGuard) {
+      console.log('[OpenAICallHandler] ⚠️ BLOCKED: Cannot book on same turn slots were offered - waiting for user confirmation');
+      console.log('[OpenAICallHandler]   Slots offered at:', context.currentState.slotsOfferedAt, ' (just set this turn)');
+      // Override AI's bc=true - user hasn't confirmed yet
+      finalResponse.state.bc = false;
+      context.currentState.bc = false;
+      // Clear si so user must select again after seeing options
+      finalResponse.state.si = undefined;
+      context.currentState.si = null;
+      // Don't proceed with booking - fall through to response handling
+    }
+
+    if (shouldAttemptBooking && !bookingBlockedBySlotGuard) {
+      console.log('[OpenAICallHandler] 🎯 Booking confirmed! User had opportunity to select slot.');
+
+      const selectedSlot = context.availableSlots[finalResponse.state.si as number];
 
       // BOOKING LOCK: Prevent double-booking from race conditions / duplicate webhooks
       const now = Date.now();
@@ -2241,30 +2323,63 @@ export async function handleOpenAIConversation(
     // If we're in terminal state (booking complete), ensure AI doesn't ask:
     // - "Would you like to make an appointment?"
     // - "Is there anything else I can help with?" (if already asked once)
+    // - Any variation of booking/confirmation prompts
     // ═══════════════════════════════════════════════
     if (isTerminalState || context.currentState.terminalGuard) {
       const replyLower = finalResponse.reply.toLowerCase();
 
       // Block booking prompts after appointment is already created
+      // COMPREHENSIVE list to catch all variations
       const bookingPromptPatterns = [
-        /would you like to (make|book|schedule) an? (appointment|booking)/i,
+        // Direct booking prompts
+        /would you like to (make|book|schedule|proceed with) an? (appointment|booking)/i,
         /can i (help you )?(book|schedule|make) an? appointment/i,
-        /shall i (book|schedule|make) an? appointment/i,
-        /do you want (me )?to (book|schedule|make)/i,
-        /would you like me to (book|schedule|make)/i
+        /shall i (book|schedule|make|confirm) (an? )?(appointment|that|it)/i,
+        /do you want (me )?to (book|schedule|make|confirm)/i,
+        /would you like me to (book|schedule|make|confirm|lock)/i,
+        /would you like to (proceed|go ahead|confirm)/i,
+        // Confirmation prompts (already booked!)
+        /shall i (confirm|lock) that (in|for you)/i,
+        /can i (confirm|lock) that (in|for you)/i,
+        /want me to (book|confirm|lock) (that|it)/i,
+        /let me (book|confirm|lock) that (in|for you)/i,
+        // Subtle re-entry prompts
+        /when would you like to come in/i,
+        /what time works (best|for you)/i,
+        /can i (help|assist) you with (a|an)? (booking|appointment)/i,
+        /would you like to (set up|arrange)/i,
+        // "That's all" followed by booking prompt
+        /anything else.*(book|appointment|schedule)/i
       ];
 
       let shouldStripBookingPrompt = bookingPromptPatterns.some(p => p.test(finalResponse.reply));
 
-      if (shouldStripBookingPrompt) {
+      // Also block if AI is trying to restart booking flow after FAQ
+      const isRestartingBookingFlow =
+        context.currentState.appointmentCreated === true &&
+        (replyLower.includes('when would you') ||
+         replyLower.includes('what time') ||
+         replyLower.includes('book an appointment'));
+
+      if (shouldStripBookingPrompt || isRestartingBookingFlow) {
         console.log('[TerminalGuard] ⛔ BLOCKING booking prompt in terminal state');
         console.log('[TerminalGuard]   Original reply:', finalResponse.reply);
+        console.log('[TerminalGuard]   Reason: shouldStripBookingPrompt=', shouldStripBookingPrompt, 'isRestartingBookingFlow=', isRestartingBookingFlow);
 
         // Strip out the booking prompt, keep any FAQ answer
         let cleanedReply = finalResponse.reply;
         for (const pattern of bookingPromptPatterns) {
           cleanedReply = cleanedReply.replace(pattern, '').trim();
         }
+
+        // Also strip common re-entry patterns
+        cleanedReply = cleanedReply
+          .replace(/when would you like to come in\??/gi, '')
+          .replace(/what time works (best|for you)\??/gi, '')
+          .trim();
+
+        // Clean up any double spaces or trailing punctuation issues
+        cleanedReply = cleanedReply.replace(/\s+/g, ' ').replace(/\.\s*\./g, '.').trim();
 
         // If reply becomes empty or too short, use a safe closing
         if (cleanedReply.length < 10) {
@@ -2290,6 +2405,18 @@ export async function handleOpenAIConversation(
       // Track if we've asked "anything else" to avoid repeating
       if (replyLower.includes('anything else') || replyLower.includes('help with anything')) {
         context.currentState.askedAnythingElse = true;
+      }
+
+      // CRITICAL: In terminal state after FAQ, ensure AI doesn't reset booking flow
+      // Reset any booking-related state changes the AI might have made
+      if (context.currentState.appointmentCreated === true || context.currentState.groupBookingComplete) {
+        // Preserve terminal state - AI cannot change these
+        finalResponse.state.bc = true;
+        finalResponse.state.rs = false;  // Don't fetch new slots
+        // Don't reset these if they were already set
+        if (context.currentState.appointmentCreated) {
+          (finalResponse.state as any).appointmentCreated = true;
+        }
       }
     }
 

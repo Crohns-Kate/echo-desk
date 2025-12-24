@@ -1147,10 +1147,13 @@ export class CallFlowHandler {
       }
 
       // Send SMS with form link
+      // CRITICAL: Include patientId if available for proper Cliniko integration
       await sendNewPatientForm({
         to: this.ctx.callerPhone,
         token: token,
-        clinicName: this.getClinicName()
+        clinicName: this.getClinicName(),
+        clinikoPatientId: this.ctx.patientId,  // Link form to correct Cliniko patient
+        patientName: this.ctx.patientName || this.ctx.patientFirstName  // Identify who this form is for
       });
 
       saySafe(this.vr, "Perfect! I've sent you a text with a link. I'll wait right here while you fill it out. Takes about 30 seconds.");
