@@ -5345,10 +5345,48 @@ export function registerVoice(app: Express) {
       const nonInteractiveStages = ['booking_in_progress', 'sending_sms', 'terminal'];
       const isNonInteractive = callStage && nonInteractiveStages.includes(callStage);
 
-      // TERMINAL LOCK: After booking, suppress empty speech retries entirely
+      // TERMINAL LOCK: After booking, handle empty speech with graceful prompts
       if (terminalLock || isNonInteractive) {
-        console.log('[VOICE][OPENAI][CONTINUE] Suppressing empty speech prompt (terminalLock:', terminalLock, ', stage:', callStage, ')');
-        // Silent gather - just wait for user input without prompting
+        console.log('[VOICE][OPENAI][CONTINUE] Terminal state empty speech (terminalLock:', terminalLock, ', stage:', callStage, ', emptyCount:', emptyCount, ')');
+
+        // Track empty count in terminal state
+        const terminalEmptyCount = emptyCount;
+        if (ctx) {
+          ctx.currentState = ctx.currentState || {};
+          ctx.currentState.emptyCount = emptyCount + 1;
+          ctx.currentState.lastEmptyAt = now;
+          await saveContextForEmpty(ctx);
+        }
+
+        // After 3 silent gathers in terminal state, close gracefully
+        if (terminalEmptyCount >= 3) {
+          console.log('[VOICE][OPENAI][CONTINUE] Terminal state max empty reached - closing call');
+          saySafe(vr, "Thanks for calling. Have a great day!");
+          vr.hangup();
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // After 2 silent gathers, prompt user instead of waiting silently
+        if (terminalEmptyCount >= 2) {
+          console.log('[VOICE][OPENAI][CONTINUE] Terminal state - prompting user after silence');
+          const promptGather = vr.gather({
+            input: ['speech'],
+            timeout: 10,
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            speechModel: 'phone_call',
+            bargeIn: true,
+            actionOnEmptyResult: true,
+            profanityFilter: false,
+            hints: 'yes, no, thank you, goodbye, that\'s all, nothing else'
+          });
+          saySafe(promptGather, "Is there anything else I can help you with before you go?");
+          return res.type("text/xml").send(vr.toString());
+        }
+
+        // First 2 empties: silent gather - wait for user input
         const silentGather = vr.gather({
           input: ['speech'],
           timeout: 15, // Longer timeout in terminal state

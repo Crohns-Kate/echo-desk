@@ -136,6 +136,12 @@ export interface CompactCallState {
    */
   groupBookingComplete?: number;
 
+  /**
+   * groupBookingProposed = true when we've proposed times and are waiting for confirmation
+   * Set BEFORE booking to ensure user confirms times before we create appointments
+   */
+  groupBookingProposed?: boolean;
+
   // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════

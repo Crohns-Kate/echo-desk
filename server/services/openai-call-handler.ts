@@ -1214,11 +1214,91 @@ export async function handleOpenAIConversation(
       hasRealNames,
       tp: context.currentState.tp || 'null',
       groupBookingComplete: context.currentState.groupBookingComplete || false,
+      groupBookingProposed: context.currentState.groupBookingProposed || false,
       ready: groupBookingReady
     });
 
+    // ═══════════════════════════════════════════════
+    // GROUP BOOKING CONFIRMATION FLOW
+    // Step 1: Propose times and ask "Does that work?"
+    // Step 2: If user confirms, execute bookings
+    // ═══════════════════════════════════════════════
+
+    // Check if user is confirming a previously proposed group booking
+    if (context.currentState.groupBookingProposed && !context.currentState.groupBookingComplete) {
+      const confirmationPhrases = [
+        'yes', 'yeah', 'yep', 'yup', 'sure', 'ok', 'okay', 'perfect', 'great',
+        'that works', 'sounds good', 'sounds great', 'let\'s do it', 'book it',
+        'confirm', 'go ahead', 'please', 'absolutely', 'definitely', 'correct'
+      ];
+      const utteranceLowerConfirm = userUtterance.toLowerCase().trim();
+      const isConfirming = confirmationPhrases.some(phrase => utteranceLowerConfirm.includes(phrase));
+
+      const declinePhrases = ['no', 'nope', 'nah', 'different', 'change', 'other', 'not'];
+      const isDeclining = declinePhrases.some(phrase => utteranceLowerConfirm.includes(phrase));
+
+      console.log('[GroupBookingExecutor] 🔄 Waiting for confirmation - utterance:', userUtterance);
+      console.log('[GroupBookingExecutor]   isConfirming:', isConfirming, 'isDeclining:', isDeclining);
+
+      if (isDeclining) {
+        // User wants different times - reset proposed flag
+        console.log('[GroupBookingExecutor] ❌ User declined proposed times');
+        context.currentState.groupBookingProposed = false;
+        context.currentState.tp = null; // Clear time preference to ask again
+        context.availableSlots = undefined; // Clear slots to fetch new ones
+
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          profanityFilter: false,
+          actionOnEmptyResult: true,
+          hints: 'morning, afternoon, tomorrow, today, later'
+        });
+        saySafe(gather, "No problem. What time would work better for you?");
+
+        await saveConversationContext(callSid, context);
+        return vr;
+      }
+
+      if (!isConfirming) {
+        // Didn't understand - repeat the proposal
+        console.log('[GroupBookingExecutor] ❓ Unclear response - repeating proposal');
+        const groupPatients = context.currentState.gp || [];
+        const slots = context.availableSlots || [];
+        const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
+        const proposedTimes = slots.slice(0, groupPatients.length).map((s: EnrichedSlot) => s.speakable).join(' and ');
+
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          profanityFilter: false,
+          actionOnEmptyResult: true,
+          hints: 'yes, no, that works, different time'
+        });
+        saySafe(gather, `Just to confirm - I have ${patientNames} for ${proposedTimes}. Does that work for you?`);
+
+        await saveConversationContext(callSid, context);
+        return vr;
+      }
+
+      // User confirmed! Fall through to execute bookings below
+      console.log('[GroupBookingExecutor] ✅ User confirmed proposed times - proceeding to book');
+    }
+
     if (groupBookingReady) {
-      console.log('[GroupBookingExecutor] 🚀 RUNNING - All conditions met, bypassing AI');
+      console.log('[GroupBookingExecutor] 🚀 RUNNING - All conditions met');
       console.log('[GroupBookingExecutor] Patients:', context.currentState.gp?.map((p: { name: string; relation?: string }) => p.name).join(', '));
       console.log('[GroupBookingExecutor] Time preference:', context.currentState.tp);
 
@@ -1268,7 +1348,38 @@ export async function handleOpenAIConversation(
           return vr;
         }
 
-        // We have enough slots - proceed with booking
+        // ═══════════════════════════════════════════════
+        // CONFIRMATION STEP: Propose times before booking
+        // ═══════════════════════════════════════════════
+        if (!context.currentState.groupBookingProposed) {
+          console.log('[GroupBookingExecutor] 📋 Proposing times before booking');
+
+          const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
+          const proposedTimes = context.availableSlots.slice(0, groupPatients.length)
+            .map((s: EnrichedSlot) => s.speakable).join(' and ');
+
+          context.currentState.groupBookingProposed = true;
+          await saveConversationContext(callSid, context);
+
+          const gather = vr.gather({
+            input: ['speech'],
+            timeout: 8,
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            speechModel: 'phone_call',
+            bargeIn: true,
+            profanityFilter: false,
+            actionOnEmptyResult: true,
+            hints: 'yes, yeah, sounds good, that works, no, different time'
+          });
+          saySafe(gather, `I can book ${patientNames} for ${proposedTimes}. Does that work for you?`);
+
+          return vr;
+        }
+
+        // User has confirmed (groupBookingProposed=true and we got here) - proceed with booking
         {
           // Execute group booking
           const groupBookingResults: Array<{ name: string; patientId: string; appointmentId: string; time: string }> = [];
