@@ -1267,12 +1267,15 @@ export async function handleOpenAIConversation(
       }
 
       if (!isConfirming) {
-        // Didn't understand - repeat the proposal
+        // Didn't understand - repeat the proposal with first names only
         console.log('[GroupBookingExecutor] ❓ Unclear response - repeating proposal');
         const groupPatients = context.currentState.gp || [];
         const slots = context.availableSlots || [];
-        const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
-        const proposedTimes = slots.slice(0, groupPatients.length).map((s: EnrichedSlot) => s.speakable).join(' and ');
+        const getFirstName = (fullName: string) => fullName.split(' ')[0];
+        const proposedSummary = groupPatients.map((p: { name: string }, i: number) => {
+          const slot = slots[i];
+          return `${getFirstName(p.name)} at ${slot?.speakable || 'an available time'}`;
+        }).join(' and ');
 
         const gather = vr.gather({
           input: ['speech'],
@@ -1287,7 +1290,7 @@ export async function handleOpenAIConversation(
           actionOnEmptyResult: true,
           hints: 'yes, no, that works, different time'
         });
-        saySafe(gather, `Just to confirm - I have ${patientNames} for ${proposedTimes}. Does that work for you?`);
+        saySafe(gather, `Just to confirm - ${proposedSummary}. Does that work?`);
 
         await saveConversationContext(callSid, context);
         return vr;
@@ -1354,9 +1357,12 @@ export async function handleOpenAIConversation(
         if (!context.currentState.groupBookingProposed) {
           console.log('[GroupBookingExecutor] 📋 Proposing times before booking');
 
-          const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
-          const proposedTimes = context.availableSlots.slice(0, groupPatients.length)
-            .map((s: EnrichedSlot) => s.speakable).join(' and ');
+          // Use first names only for natural speech
+          const getFirstName = (fullName: string) => fullName.split(' ')[0];
+          const proposedSummary = groupPatients.map((p: { name: string }, i: number) => {
+            const slot = context.availableSlots[i];
+            return `${getFirstName(p.name)} at ${slot?.speakable || 'an available time'}`;
+          }).join(' and ');
 
           context.currentState.groupBookingProposed = true;
           await saveConversationContext(callSid, context);
@@ -1374,7 +1380,7 @@ export async function handleOpenAIConversation(
             actionOnEmptyResult: true,
             hints: 'yes, yeah, sounds good, that works, no, different time'
           });
-          saySafe(gather, `I can book ${patientNames} for ${proposedTimes}. Does that work for you?`);
+          saySafe(gather, `I can book ${proposedSummary}. Does that work?`);
 
           return vr;
         }
@@ -1470,13 +1476,15 @@ export async function handleOpenAIConversation(
             for (const result of groupBookingResults) {
               const formToken = `form_${callSid}_${result.patientId}`;
 
+              // CRITICAL: Pass patient name so SMS clearly identifies WHO the form is for
               await sendNewPatientForm({
                 to: callerPhone,
                 token: formToken,
                 clinicName: clinicName || 'Spinalogic',
-                clinikoPatientId: result.patientId  // Link form to correct Cliniko patient
+                clinikoPatientId: result.patientId,  // Link form to correct Cliniko patient
+                patientName: result.name  // Identify who this form is for (critical for group bookings)
               });
-              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId);
+              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId, 'token:', formToken);
             }
             context.currentState.smsIntakeSent = true;
           }
@@ -1495,9 +1503,11 @@ export async function handleOpenAIConversation(
           await saveConversationContext(callSid, context);
 
           // Generate confirmation TwiML - bypass AI entirely
-          const bookedNames = groupBookingResults.map(r => r.name).join(' and ');
-          const bookedTimes = groupBookingResults.map(r => r.time).join(' and ');
-          const confirmationMessage = `Perfect! I've booked ${bookedNames} for ${bookedTimes}. I'm sending a text with the appointment details and forms. Is there anything else I can help with?`;
+          // IMPORTANT: Use first names only for natural speech (not "John Smith and Matthew Smith")
+          const getFirstName = (fullName: string) => fullName.split(' ')[0];
+          const bookedFirstNames = groupBookingResults.map(r => getFirstName(r.name)).join(' and ');
+          const bookedSummary = groupBookingResults.map(r => `${getFirstName(r.name)} at ${r.time}`).join(' and ');
+          const confirmationMessage = `Perfect! You're both booked: ${bookedSummary}. I'm texting you the details and forms now. Anything else?`;
 
           const gather = vr.gather({
             input: ['speech'],
