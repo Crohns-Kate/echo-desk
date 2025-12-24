@@ -199,13 +199,18 @@ export async function sendNewPatientForm(params: {
   token: string;
   clinicName: string;
   clinikoPatientId?: string;  // Optional: if provided, used for direct Cliniko update
+  patientName?: string;  // Optional: if provided, identifies WHO the form is for (important for group bookings)
 }): Promise<void> {
   try {
     const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
     // Include patientId in URL if available for direct Cliniko update
     const patientIdParam = params.clinikoPatientId ? `?patientId=${params.clinikoPatientId}` : '';
     const link = `${publicUrl}/intake/${params.token}${patientIdParam}`;
-    const message = `Thanks for calling ${params.clinicName}! Please complete your details here (takes 30 seconds): ${link}`;
+
+    // IMPORTANT: For group bookings, clearly identify WHO the form is for
+    // Otherwise users don't know which link to click for which person
+    const forWhom = params.patientName ? ` for ${params.patientName}` : '';
+    const message = `Thanks for calling ${params.clinicName}! Please complete details${forWhom} here (30 sec): ${link}`;
 
     await client.messages.create({
       body: message,
@@ -213,7 +218,9 @@ export async function sendNewPatientForm(params: {
       to: params.to
     });
 
-    console.log('[SMS] Sent new patient form link to', params.to);
+    console.log('[SMS] Sent new patient form link to', params.to, params.patientName ? `for ${params.patientName}` : '');
+    console.log('[SMS]   Token:', params.token);
+    console.log('[SMS]   PatientId:', params.clinikoPatientId || 'NOT PROVIDED');
   } catch (e) {
     console.error('[SMS] Failed to send new patient form link', e);
   }
