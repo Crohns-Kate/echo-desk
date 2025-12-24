@@ -1360,7 +1360,7 @@ export async function handleOpenAIConversation(
           // Use first names only for natural speech
           const getFirstName = (fullName: string) => fullName.split(' ')[0];
           const proposedSummary = groupPatients.map((p: { name: string }, i: number) => {
-            const slot = context.availableSlots[i];
+            const slot = context.availableSlots?.[i];
             return `${getFirstName(p.name)} at ${slot?.speakable || 'an available time'}`;
           }).join(' and ');
 
