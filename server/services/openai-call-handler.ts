@@ -1981,7 +1981,7 @@ export async function handleOpenAIConversation(
     if (shouldAttemptBooking && !bookingBlockedBySlotGuard) {
       console.log('[OpenAICallHandler] 🎯 Booking confirmed! User had opportunity to select slot.');
 
-      const selectedSlot = context.availableSlots[finalResponse.state.si as number];
+      const selectedSlot = context.availableSlots?.[finalResponse.state.si as number];
 
       // BOOKING LOCK: Prevent double-booking from race conditions / duplicate webhooks
       const now = Date.now();
@@ -2060,7 +2060,7 @@ export async function handleOpenAIConversation(
             practitionerId,
             appointmentTypeId,
             startsAt: selectedSlot.startISO,
-            fullName: patientName,
+            fullName: patientName ?? undefined,
             notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
             tenantCtx,
             callSid,  // For traceability
