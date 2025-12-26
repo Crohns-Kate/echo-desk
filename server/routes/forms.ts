@@ -45,14 +45,22 @@ export function registerForms(app: Express) {
     let existingSubmission: any = null;
     try {
       const callSid = token.split('_')[1];
+      console.log('[GET /intake/:token] Token:', token);
+      console.log('[GET /intake/:token] Extracted callSid:', callSid);
+      console.log('[GET /intake/:token] PatientId from URL:', patientId || 'NOT PROVIDED');
+
       const call = await storage.getCallByCallSid(callSid);
+      console.log('[GET /intake/:token] Call found:', !!call, 'conversationId:', call?.conversationId);
 
       if (call?.conversationId) {
         const conversation = await storage.getConversation(call.conversationId);
         const context = conversation?.context as any;
 
         // Check formSubmissions map for this specific token
+        console.log('[GET /intake/:token] Checking formSubmissions for token:', token);
+        console.log('[GET /intake/:token] All tokens in formSubmissions:', Object.keys(context?.formSubmissions || {}));
         existingSubmission = context?.formSubmissions?.[token];
+        console.log('[GET /intake/:token] Existing submission for this token:', existingSubmission ? 'FOUND' : 'NOT FOUND');
 
         // If already submitted AND NOT in edit mode, show success message
         if (existingSubmission && edit !== 'true') {
@@ -347,8 +355,10 @@ export function registerForms(app: Express) {
       };
 
       console.log('[POST /api/forms/submit] Storing form data in conversation context:');
+      console.log('[POST /api/forms/submit]   - token:', token);
       console.log('[POST /api/forms/submit]   - callSid:', callSid);
       console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+      console.log('[POST /api/forms/submit]   - clinikoPatientId:', clinikoPatientId || 'NOT PROVIDED');
       console.log('[POST /api/forms/submit]   - formData:', formData);
 
       // CRITICAL FIX: Store form data PER-TOKEN (supports group booking with multiple forms)
