@@ -422,6 +422,57 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════
+// TEST 9: Goodbye Phrase Detection (including apostrophe variations)
+// ═══════════════════════════════════════════════════════════════
+
+testSection('TEST 9: Goodbye Phrase Detection');
+
+const goodbyePhrases = [
+  'no', 'nope', 'nah', "that's it", "thats it", "that's all", "thats all", "that is all", "that is it",
+  'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+  'i\'m good', 'im good', "i'm done", 'im done', "that's everything", "thats everything", 'nothing else',
+  'all set', 'all done', 'we\'re done', 'were done', 'we are done', 'all good', 'no thanks',
+  'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'im finished', 'done',
+  "ok that's it", "ok thats it", "okay that's it", "okay thats it",
+  "that's it for now", "thats it for now", "ok that's it for now", "ok thats it for now"
+];
+
+function isGoodbyePhrase(utterance: string): boolean {
+  const lower = utterance.toLowerCase().trim();
+  return goodbyePhrases.some(phrase => lower.includes(phrase));
+}
+
+assert(
+  isGoodbyePhrase("ok that's it for now") === true,
+  '"ok that\'s it for now" is detected as goodbye'
+);
+
+assert(
+  isGoodbyePhrase("ok thats it for now") === true,
+  '"ok thats it for now" (no apostrophe) is detected as goodbye'
+);
+
+assert(
+  isGoodbyePhrase("OK that's it") === true,
+  '"OK that\'s it" (uppercase OK) is detected as goodbye'
+);
+
+assert(
+  isGoodbyePhrase("okay thats all") === true,
+  '"okay thats all" is detected as goodbye'
+);
+
+assert(
+  isGoodbyePhrase("that's everything thanks") === true,
+  '"that\'s everything thanks" is detected as goodbye'
+);
+
+assert(
+  isGoodbyePhrase("what time do you open") === false,
+  'FAQ question is NOT detected as goodbye'
+);
+
+// ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
 
@@ -443,5 +494,6 @@ console.log('  5. Dead air prevention - follow-up prompt after SMS actions');
 console.log('  6. Name double-asking - timestamp guard prevents asking twice');
 console.log('  7. First name confirmations - natural speech with first names only');
 console.log('  8. PatientId requirement - no unsafe phone lookup fallback');
+console.log('  9. Goodbye phrase detection - includes apostrophe variations');
 
 process.exit(failed > 0 ? 1 : 0);

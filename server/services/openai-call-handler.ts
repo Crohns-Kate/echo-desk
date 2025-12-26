@@ -1203,15 +1203,21 @@ export async function handleOpenAIConversation(
       const utteranceLower = (userUtterance || '').toLowerCase().trim();
 
       // Terminal goodbye phrases - bypass AI entirely
+      // CRITICAL: Include variations without apostrophe (Twilio transcription varies)
       const terminalGoodbyePhrases = [
-        'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+        'no', 'nope', 'nah', "that's it", "thats it", "that's all", "thats all", "that is all", "that is it",
         'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
-        'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
-        'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
-        'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done',
+        'i\'m good', 'im good', "i'm done", 'im done', "that's everything", "thats everything", 'nothing else',
+        'all set', 'all done', 'we\'re done', 'were done', 'we are done', 'all good', 'no thanks',
+        'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'im finished', 'done',
         'ok thanks', 'okay thanks', 'ok thank you', 'okay thank you', 'perfect thanks',
         'great thanks', 'great thank you', 'sounds good bye', 'sounds good goodbye',
-        'nothing', 'no i\'m good', 'no im good', 'alright bye', 'alright goodbye'
+        'nothing', 'no i\'m good', 'no im good', 'alright bye', 'alright goodbye',
+        // "OK that's it" variations - common closing phrase
+        "ok that's it", "ok thats it", "okay that's it", "okay thats it",
+        "ok that's all", "ok thats all", "okay that's all", "okay thats all",
+        "that's it for now", "thats it for now", "that is it for now",
+        "ok that's it for now", "ok thats it for now", "okay that's it for now"
       ];
 
       // Check for FAQ intents FIRST - these take priority over goodbye detection
@@ -2313,12 +2319,16 @@ export async function handleOpenAIConversation(
     // 6b. Check if caller wants to end the call (goodbye detection)
     // CRITICAL: Do NOT allow goodbye if group booking is in progress
     const userUtteranceLower = (userUtterance || '').toLowerCase().trim();
+    // CRITICAL: Include variations without apostrophe (Twilio transcription varies)
     const goodbyePhrases = [
-      'no', 'nope', 'nah', "that's it", "that's all", "that is all", "that is it",
+      'no', 'nope', 'nah', "that's it", "thats it", "that's all", "thats all", "that is all", "that is it",
       'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
-      'i\'m good', 'im good', "i'm done", 'im done', "that's everything", 'nothing else',
-      'all set', 'all done', 'we\'re done', 'we are done', 'all good', 'no thanks',
-      'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'done'
+      'i\'m good', 'im good', "i'm done", 'im done', "that's everything", "thats everything", 'nothing else',
+      'all set', 'all done', 'we\'re done', 'were done', 'we are done', 'all good', 'no thanks',
+      'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'im finished', 'done',
+      // "OK that's it" variations
+      "ok that's it", "ok thats it", "okay that's it", "okay thats it",
+      "that's it for now", "thats it for now", "ok that's it for now", "ok thats it for now"
     ];
     const wantsToEndCall = goodbyePhrases.some(phrase => userUtteranceLower.includes(phrase));
 
