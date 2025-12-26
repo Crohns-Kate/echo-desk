@@ -473,6 +473,178 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════
+// TEST 10: Group Booking Time Preference Clearing After No Slots
+// ═══════════════════════════════════════════════════════════════
+
+testSection('TEST 10: Group Booking Time Preference Clearing After No Slots');
+
+interface GroupBookingContext {
+  currentState: {
+    gb?: boolean;
+    gp?: Array<{ name: string; relation?: string }>;
+    tp: string | null;
+    awaitingNewGroupBookingTime?: boolean;
+  };
+  availableSlots?: any[];
+}
+
+function simulateNoSlotsFound(context: GroupBookingContext): GroupBookingContext {
+  // This simulates what happens when no slots are found for group booking
+  // The fix clears tp and availableSlots so user can provide a new time
+  const previousTp = context.currentState.tp;
+  console.log(`  [Simulating] No slots found for ${previousTp}`);
+
+  // CRITICAL FIX: Clear tp and slots for new time preference
+  context.currentState.tp = null;
+  context.availableSlots = undefined;
+  context.currentState.awaitingNewGroupBookingTime = true;
+
+  return context;
+}
+
+function extractTimePreferenceFromUtterance(utterance: string): string | null {
+  const lower = utterance.toLowerCase();
+  if (lower.includes('tomorrow morning') || lower.includes('tomorrow at 9')) return 'tomorrow morning';
+  if (lower.includes('this afternoon') || lower.includes('today afternoon')) return 'today afternoon';
+  if (lower.includes('next week')) return 'next week';
+  if (lower.includes('9am') || lower.includes('9 am')) return '9am';
+  if (lower.includes('10am') || lower.includes('10 am')) return '10am';
+  return null;
+}
+
+// Scenario: User says "this afternoon" → no slots → user says "tomorrow morning at 9am"
+const groupContext: GroupBookingContext = {
+  currentState: {
+    gb: true,
+    gp: [{ name: 'Michael Bishop' }, { name: 'Matthew Bishop' }],
+    tp: 'today afternoon'  // Original time preference
+  }
+};
+
+// No slots found - should clear tp
+simulateNoSlotsFound(groupContext);
+
+assert(
+  groupContext.currentState.tp === null,
+  'tp is cleared after no slots found'
+);
+
+assert(
+  groupContext.currentState.awaitingNewGroupBookingTime === true,
+  'awaitingNewGroupBookingTime flag is set'
+);
+
+assert(
+  groupContext.availableSlots === undefined,
+  'availableSlots is cleared for refetch'
+);
+
+// Now user provides new time "tomorrow morning at 9am"
+const newUtterance = "Tomorrow morning at 9am";
+const extractedNewTp = extractTimePreferenceFromUtterance(newUtterance);
+
+assert(
+  extractedNewTp === 'tomorrow morning',
+  'New time preference is extracted from utterance'
+);
+
+// Since tp is null, extraction runs and sets new tp
+if (!groupContext.currentState.tp && extractedNewTp) {
+  groupContext.currentState.tp = extractedNewTp;
+  groupContext.currentState.awaitingNewGroupBookingTime = false;
+}
+
+assert(
+  groupContext.currentState.tp === 'tomorrow morning',
+  'tp is updated to new time preference'
+);
+
+assert(
+  groupContext.currentState.awaitingNewGroupBookingTime === false,
+  'awaitingNewGroupBookingTime flag is cleared after new time received'
+);
+
+// ═══════════════════════════════════════════════════════════════
+// TEST 11: Separate Appointments Request Detection
+// ═══════════════════════════════════════════════════════════════
+
+testSection('TEST 11: Separate Appointments Request Detection');
+
+function detectSeparateRequest(utterance: string): boolean {
+  const lower = utterance.toLowerCase();
+  return lower.includes('separate') ||
+         lower.includes('individually') ||
+         lower.includes('one at a time') ||
+         lower.includes('book them separately');
+}
+
+function handleSeparateRequest(context: GroupBookingContext): GroupBookingContext {
+  // Keep only first patient, exit group booking mode
+  const firstPatient = context.currentState.gp?.[0];
+  if (firstPatient) {
+    context.currentState.gp = [firstPatient];
+    context.currentState.gb = false;
+    context.currentState.awaitingNewGroupBookingTime = false;
+  }
+  return context;
+}
+
+assert(
+  detectSeparateRequest("book separate appointments") === true,
+  '"book separate appointments" detected'
+);
+
+assert(
+  detectSeparateRequest("separately please") === true,
+  '"separately please" detected'
+);
+
+assert(
+  detectSeparateRequest("book them individually") === true,
+  '"book them individually" detected'
+);
+
+assert(
+  detectSeparateRequest("one at a time") === true,
+  '"one at a time" detected'
+);
+
+assert(
+  detectSeparateRequest("tomorrow morning") === false,
+  '"tomorrow morning" is NOT detected as separate request'
+);
+
+// Test handling of separate request
+const separateContext: GroupBookingContext = {
+  currentState: {
+    gb: true,
+    gp: [
+      { name: 'Michael Bishop', relation: 'self' },
+      { name: 'Matthew Bishop', relation: 'son' }
+    ],
+    tp: null,
+    awaitingNewGroupBookingTime: true
+  }
+};
+
+handleSeparateRequest(separateContext);
+
+assert(
+  separateContext.currentState.gb === false,
+  'Group booking mode is disabled after separate request'
+);
+
+assert(
+  separateContext.currentState.gp?.length === 1,
+  'Only first patient is kept'
+);
+
+assert(
+  separateContext.currentState.gp?.[0]?.name === 'Michael Bishop',
+  'First patient (Michael) is preserved'
+);
+
+// ═══════════════════════════════════════════════════════════════
 // SUMMARY
 // ═══════════════════════════════════════════════════════════════
 
@@ -495,5 +667,7 @@ console.log('  6. Name double-asking - timestamp guard prevents asking twice');
 console.log('  7. First name confirmations - natural speech with first names only');
 console.log('  8. PatientId requirement - no unsafe phone lookup fallback');
 console.log('  9. Goodbye phrase detection - includes apostrophe variations');
+console.log(' 10. Group booking tp clearing - clears old tp when no slots found, allowing new time');
+console.log(' 11. Separate appointments - converts group to individual on user request');
 
 process.exit(failed > 0 ? 1 : 0);

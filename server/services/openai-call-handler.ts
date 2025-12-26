@@ -1102,8 +1102,41 @@ export async function handleOpenAIConversation(
         // Also set request_slots since we now have tp
         context.currentState.rs = true;
         console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Set tp="%s" and rs=true for group booking', extractedTp);
+
+        // Clear the awaitingNewGroupBookingTime flag now that we have a new time
+        if (context.currentState.awaitingNewGroupBookingTime) {
+          console.log('[OpenAICallHandler] 🕐 Clearing awaitingNewGroupBookingTime - new time received');
+          context.currentState.awaitingNewGroupBookingTime = false;
+        }
       } else {
         console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking mode but no time preference found in utterance:', userUtterance);
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // 2c-bis. SEPARATE APPOINTMENTS REQUEST DETECTION
+    // If user says "separate" or "book separately", convert from group to individual
+    // ═══════════════════════════════════════════════
+    if (isGroupBookingMode && context.currentState.awaitingNewGroupBookingTime) {
+      const lowerUtterance = userUtterance.toLowerCase();
+      const wantsSeparate = lowerUtterance.includes('separate') ||
+                            lowerUtterance.includes('individually') ||
+                            lowerUtterance.includes('one at a time') ||
+                            lowerUtterance.includes('book them separately');
+
+      if (wantsSeparate) {
+        console.log('[OpenAICallHandler] 🔀 User requested separate appointments - converting from group to individual');
+
+        // Keep only the first patient (typically the caller)
+        const firstPatient = context.currentState.gp?.[0];
+        if (firstPatient) {
+          console.log('[OpenAICallHandler] 🔀 Keeping first patient:', firstPatient.name);
+          context.currentState.gp = [firstPatient];
+          context.currentState.gb = false;  // Exit group booking mode
+          context.currentState.awaitingNewGroupBookingTime = false;
+          context.currentState.nm = firstPatient.name;  // Set as primary patient
+          // Keep tp null so we can get a new time preference
+        }
       }
     }
 
@@ -1402,10 +1435,19 @@ export async function handleOpenAIConversation(
         if (!context.availableSlots || context.availableSlots.length < groupPatients.length) {
           console.log('[GroupBookingExecutor] ⚠️ Not enough slots for group booking');
           console.log('[GroupBookingExecutor] Available:', context.availableSlots?.length || 0, 'Required:', groupPatients.length);
+          console.log('[GroupBookingExecutor] Previous time preference:', context.currentState.tp);
 
           // CRITICAL: Do NOT fall through to AI - return TwiML response directly
           const patientNames = groupPatients.map((p: { name: string }) => p.name).join(' and ');
-          const noSlotsMessage = `I'm sorry, I couldn't find enough back-to-back appointments for ${patientNames} at ${context.currentState.tp}. Would you like me to check a different time, or book separate appointments?`;
+          const previousTp = context.currentState.tp || 'the requested time';
+          const noSlotsMessage = `I'm sorry, I couldn't find enough back-to-back appointments for ${patientNames} at ${previousTp}. Would you like me to check a different time, or book separate appointments?`;
+
+          // CRITICAL FIX: Clear tp and slots so user can provide a NEW time preference
+          // Without this, the extraction code won't run because tp is already set
+          console.log('[GroupBookingExecutor] 🔄 Clearing tp and slots for new time preference');
+          context.currentState.tp = null;
+          context.availableSlots = undefined;
+          context.currentState.awaitingNewGroupBookingTime = true; // Track state for debugging
 
           const gather = vr.gather({
             input: ['speech'],
@@ -1418,12 +1460,12 @@ export async function handleOpenAIConversation(
             bargeIn: true,
             profanityFilter: false,
             actionOnEmptyResult: true,
-            hints: 'different time, separate appointments, tomorrow, morning, afternoon'
+            hints: 'different time, separate appointments, tomorrow, morning, afternoon, 9am, 10am, 11am'
           });
 
           saySafe(gather, noSlotsMessage);
 
-          // Save context and return - do NOT call AI
+          // Save context with CLEARED tp - this allows new time to be extracted on next turn
           await saveConversationContext(callSid, context);
           return vr;
         }
