@@ -87,11 +87,35 @@ async function saveConversationContext(
       return;
     }
 
+    // CRITICAL: Preserve formSubmissions from DB to avoid race condition
+    // Form submissions can happen during a call turn, and we don't want to overwrite them
+    // when saving context at the end of each turn.
+    const currentConversation = await storage.getConversation(call.conversationId);
+    const dbContext = (currentConversation?.context || {}) as any;
+    const dbFormSubmissions = dbContext.formSubmissions || {};
+    const contextFormSubmissions = (context as any).formSubmissions || {};
+
+    // Merge form submissions: DB wins for existing tokens (form submission is more recent)
+    // This ensures we never lose a form submission that happened during this call turn
+    const mergedFormSubmissions = {
+      ...contextFormSubmissions,  // Start with what context has
+      ...dbFormSubmissions        // DB wins (form submissions are authoritative)
+    };
+
+    // Create merged context
+    const mergedContext = {
+      ...context,
+      formSubmissions: Object.keys(mergedFormSubmissions).length > 0 ? mergedFormSubmissions : undefined
+    };
+
     await storage.updateConversation(call.conversationId, {
-      context: context as any // JSONB field stores the entire context
+      context: mergedContext as any // JSONB field stores the entire context
     });
 
     console.log('[OpenAICallHandler] Saved conversation context for call:', callSid);
+    if (Object.keys(mergedFormSubmissions).length > 0) {
+      console.log('[OpenAICallHandler] Preserved form submissions:', Object.keys(mergedFormSubmissions).length);
+    }
   } catch (error) {
     console.error('[OpenAICallHandler] Error saving conversation context:', error);
   }
@@ -1793,8 +1817,13 @@ export async function handleOpenAIConversation(
           (replyLower.includes('get') || replyLower.includes('what') || replyLower.includes('who') ||
            replyLower.includes('full') || replyLower.includes('both') || replyLower.includes('can i'));
 
-        if (invalidEntries.length > 0 && !isAlreadyAskingForNames) {
-          // AI put invalid names AND is NOT asking for the name
+        // GUARD: Don't ask for names if we JUST asked in the previous turn
+        // This prevents the "asked twice" bug where user provides names but system re-asks
+        const justAskedForNames = context.currentState.askedForNamesAt &&
+          (Date.now() - context.currentState.askedForNamesAt) < 60000; // Within 1 minute
+
+        if (invalidEntries.length > 0 && !isAlreadyAskingForNames && !justAskedForNames) {
+          // AI put invalid names AND is NOT asking for the name AND we didn't just ask
           const invalidNames = invalidEntries.map((p: { name: string; relation?: string }) => p.name);
           console.log('[OpenAICallHandler] ⚠️ AI returned invalid names in gp:', invalidNames);
 
@@ -1838,7 +1867,11 @@ export async function handleOpenAIConversation(
             finalResponse.reply = `And what's ${relationWord === 'your' ? 'your' : 'your ' + relationWord + "'s"} full name?`;
           }
 
+          // Track when we asked for names to prevent double-asking
+          context.currentState.askedForNamesAt = Date.now();
           console.log('[OpenAICallHandler]   Overriding AI reply to ask for names:', finalResponse.reply);
+        } else if (invalidEntries.length > 0 && justAskedForNames) {
+          console.log('[OpenAICallHandler]   AI has invalid names but we JUST asked for names - not asking again');
         } else if (invalidEntries.length > 0) {
           console.log('[OpenAICallHandler]   AI has invalid names but is already asking for names, not overriding');
         }
@@ -1931,7 +1964,8 @@ export async function handleOpenAIConversation(
       'lastEmptyAt',           // ONLY set by backend for empty speech tracking
       'terminalGuard',         // ONLY set by backend in terminal state
       'askedAnythingElse',     // ONLY set by backend in terminal state
-      'slotsOfferedAt'         // ONLY set by backend when slots are offered (slot confirmation guard)
+      'slotsOfferedAt',        // ONLY set by backend when slots are offered (slot confirmation guard)
+      'askedForNamesAt'        // ONLY set by backend to prevent double-asking for names
     ];
 
     for (const field of backendOnlyFields) {
@@ -2213,6 +2247,20 @@ export async function handleOpenAIConversation(
       }
     } else if (finalResponse.state.ml === true) {
       console.log('[OpenAICallHandler] Map link SMS already sent, skipping');
+    }
+
+    // 5b-fix. DEAD AIR FIX: Ensure response includes follow-up after SMS actions
+    // When we send SMS (map link, form, etc.), the AI might not include a follow-up prompt
+    // This causes "dead air" - user hears the response but no prompt to speak
+    const justSentMapLink = finalResponse.state.ml === true && context.currentState.smsMapSent;
+    const replyLowerForSms = finalResponse.reply.toLowerCase();
+    const hasFollowUpPrompt = replyLowerForSms.includes('anything else') ||
+                               replyLowerForSms.includes('help with') ||
+                               replyLowerForSms.includes('?');
+
+    if (justSentMapLink && !hasFollowUpPrompt) {
+      console.log('[DeadAirFix] 📱 SMS sent but no follow-up prompt - appending "Anything else?"');
+      finalResponse.reply = finalResponse.reply.trim() + ' Is there anything else I can help with?';
     }
 
     // 5c. RESCHEDULE: Handle reschedule confirmation
