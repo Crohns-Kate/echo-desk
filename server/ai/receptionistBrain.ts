@@ -152,6 +152,13 @@ export interface CompactCallState {
    */
   groupBookingProposed?: boolean;
 
+  /**
+   * awaitingNewGroupBookingTime = true when no slots found for group booking
+   * and we're waiting for user to provide a new time preference
+   * This clears tp to allow fresh extraction of the new time
+   */
+  awaitingNewGroupBookingTime?: boolean;
+
   // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════
