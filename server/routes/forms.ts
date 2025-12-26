@@ -359,6 +359,18 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit] Existing context state:', existingContext.state);
       console.log('[POST /api/forms/submit] Existing form submissions:', Object.keys(existingFormSubmissions));
 
+      // Check if this specific token has already been submitted (409 Conflict)
+      // This prevents duplicate submissions but allows OTHER tokens to submit
+      if (existingFormSubmissions[token] && existingFormSubmissions[token].submittedAt) {
+        console.log('[POST /api/forms/submit] ⚠️ Token already submitted:', token);
+        console.log('[POST /api/forms/submit]   Previously submitted at:', existingFormSubmissions[token].submittedAt);
+        return res.status(409).json({
+          error: 'Form already submitted',
+          message: 'This form has already been submitted. Use the edit link if you need to update your details.',
+          submittedAt: existingFormSubmissions[token].submittedAt
+        });
+      }
+
       // Store this submission keyed by token (allows multiple forms for group booking)
       const updatedFormSubmissions = {
         ...existingFormSubmissions,

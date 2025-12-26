@@ -104,6 +104,9 @@ export interface CompactCallState {
   /** slotsOfferedAt = timestamp when slots were first offered to user (guards against same-turn booking) */
   slotsOfferedAt?: number;
 
+  /** askedForNamesAt = timestamp when we asked for names (prevents double-asking) */
+  askedForNamesAt?: number;
+
   // ═══════════════════════════════════════════════
   // Secondary Booking (for family members after primary booking)
   // ═══════════════════════════════════════════════
