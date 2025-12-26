@@ -353,18 +353,36 @@ function isMoreSpecificTime(newTp: string | null, currentTp: string | null): boo
 
 /**
  * Check if a string is a valid person name (not a pronoun, possessive, or common word)
- * Returns false for phrases like "myself", "my son", "for myself", etc.
+ * Returns false for phrases like "myself", "my son", "for myself", "friend and I", etc.
+ *
+ * CRITICAL: This validation MUST be strict to prevent group booking executor from
+ * running with invalid names like "my son", "wife", "friend and I".
  */
 function isValidPersonName(name: string): boolean {
   if (!name || name.trim().length === 0) return false;
 
   const lower = name.toLowerCase().trim();
 
-  // Pronouns and self-references
+  // Pronouns and self-references (comprehensive list)
   const pronouns = [
     'myself', 'yourself', 'himself', 'herself', 'itself', 'ourselves', 'themselves',
     'me', 'you', 'him', 'her', 'us', 'them', 'i', 'we', 'they',
-    'my', 'your', 'his', 'its', 'our', 'their'
+    'my', 'your', 'his', 'its', 'our', 'their',
+    'self', 'oneself'
+  ];
+
+  // Relationship words that are NOT names (even standalone)
+  // CRITICAL: These indicate AI hasn't extracted the real name yet
+  const relationshipWords = [
+    'son', 'daughter', 'wife', 'husband', 'partner', 'spouse',
+    'child', 'kid', 'kids', 'children', 'baby', 'infant', 'toddler',
+    'mother', 'father', 'mom', 'dad', 'mum', 'mommy', 'daddy', 'mummy',
+    'brother', 'sister', 'sibling', 'twin',
+    'friend', 'friends', 'buddy', 'pal', 'mate',
+    'boyfriend', 'girlfriend', 'fiancé', 'fiancee', 'fiance',
+    'grandma', 'grandpa', 'grandmother', 'grandfather', 'granny', 'granddad',
+    'aunt', 'uncle', 'cousin', 'niece', 'nephew',
+    'relative', 'family', 'parent', 'parents'
   ];
 
   // Possessive family/relationship references (these need real names)
@@ -375,67 +393,98 @@ function isValidPersonName(name: string): boolean {
     'my brother', 'my sister', 'my friend', 'my boyfriend', 'my girlfriend',
     'my spouse', 'my fiancé', 'my fiancee', 'my fiance',
     'the child', 'the kid', 'the baby', 'the son', 'the daughter',
-    'son', 'daughter', 'wife', 'husband', 'partner', 'child', 'kid', 'baby'
+    'friend and i', 'friend and me', 'a friend', 'my friend and i',
+    'wife and i', 'husband and i', 'partner and i',
+    'both of us', 'two of us', 'the both of us',
+    'myself and', 'me and my', 'i and my'
   ];
 
   // Common non-name words and articles
   const nonNameWords = [
     'for', 'and', 'the', 'a', 'an', 'this', 'that', 'here', 'there',
     'when', 'what', 'where', 'which', 'who', 'whom', 'whose',
-    'today', 'tomorrow', 'both', 'all', 'some', 'any', 'each',
-    'appointment', 'booking', 'please', 'thanks', 'thank', 'can', 'make'
+    'today', 'tomorrow', 'both', 'all', 'some', 'any', 'each', 'other',
+    'appointment', 'booking', 'please', 'thanks', 'thank', 'can', 'make',
+    'book', 'schedule', 'want', 'need', 'would', 'like'
   ];
 
   // Placeholder markers we use internally
-  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2'];
+  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2', 'person1', 'person2'];
 
   // Check for exact pronoun match
   if (pronouns.includes(lower)) {
-    console.log('[isValidPersonName] Rejected pronoun:', name);
+    console.log('[isValidPersonName] ❌ Rejected pronoun:', name);
+    return false;
+  }
+
+  // Check for exact relationship word match (CRITICAL - "wife", "son", etc. are NOT names)
+  if (relationshipWords.includes(lower)) {
+    console.log('[isValidPersonName] ❌ Rejected relationship word:', name);
     return false;
   }
 
   // Check if name starts with possessive pronoun (e.g., "my son")
   if (lower.startsWith('my ') || lower.startsWith('your ') ||
       lower.startsWith('his ') || lower.startsWith('her ') ||
-      lower.startsWith('the ') || lower.startsWith('for ')) {
-    console.log('[isValidPersonName] Rejected possessive/prepositional reference:', name);
+      lower.startsWith('the ') || lower.startsWith('for ') ||
+      lower.startsWith('a ') || lower.startsWith('an ')) {
+    console.log('[isValidPersonName] ❌ Rejected possessive/prepositional reference:', name);
+    return false;
+  }
+
+  // Check if name ends with "and i" or "and me" (e.g., "friend and I")
+  if (lower.endsWith(' and i') || lower.endsWith(' and me') ||
+      lower.endsWith(' and myself') || lower.endsWith(' and us')) {
+    console.log('[isValidPersonName] ❌ Rejected compound with pronoun:', name);
     return false;
   }
 
   // Check for possessive reference matches
-  if (possessiveReferences.includes(lower)) {
-    console.log('[isValidPersonName] Rejected possessive reference:', name);
-    return false;
+  for (const ref of possessiveReferences) {
+    if (lower.includes(ref)) {
+      console.log('[isValidPersonName] ❌ Rejected possessive reference:', name);
+      return false;
+    }
   }
 
   // Check if starts with common non-name word like "for myself"
   for (const word of nonNameWords) {
     if (lower.startsWith(word + ' ')) {
-      console.log('[isValidPersonName] Rejected - starts with non-name word:', name);
+      console.log('[isValidPersonName] ❌ Rejected - starts with non-name word:', name);
       return false;
     }
   }
 
   // Check for placeholder markers
   if (placeholders.includes(lower)) {
-    console.log('[isValidPersonName] Rejected placeholder:', name);
+    console.log('[isValidPersonName] ❌ Rejected placeholder:', name);
     return false;
   }
 
   // Check if it's a single non-name word
   if (nonNameWords.includes(lower)) {
-    console.log('[isValidPersonName] Rejected non-name word:', name);
+    console.log('[isValidPersonName] ❌ Rejected non-name word:', name);
     return false;
   }
 
   // Reject if name is too short (less than 2 characters)
   if (lower.length < 2) {
-    console.log('[isValidPersonName] Rejected - too short:', name);
+    console.log('[isValidPersonName] ❌ Rejected - too short:', name);
+    return false;
+  }
+
+  // Reject if name contains only relationship words
+  const words = lower.split(/\s+/);
+  const allRelationshipWords = words.every(w =>
+    relationshipWords.includes(w) || pronouns.includes(w) || nonNameWords.includes(w)
+  );
+  if (allRelationshipWords && words.length > 0) {
+    console.log('[isValidPersonName] ❌ Rejected - all words are relationship/pronoun/article:', name);
     return false;
   }
 
   // Valid name
+  console.log('[isValidPersonName] ✅ Accepted valid name:', name);
   return true;
 }
 
@@ -2516,6 +2565,47 @@ export async function handleOpenAIConversation(
         // Don't reset these if they were already set
         if (context.currentState.appointmentCreated) {
           (finalResponse.state as any).appointmentCreated = true;
+        }
+      }
+
+      // ═══════════════════════════════════════════════
+      // TERMINAL FAQ TRACKING: Count FAQs and proactively end call
+      // After 2 FAQs in terminal state, or if user gives short/vague response,
+      // proactively offer to end the call
+      // ═══════════════════════════════════════════════
+      const terminalFaqKeywords = ['price', 'cost', 'how much', 'pay', 'payment', 'cash', 'card', 'credit',
+                                    'directions', 'where', 'address', 'location', 'find you', 'get there',
+                                    'parking', 'park', 'wear', 'bring', 'prepare', 'what to',
+                                    'cancel', 'reschedule', 'change', 'move', 'another appointment'];
+      const isFaqResponse = terminalFaqKeywords.some((kw: string) => replyLower.includes(kw)) ||
+                            replyLower.includes('cost') || replyLower.includes('price') ||
+                            replyLower.includes('directions') || replyLower.includes('located') ||
+                            replyLower.includes('appointment') || replyLower.includes('practitioner');
+
+      if (isFaqResponse) {
+        context.currentState.terminalFaqCount = (context.currentState.terminalFaqCount || 0) + 1;
+        context.currentState.lastTerminalFaqAt = Date.now();
+        console.log('[TerminalFaq] 📊 FAQ answered in terminal state, count:', context.currentState.terminalFaqCount);
+      }
+
+      // After 2+ FAQs, modify response to gently close the call
+      if ((context.currentState.terminalFaqCount || 0) >= 2) {
+        console.log('[TerminalFaq] 🎯 2+ FAQs answered - preparing to close call');
+
+        // If reply already ends with "anything else", change to a closing
+        if (replyLower.includes('anything else')) {
+          finalResponse.reply = finalResponse.reply
+            .replace(/is there anything else.*\??$/i, '')
+            .replace(/anything else.*\??$/i, '')
+            .trim();
+
+          // Add a gentle closing if reply isn't already closing
+          if (!finalResponse.reply.toLowerCase().includes('goodbye') &&
+              !finalResponse.reply.toLowerCase().includes('take care')) {
+            finalResponse.reply += " If there's nothing else, have a lovely day!";
+          }
+
+          console.log('[TerminalFaq] Modified reply to offer closing:', finalResponse.reply);
         }
       }
     }

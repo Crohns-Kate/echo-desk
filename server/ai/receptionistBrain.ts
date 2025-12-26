@@ -199,6 +199,19 @@ export interface CompactCallState {
   // ═══════════════════════════════════════════════
 
   /**
+   * terminalFaqCount = number of FAQ questions answered in terminal state
+   * After 2 consecutive FAQs with no new booking request, proactively end call
+   * This prevents the "loop pricing → booking → pricing" issue
+   */
+  terminalFaqCount?: number;
+
+  /**
+   * lastTerminalFaqAt = timestamp of last FAQ answer in terminal state
+   * Used to detect silence after FAQ - if no follow-up within 10s, end call
+   */
+  lastTerminalFaqAt?: number;
+
+  /**
    * terminalGuard = true when non-FAQ, non-goodbye detected in terminal state
    * Prevents AI from asking booking questions when response is generated
    */
