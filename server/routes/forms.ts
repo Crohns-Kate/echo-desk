@@ -259,6 +259,8 @@ export function registerForms(app: Express) {
           const token = '${token}';
           // Use patientId from URL, or from existing submission (for edit mode)
           const clinikoPatientId = '${patientId || (existingSubmission?.clinikoPatientId) || ''}';
+          // CRITICAL: Tell server this is an edit (allows re-submission of same token)
+          const isEdit = ${isEdit ? 'true' : 'false'};
 
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -286,6 +288,7 @@ export function registerForms(app: Express) {
                 body: JSON.stringify({
                   token: token,
                   clinikoPatientId: clinikoPatientId || undefined,
+                  isEdit: isEdit,  // CRITICAL: Allow re-submission for edits
                   ...formData
                 })
               });
@@ -321,7 +324,7 @@ export function registerForms(app: Express) {
    */
   app.post("/api/forms/submit", async (req: Request, res: Response) => {
     try {
-      const { token, firstName, lastName, email, phone, clinikoPatientId } = req.body;
+      const { token, firstName, lastName, email, phone, clinikoPatientId, isEdit } = req.body;
 
       // Validate inputs
       if (!token || !firstName || !lastName || !email || !phone) {
@@ -359,9 +362,11 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit]   - callSid:', callSid);
       console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
       console.log('[POST /api/forms/submit]   - clinikoPatientId:', clinikoPatientId || 'NOT PROVIDED');
+      console.log('[POST /api/forms/submit]   - isEdit:', isEdit || false);
       console.log('[POST /api/forms/submit]   - formData:', formData);
 
-      // CRITICAL FIX: Store form data PER-TOKEN (supports group booking with multiple forms)
+      // CRITICAL: Re-read context to get LATEST formSubmissions
+      // This handles race conditions where two people submit at the same time
       const conversation = await storage.getConversation(call.conversationId);
       const existingContext = (conversation?.context || {}) as any;
       const existingFormSubmissions = existingContext.formSubmissions || {};
@@ -370,9 +375,10 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit] Existing form submissions:', Object.keys(existingFormSubmissions));
 
       // Check if this specific token has already been submitted (409 Conflict)
-      // This prevents duplicate submissions but allows OTHER tokens to submit
-      if (existingFormSubmissions[token] && existingFormSubmissions[token].submittedAt) {
-        console.log('[POST /api/forms/submit] ⚠️ Token already submitted:', token);
+      // CRITICAL: Allow re-submission if isEdit=true (user is updating their details)
+      const alreadySubmitted = existingFormSubmissions[token] && existingFormSubmissions[token].submittedAt;
+      if (alreadySubmitted && !isEdit) {
+        console.log('[POST /api/forms/submit] ⚠️ Token already submitted (not edit mode):', token);
         console.log('[POST /api/forms/submit]   Previously submitted at:', existingFormSubmissions[token].submittedAt);
         return res.status(409).json({
           error: 'Form already submitted',
@@ -381,35 +387,52 @@ export function registerForms(app: Express) {
         });
       }
 
-      // Store this submission keyed by token (allows multiple forms for group booking)
+      if (alreadySubmitted && isEdit) {
+        console.log('[POST /api/forms/submit] 📝 EDIT MODE: Updating existing submission for token:', token);
+      }
+
+      // CRITICAL: Re-read context AGAIN right before write (prevents race condition)
+      // This handles the case where two people submit forms at the same time:
+      // Without this re-read, Person 2's submission would overwrite Person 1's.
+      const latestConversation = await storage.getConversation(call.conversationId);
+      const latestContext = (latestConversation?.context || {}) as any;
+      const latestFormSubmissions = latestContext.formSubmissions || {};
+
+      console.log('[POST /api/forms/submit] Re-read latest formSubmissions:', Object.keys(latestFormSubmissions));
+
+      // Store/update this submission keyed by token (allows multiple forms for group booking)
+      // For edits, this overwrites the existing submission with new data
       const updatedFormSubmissions = {
-        ...existingFormSubmissions,
+        ...latestFormSubmissions,  // Use LATEST from DB to prevent race condition
         [token]: {
           ...formData,
           submittedAt: new Date().toISOString(),
-          clinikoPatientId: clinikoPatientId || null
+          updatedAt: isEdit ? new Date().toISOString() : undefined,  // Track edit time
+          clinikoPatientId: clinikoPatientId || latestFormSubmissions[token]?.clinikoPatientId || null
         }
       };
 
       await storage.updateConversation(call.conversationId, {
         context: {
-          ...existingContext,  // Preserve existing context (state, slots, etc.)
+          ...latestContext,  // Use LATEST context from DB
           formToken: token,  // Track latest token (backward compatibility)
           formData: formData,  // Keep legacy field (backward compatibility)
-          formSubmissions: updatedFormSubmissions,  // NEW: Per-token submissions
+          formSubmissions: updatedFormSubmissions,  // Per-token submissions with race condition fix
           formSubmittedAt: new Date().toISOString()
         }
       });
 
-      console.log('[POST /api/forms/submit] ✅ Form data stored for token:', token);
+      console.log('[POST /api/forms/submit] ✅ Form data stored for token:', token, isEdit ? '(EDIT)' : '(NEW)');
       console.log('[POST /api/forms/submit] Total form submissions:', Object.keys(updatedFormSubmissions).length);
 
       // Update patient in Cliniko with correct details
       // CRITICAL: Only update if we have an explicit patientId - NEVER fall back to phone lookup
       // Phone lookup can match the WRONG patient (e.g., existing patient "john smith" instead of new caller)
-      if (clinikoPatientId) {
+      const effectivePatientId = clinikoPatientId || existingFormSubmissions[token]?.clinikoPatientId;
+
+      if (effectivePatientId) {
         try {
-          console.log('[POST /api/forms/submit] Using direct clinikoPatientId:', clinikoPatientId);
+          console.log('[POST /api/forms/submit] Using direct clinikoPatientId:', effectivePatientId);
 
           // Update patient with correct name spelling, email, and phone
           const callerPhone = call.fromNumber;
@@ -432,19 +455,25 @@ export function registerForms(app: Express) {
             ];
           }
 
-          await updateClinikoPatient(clinikoPatientId, updatePayload);
+          await updateClinikoPatient(effectivePatientId, updatePayload);
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
 
           res.json({
             success: true,
-            message: 'Form submitted successfully'
+            message: isEdit ? 'Details updated successfully' : 'Form submitted successfully',
+            clinikoUpdated: true
           });
-        } catch (clinikoError) {
-          // Log but don't fail the request - form data is saved in context
-          console.error('[POST /api/forms/submit] Cliniko update failed (non-critical):', clinikoError);
+        } catch (clinikoError: any) {
+          // CRITICAL: Tell user the Cliniko update failed
+          console.error('[POST /api/forms/submit] ❌ Cliniko update FAILED:', clinikoError?.message || clinikoError);
+
+          // Form data is saved in context, but Cliniko wasn't updated
+          // Return success with a warning so user knows to contact clinic
           res.json({
             success: true,
-            message: 'Form submitted successfully'
+            message: 'Your details have been saved. There was an issue updating our system - our team will confirm your details shortly.',
+            clinikoUpdated: false,
+            clinikoError: clinikoError?.message || 'Update failed'
           });
         }
       } else {
