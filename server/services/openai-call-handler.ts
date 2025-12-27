@@ -2193,6 +2193,8 @@ export async function handleOpenAIConversation(
       'smsIntakeSent',         // ONLY set by backend after SMS sent
       'smsMapSent',            // ONLY set by backend after SMS sent
       'confirmSmsIncludedMap', // ONLY set by backend
+      'earlySmsFormSent',      // ONLY set by backend when early form sent
+      'earlyFormToken',        // ONLY set by backend when early form sent
       'emptyCount',            // ONLY set by backend for empty speech tracking
       'lastEmptyAt',           // ONLY set by backend for empty speech tracking
       'terminalGuard',         // ONLY set by backend in terminal state
@@ -2540,6 +2542,54 @@ export async function handleOpenAIConversation(
       }
     }
 
+    // ═══════════════════════════════════════════════
+    // 5e. EARLY SMS FORM: Send intake form BEFORE booking completes for new patients
+    // This allows them to fill it out while we find a time
+    // ═══════════════════════════════════════════════
+    const isNewPatientNow = finalResponse.state.np === true || context.currentState.np === true;
+    const hasName = finalResponse.state.nm || context.currentState.nm;
+    const isGroupBooking = finalResponse.state.gb === true || context.currentState.gb === true;
+    const notYetSentEarlyForm = !context.currentState.earlySmsFormSent;
+    const notYetBooked = !context.currentState.appointmentCreated && !context.currentState.groupBookingComplete;
+
+    // Only send early form for SINGLE bookings (not group) where we have a name
+    // Group bookings need patientIds from Cliniko first
+    if (isNewPatientNow && hasName && notYetSentEarlyForm && notYetBooked && !isGroupBooking) {
+      console.log('[OpenAICallHandler] 📱 EARLY SMS FORM: New patient detected with name, sending form early');
+      console.log('[OpenAICallHandler]   np:', isNewPatientNow, 'nm:', hasName, 'gb:', isGroupBooking);
+
+      try {
+        // Generate form token - will be linked to patient after booking
+        const formToken = `form_${callSid}_early`;
+
+        await sendNewPatientForm({
+          to: callerPhone,
+          token: formToken,
+          clinicName: clinicName || 'Spinalogic'
+          // Note: No clinikoPatientId yet - will be linked after booking
+        });
+
+        context.currentState.earlySmsFormSent = true;
+        context.currentState.earlyFormToken = formToken;
+        console.log('[OpenAICallHandler] ✅ Early intake form sent, token:', formToken);
+
+        // Optionally modify the reply to acknowledge the form was sent
+        // Only if AI hasn't already mentioned the form
+        if (!finalResponse.reply.toLowerCase().includes('form') &&
+            !finalResponse.reply.toLowerCase().includes('text') &&
+            !finalResponse.reply.toLowerCase().includes('sms')) {
+          // Inject a natural mention of the form
+          const formMention = "I've just sent a form to your mobile — feel free to open that while we find a time.";
+          // Only add if reply doesn't already end with a question
+          if (!finalResponse.reply.trim().endsWith('?')) {
+            finalResponse.reply = finalResponse.reply.trim() + ' ' + formMention;
+          }
+        }
+      } catch (smsError) {
+        console.error('[OpenAICallHandler] ❌ Failed to send early SMS form:', smsError);
+      }
+    }
+
     // 6. Save context to database
     await saveConversationContext(callSid, context);
 
@@ -2614,7 +2664,7 @@ export async function handleOpenAIConversation(
       const replyLower = finalResponse.reply.toLowerCase();
 
       // Block booking prompts after appointment is already created
-      // COMPREHENSIVE list to catch all variations
+      // COMPREHENSIVE list to catch all variations - TERMINAL STATE READ-ONLY MODE
       const bookingPromptPatterns = [
         // Direct booking prompts
         /would you like to (make|book|schedule|proceed with) an? (appointment|booking)/i,
@@ -2628,11 +2678,24 @@ export async function handleOpenAIConversation(
         /can i (confirm|lock) that (in|for you)/i,
         /want me to (book|confirm|lock) (that|it)/i,
         /let me (book|confirm|lock) that (in|for you)/i,
-        // Subtle re-entry prompts
+        // ═══════════════════════════════════════════════
+        // CRITICAL: Subtle re-entry prompts that restart booking flow
+        // These MUST be stripped in terminal state
+        // ═══════════════════════════════════════════════
         /when would you like to come in/i,
+        /when\s*would\s*you\s*(both\s*)?like\s*to\s*come\s*in/i,  // "When would you both like to come in?"
+        /when would work for (both|you|both of you)/i,
+        /now,?\s*when\s*would\s*work\s*for\s*(both\s*of\s*you|you|them)/i,  // "Now, when would work for both of you?"
+        /now,?\s*when\s*would/i,  // Catch-all for "Now, when would..."
         /what time works (best|for you)/i,
+        /what time would work/i,
+        /which\s*time\s*works\s*best/i,  // "Which time works best?"
         /can i (help|assist) you with (a|an)? (booking|appointment)/i,
         /would you like to (set up|arrange)/i,
+        /i('ve| have) got slots available/i,  // "I've got slots available"
+        /let me (check|see|find) what('s| is) available/i,  // "Let me check what's available"
+        /shall we (find|look for) a time/i,
+        /i can book/i,  // "I can book..." after booking complete
         // "That's all" followed by booking prompt
         /anything else.*(book|appointment|schedule)/i
       ];
@@ -2640,11 +2703,22 @@ export async function handleOpenAIConversation(
       let shouldStripBookingPrompt = bookingPromptPatterns.some(p => p.test(finalResponse.reply));
 
       // Also block if AI is trying to restart booking flow after FAQ
+      // CRITICAL: Check BOTH appointmentCreated (single) AND groupBookingComplete (group)
+      const bookingIsComplete = context.currentState.appointmentCreated === true ||
+                                 context.currentState.groupBookingComplete;
+
       const isRestartingBookingFlow =
-        context.currentState.appointmentCreated === true &&
+        bookingIsComplete &&
         (replyLower.includes('when would you') ||
+         replyLower.includes('when would work') ||
          replyLower.includes('what time') ||
-         replyLower.includes('book an appointment'));
+         replyLower.includes('which time') ||
+         replyLower.includes('book an appointment') ||
+         replyLower.includes('slots available'));
+
+      console.log('[TerminalGuard] bookingIsComplete:', bookingIsComplete,
+                  'appointmentCreated:', context.currentState.appointmentCreated,
+                  'groupBookingComplete:', context.currentState.groupBookingComplete);
 
       if (shouldStripBookingPrompt || isRestartingBookingFlow) {
         console.log('[TerminalGuard] ⛔ BLOCKING booking prompt in terminal state');
@@ -2698,9 +2772,14 @@ export async function handleOpenAIConversation(
         // Preserve terminal state - AI cannot change these
         finalResponse.state.bc = true;
         finalResponse.state.rs = false;  // Don't fetch new slots
+        finalResponse.state.gb = false;  // Don't restart group booking
         // Don't reset these if they were already set
         if (context.currentState.appointmentCreated) {
           (finalResponse.state as any).appointmentCreated = true;
+        }
+        if (context.currentState.groupBookingComplete) {
+          (finalResponse.state as any).groupBookingComplete = context.currentState.groupBookingComplete;
+          (finalResponse.state as any).terminalLock = true;
         }
       }
 
