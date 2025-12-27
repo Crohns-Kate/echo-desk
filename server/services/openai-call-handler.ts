@@ -2630,9 +2630,14 @@ export async function handleOpenAIConversation(
         /let me (book|confirm|lock) that (in|for you)/i,
         // Subtle re-entry prompts
         /when would you like to come in/i,
+        /when would work for (both|you|both of you)/i,
+        /now,? when would/i,  // "Now, when would work for both of you?"
         /what time works (best|for you)/i,
+        /what time would work/i,
         /can i (help|assist) you with (a|an)? (booking|appointment)/i,
         /would you like to (set up|arrange)/i,
+        /which time works best/i,  // "Which time works best for you?"
+        /i('ve| have) got slots available/i,  // "I've got slots available"
         // "That's all" followed by booking prompt
         /anything else.*(book|appointment|schedule)/i
       ];
@@ -2640,11 +2645,22 @@ export async function handleOpenAIConversation(
       let shouldStripBookingPrompt = bookingPromptPatterns.some(p => p.test(finalResponse.reply));
 
       // Also block if AI is trying to restart booking flow after FAQ
+      // CRITICAL: Check BOTH appointmentCreated (single) AND groupBookingComplete (group)
+      const bookingIsComplete = context.currentState.appointmentCreated === true ||
+                                 context.currentState.groupBookingComplete;
+
       const isRestartingBookingFlow =
-        context.currentState.appointmentCreated === true &&
+        bookingIsComplete &&
         (replyLower.includes('when would you') ||
+         replyLower.includes('when would work') ||
          replyLower.includes('what time') ||
-         replyLower.includes('book an appointment'));
+         replyLower.includes('which time') ||
+         replyLower.includes('book an appointment') ||
+         replyLower.includes('slots available'));
+
+      console.log('[TerminalGuard] bookingIsComplete:', bookingIsComplete,
+                  'appointmentCreated:', context.currentState.appointmentCreated,
+                  'groupBookingComplete:', context.currentState.groupBookingComplete);
 
       if (shouldStripBookingPrompt || isRestartingBookingFlow) {
         console.log('[TerminalGuard] ⛔ BLOCKING booking prompt in terminal state');
@@ -2698,9 +2714,14 @@ export async function handleOpenAIConversation(
         // Preserve terminal state - AI cannot change these
         finalResponse.state.bc = true;
         finalResponse.state.rs = false;  // Don't fetch new slots
+        finalResponse.state.gb = false;  // Don't restart group booking
         // Don't reset these if they were already set
         if (context.currentState.appointmentCreated) {
           (finalResponse.state as any).appointmentCreated = true;
+        }
+        if (context.currentState.groupBookingComplete) {
+          (finalResponse.state as any).groupBookingComplete = context.currentState.groupBookingComplete;
+          (finalResponse.state as any).terminalLock = true;
         }
       }
 
