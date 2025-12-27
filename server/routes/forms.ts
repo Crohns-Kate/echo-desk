@@ -479,8 +479,38 @@ export function registerForms(app: Express) {
             clinikoUpdated: true
           });
         } catch (clinikoError: any) {
-          // CRITICAL: Tell user the Cliniko update failed
-          console.error('[POST /api/forms/submit] ❌ Cliniko update FAILED:', clinikoError?.message || clinikoError);
+          // ═══════════════════════════════════════════════════════════════════
+          // CRITICAL: Cliniko update FAILED - create alert for manual sync
+          // ═══════════════════════════════════════════════════════════════════
+          console.error('[POST /api/forms/submit] ❌ CRITICAL: Cliniko update FAILED:', clinikoError?.message || clinikoError);
+          console.error('[POST /api/forms/submit]   - patientId:', effectivePatientId);
+          console.error('[POST /api/forms/submit]   - formData:', formData);
+
+          // Create alert for clinic to manually sync this patient
+          try {
+            const alertConversation = await storage.getConversation(call.conversationId);
+            const tenantId = alertConversation?.tenantId;
+
+            if (tenantId) {
+              await storage.createAlert({
+                tenantId,
+                conversationId: call.conversationId || undefined,
+                reason: 'cliniko_sync_failed',
+                payload: {
+                  callSid,
+                  clinikoPatientId: effectivePatientId,
+                  formData,
+                  callerPhone: call.fromNumber,
+                  error: clinikoError?.message || 'Unknown error',
+                  message: 'Cliniko patient update failed - manual sync required'
+                },
+                status: 'open'
+              });
+              console.log('[POST /api/forms/submit] ✅ Created alert for Cliniko sync failure');
+            }
+          } catch (alertErr) {
+            console.error('[POST /api/forms/submit] Failed to create Cliniko sync alert:', alertErr);
+          }
 
           // Form data is saved in context, but Cliniko wasn't updated
           // Return success with a warning so user knows to contact clinic
