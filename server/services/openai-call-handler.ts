@@ -75,6 +75,10 @@ function sanitizePatientName(name: string | null | undefined): string | null {
 
 /**
  * Save conversation context to database
+ *
+ * CRITICAL: This function performs a DEEP MERGE to prevent race conditions.
+ * Form submissions can happen during LLM processing, so we must re-fetch
+ * the latest form data from DB before saving to avoid overwriting.
  */
 async function saveConversationContext(
   callSid: string,
@@ -87,24 +91,46 @@ async function saveConversationContext(
       return;
     }
 
-    // CRITICAL: Preserve formSubmissions from DB to avoid race condition
-    // Form submissions can happen during a call turn, and we don't want to overwrite them
-    // when saving context at the end of each turn.
+    // ═══════════════════════════════════════════════════════════════════
+    // CRITICAL: Re-fetch LATEST context from DB to prevent race condition
+    // Form submissions happen during LLM processing and update the DB directly.
+    // If we don't re-fetch, we'll overwrite those submissions with stale data.
+    // ═══════════════════════════════════════════════════════════════════
     const currentConversation = await storage.getConversation(call.conversationId);
     const dbContext = (currentConversation?.context || {}) as any;
+
+    // Extract form-related fields from both DB and context
     const dbFormSubmissions = dbContext.formSubmissions || {};
     const contextFormSubmissions = (context as any).formSubmissions || {};
 
-    // Merge form submissions: DB wins for existing tokens (form submission is more recent)
-    // This ensures we never lose a form submission that happened during this call turn
-    const mergedFormSubmissions = {
-      ...contextFormSubmissions,  // Start with what context has
-      ...dbFormSubmissions        // DB wins (form submissions are authoritative)
-    };
+    // DEEP MERGE formSubmissions: For each token, merge individual fields
+    // DB wins for conflicting fields (form submission is more authoritative)
+    const dbTokens = Object.keys(dbFormSubmissions);
+    const contextTokens = Object.keys(contextFormSubmissions);
+    const allTokens = Array.from(new Set(dbTokens.concat(contextTokens)));
+    const mergedFormSubmissions: Record<string, any> = {};
 
-    // Create merged context
+    for (const token of allTokens) {
+      const dbSubmission = dbFormSubmissions[token] || {};
+      const contextSubmission = contextFormSubmissions[token] || {};
+
+      // Deep merge: context first, then DB overwrites (DB is authoritative for submitted data)
+      mergedFormSubmissions[token] = {
+        ...contextSubmission,
+        ...dbSubmission
+      };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CRITICAL: Preserve ALL form-related fields from DB, not just formSubmissions
+    // The form submission POST handler also updates: formToken, formData, formSubmittedAt
+    // ═══════════════════════════════════════════════════════════════════
     const mergedContext = {
       ...context,
+      // Preserve form-related fields from DB if they exist and are more recent
+      formToken: dbContext.formToken || (context as any).formToken,
+      formData: dbContext.formData || (context as any).formData,
+      formSubmittedAt: dbContext.formSubmittedAt || (context as any).formSubmittedAt,
       formSubmissions: Object.keys(mergedFormSubmissions).length > 0 ? mergedFormSubmissions : undefined
     };
 
@@ -115,6 +141,10 @@ async function saveConversationContext(
     console.log('[OpenAICallHandler] Saved conversation context for call:', callSid);
     if (Object.keys(mergedFormSubmissions).length > 0) {
       console.log('[OpenAICallHandler] Preserved form submissions:', Object.keys(mergedFormSubmissions).length);
+      for (const token of Object.keys(mergedFormSubmissions)) {
+        const sub = mergedFormSubmissions[token];
+        console.log(`[OpenAICallHandler]   - ${token}: ${sub.firstName || 'no-name'} (submitted: ${sub.submittedAt ? 'yes' : 'no'})`);
+      }
     }
   } catch (error) {
     console.error('[OpenAICallHandler] Error saving conversation context:', error);
@@ -1777,7 +1807,36 @@ export async function handleOpenAIConversation(
             console.log('[GroupBookingExecutor] ✅ SMS confirmation sent');
 
             // Send intake forms for each patient with their Cliniko patient ID
+            // CRITICAL: Each patient gets a UNIQUE token to prevent form collisions
             for (const result of groupBookingResults) {
+              // Validate patientId to prevent token collisions
+              if (!result.patientId) {
+                console.error('[GroupBookingExecutor] ❌ CRITICAL: Missing patientId for', result.name);
+                console.error('[GroupBookingExecutor]   Cannot send form - would cause token collision');
+
+                // Create alert for manual follow-up
+                if (tenantId) {
+                  try {
+                    await storage.createAlert({
+                      tenantId,
+                      conversationId: context.conversationId || undefined,
+                      reason: 'group_form_missing_patient_id',
+                      payload: {
+                        callSid,
+                        patientName: result.name,
+                        appointmentId: result.appointmentId,
+                        message: 'Group booking form skipped - missing Cliniko patientId'
+                      },
+                      status: 'open'
+                    });
+                  } catch (alertErr) {
+                    console.error('[GroupBookingExecutor] Failed to create alert:', alertErr);
+                  }
+                }
+                continue;  // Skip this patient's form, don't cause collision
+              }
+
+              // Token format: form_{callSid}_{patientId} - ensures uniqueness per patient
               const formToken = `form_${callSid}_${result.patientId}`;
 
               // CRITICAL: Pass patient name so SMS clearly identifies WHO the form is for
