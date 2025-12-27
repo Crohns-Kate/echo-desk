@@ -225,8 +225,43 @@ async function getOrCreateContext(
  * - "tomorrow morning" → "tomorrow morning"
  * - "3pm" / "at 3" → "today 3:00pm"
  */
-function extractTimePreferenceFromUtterance(utterance: string): string | null {
+function extractTimePreferenceFromUtterance(utterance: string, existingDayContext?: string): string | null {
   const lower = utterance.toLowerCase().trim();
+
+  // ═══════════════════════════════════════════════
+  // FIRST: Detect day reference in the utterance
+  // This MUST be done before time extraction so we don't lose the day
+  // ═══════════════════════════════════════════════
+  let dayInUtterance: string | null = null;
+
+  // Check for day references in order of specificity
+  if (/\btomorrow\b/i.test(lower)) {
+    dayInUtterance = 'tomorrow';
+  } else if (/\btoday\b/i.test(lower)) {
+    dayInUtterance = 'today';
+  } else if (/\bmonday\b/i.test(lower)) {
+    dayInUtterance = 'monday';
+  } else if (/\btuesday\b/i.test(lower)) {
+    dayInUtterance = 'tuesday';
+  } else if (/\bwednesday\b/i.test(lower)) {
+    dayInUtterance = 'wednesday';
+  } else if (/\bthursday\b/i.test(lower)) {
+    dayInUtterance = 'thursday';
+  } else if (/\bfriday\b/i.test(lower)) {
+    dayInUtterance = 'friday';
+  } else if (/\bsaturday\b/i.test(lower)) {
+    dayInUtterance = 'saturday';
+  } else if (/\bsunday\b/i.test(lower)) {
+    dayInUtterance = 'sunday';
+  }
+
+  // Use day from utterance, or fall back to existing context, or default to tomorrow
+  // CRITICAL: Don't default to "today" because if slots weren't found, we're likely
+  // looking at tomorrow or later
+  const effectiveDay = dayInUtterance || existingDayContext || 'tomorrow';
+
+  console.log('[extractTimePreference] Day detection: utterance="%s", existing="%s", effective="%s"',
+    dayInUtterance || 'none', existingDayContext || 'none', effectiveDay);
 
   // ═══════════════════════════════════════════════
   // PATTERN 1 (HIGHEST PRIORITY): Specific time with explicit meridiem
@@ -243,8 +278,8 @@ function extractTimePreferenceFromUtterance(utterance: string): string | null {
     const meridiem = specificTimeMatch[3].toLowerCase().replace(/\./g, '');
 
     const timeStr = `${hour}:${minute}${meridiem}`;
-    console.log('[extractTimePreference] Matched specific time (PRIORITY):', `today ${timeStr}`);
-    return `today ${timeStr}`;
+    console.log('[extractTimePreference] Matched specific time with day:', `${effectiveDay} ${timeStr}`);
+    return `${effectiveDay} ${timeStr}`;
   }
 
   // ═══════════════════════════════════════════════
@@ -502,57 +537,101 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
   // Skip if utterance is too short or empty
   if (cleaned.length < 5) return null;
 
-  // Pattern 1: "FirstName LastName and FirstName LastName"
-  // e.g., "Michael Bishop and Scott Bishop"
-  const fullNamesPattern = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\s+and\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/i;
-  const fullNamesMatch = cleaned.match(fullNamesPattern);
+  console.log('[extractTwoNames] Analyzing utterance:', cleaned);
 
-  if (fullNamesMatch) {
-    const name1 = `${fullNamesMatch[1]} ${fullNamesMatch[2]}`;
-    const name2 = `${fullNamesMatch[3]} ${fullNamesMatch[4]}`;
+  // ═══════════════════════════════════════════════
+  // STRATEGY: Find "FirstName LastName" patterns in the utterance
+  // and use "and" or "also" as separator between them
+  // ═══════════════════════════════════════════════
 
-    // Validate both names are real person names
-    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
-      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
-      return null;
+  // Pattern 1: "FirstName LastName and FirstName LastName" (adjacent)
+  // e.g., "John Smith and Peter Evans"
+  // This is the cleanest pattern - must try first
+  const adjacentFullNamesPattern = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\s+and\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/i;
+  const adjacentMatch = cleaned.match(adjacentFullNamesPattern);
+
+  if (adjacentMatch) {
+    const name1 = `${adjacentMatch[1]} ${adjacentMatch[2]}`;
+    const name2 = `${adjacentMatch[3]} ${adjacentMatch[4]}`;
+
+    if (isValidPersonName(name1) && isValidPersonName(name2)) {
+      console.log('[extractTwoNames] ✅ Matched adjacent full names:', name1, 'and', name2);
+      return [
+        { name: name1, relation: 'caller' },
+        { name: name2, relation: 'family' }
+      ];
     }
-
-    console.log('[extractTwoNames] Matched full names:', name1, 'and', name2);
-    return [
-      { name: name1, relation: 'caller' },
-      { name: name2, relation: 'family' }
-    ];
+    console.log('[extractTwoNames] Adjacent match rejected - invalid names:', name1, name2);
   }
 
-  // Pattern 2: "FirstName and FirstName LastName" or "FirstName LastName and FirstName"
-  // e.g., "Michael and Scott Bishop" or "Michael Bishop and Scott"
-  const mixedNamesPattern = /\b([A-Z][a-z]+)(?:\s+[A-Z][a-z]+)?\s+and\s+([A-Z][a-z]+)(?:\s+([A-Z][a-z]+))?\b/i;
-  const mixedNamesMatch = cleaned.match(mixedNamesPattern);
+  // Pattern 2: Embedded in sentence - "...FirstName LastName...and...FirstName LastName..."
+  // Handles: "My name is John Smith and I'm also booking for Peter Evans"
+  // Handles: "It's for John Smith, and also Peter Evans"
+  // Handles: "I'm John Smith and my son Peter Evans"
+  const embeddedPattern = /(?:(?:my name is|i'm|i am|name is|for|it's for|this is)\s+)?([A-Z][a-z]+)\s+([A-Z][a-z]+)(?:[,.]|\s+(?:and|also|plus))(?:.+?(?:for|also|and|plus|my\s+\w+))?\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)/i;
+  const embeddedMatch = cleaned.match(embeddedPattern);
 
-  if (mixedNamesMatch) {
-    const firstName1 = mixedNamesMatch[1];
-    const firstName2 = mixedNamesMatch[2];
-    const lastName = mixedNamesMatch[3] || '';
+  if (embeddedMatch) {
+    const name1 = `${embeddedMatch[1]} ${embeddedMatch[2]}`;
+    const name2 = `${embeddedMatch[3]} ${embeddedMatch[4]}`;
 
-    // If only first names, treat them as complete names
-    const name1 = firstName1;
-    const name2 = lastName ? `${firstName2} ${lastName}` : firstName2;
-
-    // Validate both names are real person names
-    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
-      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
-      return null;
+    if (isValidPersonName(name1) && isValidPersonName(name2)) {
+      console.log('[extractTwoNames] ✅ Matched embedded names:', name1, 'and', name2);
+      return [
+        { name: name1, relation: 'caller' },
+        { name: name2, relation: 'family' }
+      ];
     }
-
-    console.log('[extractTwoNames] Matched names:', name1, 'and', name2);
-    return [
-      { name: name1, relation: 'caller' },
-      { name: name2, relation: 'family' }
-    ];
+    console.log('[extractTwoNames] Embedded match rejected - invalid names:', name1, name2);
   }
 
-  // Pattern 3: Simple "FirstName and FirstName"
-  // e.g., "Michael and Scott"
+  // Pattern 3: Look for TWO "FirstName LastName" patterns anywhere
+  // This is a fallback that finds all full names and takes the first two
+  const fullNamePattern = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/gi;
+  const allMatches = Array.from(cleaned.matchAll(fullNamePattern));
+
+  if (allMatches.length >= 2) {
+    // Filter to only valid person names
+    const validNames: string[] = [];
+    for (const match of allMatches) {
+      const fullName = `${match[1]} ${match[2]}`;
+      if (isValidPersonName(fullName)) {
+        validNames.push(fullName);
+      }
+    }
+
+    if (validNames.length >= 2) {
+      console.log('[extractTwoNames] ✅ Found multiple full names:', validNames[0], 'and', validNames[1]);
+      return [
+        { name: validNames[0], relation: 'caller' },
+        { name: validNames[1], relation: 'family' }
+      ];
+    }
+  }
+
+  // Pattern 4: "FirstName and FirstName LastName" - shared last name
+  // e.g., "Michael and Scott Bishop"
+  const sharedLastNamePattern = /\b([A-Z][a-z]+)\s+and\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/i;
+  const sharedMatch = cleaned.match(sharedLastNamePattern);
+
+  if (sharedMatch) {
+    const firstName1 = sharedMatch[1];
+    const firstName2 = sharedMatch[2];
+    const sharedLastName = sharedMatch[3];
+    const name1 = `${firstName1} ${sharedLastName}`;
+    const name2 = `${firstName2} ${sharedLastName}`;
+
+    if (isValidPersonName(name1) && isValidPersonName(name2)) {
+      console.log('[extractTwoNames] ✅ Matched shared last name:', name1, 'and', name2);
+      return [
+        { name: name1, relation: 'caller' },
+        { name: name2, relation: 'family' }
+      ];
+    }
+  }
+
+  // Pattern 5: Simple "FirstName and FirstName"
+  // e.g., "Michael and Scott" (first names only)
   const simpleNamesPattern = /\b([A-Z][a-z]{2,})\s+and\s+([A-Z][a-z]{2,})\b/i;
   const simpleNamesMatch = cleaned.match(simpleNamesPattern);
 
@@ -560,20 +639,46 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
     const name1 = simpleNamesMatch[1];
     const name2 = simpleNamesMatch[2];
 
-    // Validate both names are real person names
-    if (!isValidPersonName(name1) || !isValidPersonName(name2)) {
-      console.log('[extractTwoNames] Rejected - not valid person names:', name1, 'and', name2);
-      return null;
+    if (isValidPersonName(name1) && isValidPersonName(name2)) {
+      console.log('[extractTwoNames] ✅ Matched simple names:', name1, 'and', name2);
+      return [
+        { name: name1, relation: 'caller' },
+        { name: name2, relation: 'family' }
+      ];
     }
-
-    console.log('[extractTwoNames] Matched simple names:', name1, 'and', name2);
-    return [
-      { name: name1, relation: 'caller' },
-      { name: name2, relation: 'family' }
-    ];
   }
 
   // No two-name pattern found
+  console.log('[extractTwoNames] ❌ No two-name pattern found in utterance');
+  return null;
+}
+
+// ═══════════════════════════════════════════════
+// Day Context Extraction from Time Preference
+// ═══════════════════════════════════════════════
+
+/**
+ * Extract just the day portion from a time preference string.
+ * Used to preserve day context when tp is cleared for a new time.
+ * Examples:
+ * - "tomorrow morning" → "tomorrow"
+ * - "today 9:00am" → "today"
+ * - "monday afternoon" → "monday"
+ */
+function extractDayFromTp(tp: string | null | undefined): string | null {
+  if (!tp) return null;
+  const lower = tp.toLowerCase();
+
+  if (lower.includes('tomorrow')) return 'tomorrow';
+  if (lower.includes('today')) return 'today';
+  if (lower.includes('monday')) return 'monday';
+  if (lower.includes('tuesday')) return 'tuesday';
+  if (lower.includes('wednesday')) return 'wednesday';
+  if (lower.includes('thursday')) return 'thursday';
+  if (lower.includes('friday')) return 'friday';
+  if (lower.includes('saturday')) return 'saturday';
+  if (lower.includes('sunday')) return 'sunday';
+
   return null;
 }
 
@@ -998,6 +1103,12 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler]   - Keeping time preference (same time requested)');
           // tp is preserved
         } else {
+          // CRITICAL: Preserve day context before clearing tp
+          const dayFromTp = extractDayFromTp(context.currentState.tp);
+          if (dayFromTp) {
+            context.currentState.previousTpDay = dayFromTp;
+            console.log('[OpenAICallHandler]   Preserved day context:', dayFromTp);
+          }
           context.currentState.tp = null; // Ask for time preference
         }
 
@@ -1099,11 +1210,15 @@ export async function handleOpenAIConversation(
         console.log('[OpenAICallHandler]   Seeded gp with placeholders:', context.currentState.gp);
       }
 
-      // Also extract time preference if present
-      const extractedTpFirst = extractTimePreferenceFromUtterance(userUtterance);
+      // Also extract time preference if present (pass day context if available)
+      const extractedTpFirst = extractTimePreferenceFromUtterance(
+        userUtterance,
+        context.currentState.previousTpDay || undefined
+      );
       if (extractedTpFirst && !context.currentState.tp) {
         context.currentState.tp = extractedTpFirst;
         context.currentState.rs = true;
+        context.currentState.previousTpDay = null; // Clear after use
         console.log('[OpenAICallHandler]   Extracted tp from first utterance:', extractedTpFirst);
       }
 
@@ -1143,10 +1258,14 @@ export async function handleOpenAIConversation(
     const isGroupBookingMode = context.currentState.gb === true;
 
     if (isGroupBookingMode && !context.currentState.tp) {
-      const extractedTp = extractTimePreferenceFromUtterance(userUtterance);
+      const extractedTp = extractTimePreferenceFromUtterance(
+        userUtterance,
+        context.currentState.previousTpDay || undefined
+      );
       if (extractedTp) {
         console.log('[OpenAICallHandler] 🕐 DETERMINISTIC TP: Group booking mode, extracted tp from utterance:', extractedTp);
         context.currentState.tp = extractedTp;
+        context.currentState.previousTpDay = null; // Clear after use
 
         // Also set request_slots since we now have tp
         context.currentState.rs = true;
@@ -1209,10 +1328,14 @@ export async function handleOpenAIConversation(
                             context.currentState.bookingFor === 'someone_else';
 
     if (isBookingIntent && !context.currentState.tp) {
-      const universalExtractedTp = extractTimePreferenceFromUtterance(userUtterance);
+      const universalExtractedTp = extractTimePreferenceFromUtterance(
+        userUtterance,
+        context.currentState.previousTpDay || undefined
+      );
       if (universalExtractedTp) {
         console.log('[OpenAICallHandler] 🕐 UNIVERSAL TP EXTRACTION: Detected time preference:', universalExtractedTp);
         context.currentState.tp = universalExtractedTp;
+        context.currentState.previousTpDay = null; // Clear after use
         context.currentState.rs = true;  // Ready to fetch slots
         console.log('[OpenAICallHandler] 🕐 UNIVERSAL TP: Set tp="%s" and rs=true', universalExtractedTp);
       }
@@ -1403,6 +1526,12 @@ export async function handleOpenAIConversation(
         // User wants different times - reset proposed flag
         console.log('[GroupBookingExecutor] ❌ User declined proposed times');
         context.currentState.groupBookingProposed = false;
+        // CRITICAL: Preserve day context before clearing tp
+        const dayFromTp = extractDayFromTp(context.currentState.tp);
+        if (dayFromTp) {
+          context.currentState.previousTpDay = dayFromTp;
+          console.log('[GroupBookingExecutor]   Preserved day context:', dayFromTp);
+        }
         context.currentState.tp = null; // Clear time preference to ask again
         context.availableSlots = undefined; // Clear slots to fetch new ones
 
@@ -1491,7 +1620,14 @@ export async function handleOpenAIConversation(
           const previousTp = context.currentState.tp || 'the requested time';
           const noSlotsMessage = `I'm sorry, I couldn't find enough back-to-back appointments for ${patientNames} at ${previousTp}. Would you like me to check a different time, or book separate appointments?`;
 
-          // CRITICAL FIX: Clear tp and slots so user can provide a NEW time preference
+          // CRITICAL FIX: Preserve day context before clearing tp
+          const dayFromTp = extractDayFromTp(context.currentState.tp);
+          if (dayFromTp) {
+            context.currentState.previousTpDay = dayFromTp;
+            console.log('[GroupBookingExecutor]   Preserved day context:', dayFromTp);
+          }
+
+          // Clear tp and slots so user can provide a NEW time preference
           // Without this, the extraction code won't run because tp is already set
           console.log('[GroupBookingExecutor] 🔄 Clearing tp and slots for new time preference');
           context.currentState.tp = null;

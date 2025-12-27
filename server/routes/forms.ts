@@ -57,13 +57,28 @@ export function registerForms(app: Express) {
         const context = conversation?.context as any;
 
         // Check formSubmissions map for this specific token
-        console.log('[GET /intake/:token] Checking formSubmissions for token:', token);
+        console.log('[GET /intake/:token] ═══════════════════════════════════');
+        console.log('[GET /intake/:token] Token requested:', token);
+        console.log('[GET /intake/:token] Edit mode:', edit === 'true' ? 'YES' : 'NO');
         console.log('[GET /intake/:token] All tokens in formSubmissions:', Object.keys(context?.formSubmissions || {}));
+
+        // Get submission for THIS specific token only
         existingSubmission = context?.formSubmissions?.[token];
-        console.log('[GET /intake/:token] Existing submission for this token:', existingSubmission ? 'FOUND' : 'NOT FOUND');
+
+        // CRITICAL: Check BOTH that submission exists AND has submittedAt
+        // This matches the POST handler check at line 379
+        const hasBeenSubmitted = existingSubmission && existingSubmission.submittedAt;
+
+        console.log('[GET /intake/:token] Submission for this token:', hasBeenSubmitted ? 'SUBMITTED' : 'NOT SUBMITTED');
+        if (existingSubmission) {
+          console.log('[GET /intake/:token]   - firstName:', existingSubmission.firstName);
+          console.log('[GET /intake/:token]   - submittedAt:', existingSubmission.submittedAt);
+        }
+        console.log('[GET /intake/:token] ═══════════════════════════════════');
 
         // If already submitted AND NOT in edit mode, show success message
-        if (existingSubmission && edit !== 'true') {
+        // CRITICAL: Use hasBeenSubmitted (checks submittedAt) not just existingSubmission
+        if (hasBeenSubmitted && edit !== 'true') {
           return res.send(`
             <!DOCTYPE html>
             <html>

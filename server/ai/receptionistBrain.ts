@@ -159,6 +159,13 @@ export interface CompactCallState {
    */
   awaitingNewGroupBookingTime?: boolean;
 
+  /**
+   * previousTpDay = day context from previous time preference
+   * Preserved when tp is cleared so new time extraction uses correct day
+   * e.g., "tomorrow" if previous tp was "tomorrow morning"
+   */
+  previousTpDay?: string | null;
+
   // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════
