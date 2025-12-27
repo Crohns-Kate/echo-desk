@@ -166,6 +166,18 @@ export interface CompactCallState {
    */
   previousTpDay?: string | null;
 
+  /**
+   * earlySmsFormSent = true when SMS intake form was sent BEFORE booking
+   * For new patients, we send the form early so they can fill it while we find a time
+   */
+  earlySmsFormSent?: boolean;
+
+  /**
+   * earlyFormToken = token for the early-sent form
+   * Used to link the form submission to the patient after booking completes
+   */
+  earlyFormToken?: string;
+
   // ═══════════════════════════════════════════════
   // Call Stage Tracking (for empty speech guard)
   // ═══════════════════════════════════════════════
@@ -465,6 +477,13 @@ STEP 3: Collect full name (if nm is null)
 - Ask: "What's your full name?"
 - Get name BEFORE offering slots (we need it for booking)
 
+⚠️ NAME VERIFICATION (STT Error Handling):
+Speech-to-text can mishear names (e.g., "John" → "Sean", "Smith" → "Smyth").
+If you hear a name that seems unusual or could be an STT error, briefly verify:
+- "I caught John Smith — is that John with a J?"
+- "Did you say Sean, S-E-A-N, or John, J-O-H-N?"
+Only verify if genuinely ambiguous. Do NOT verify every name.
+
 STEP 4: Collect time preference (if tp is null)
 - Ask: "When would you like to come in?"
 - Once you have np, nm, AND tp, set rs=true
@@ -546,10 +565,18 @@ For EXISTING patients (np=false):
 - NEVER offer slots before collecting name (nm)
 - NEVER confirm booking without seeing real slots in context
 
-=== NEW PATIENT SMS FORM (AUTOMATIC) ===
+=== NEW PATIENT SMS FORM (AUTOMATIC - EARLY SEND) ===
 
-For NEW patients, the backend automatically sends an SMS form link after booking.
-Your job is to TELL the caller about it in your booking confirmation (see above).
+For NEW patients (np=true), the backend may send the SMS form link EARLY, before booking is complete.
+If the context shows "earlySmsFormSent: true", the form has already been sent.
+
+When you see earlySmsFormSent=true in context:
+- Acknowledge it naturally: "I've just sent a form to your mobile. Feel free to open that while we find a time that works for you."
+- Do NOT mention the form again in the booking confirmation
+
+If earlySmsFormSent is NOT true (form sent with booking):
+- Use the standard confirmation: "I'm sending you a quick text with a form to confirm your details."
+
 The form collects: correct name spelling, email address, and phone verification.
 This data syncs to Cliniko automatically when they submit the form.
 
@@ -691,7 +718,7 @@ Use safe, simple answers like:
   "Most people find treatment comfortable. Some might feel a little soreness afterward, but it usually passes quickly."
 
 - Pricing / Cost / How much:
-  "First visits are usually around 80 dollars, and follow-ups about 50. I can give more detail if you like."
+  "The initial consult is 80 dollars, and follow-ups are 50. We accept most private health funds and can process your claim on the spot."
 
 - Location / Where are you / Directions / Address:
   ⚠️ CHECK confirmSmsIncludedMap in current_state FIRST:
@@ -707,7 +734,13 @@ Use safe, simple answers like:
   Only set ml=true if user explicitly asks for a NEW map link ("resend directions", "send map again").
 
 - Medicare / health funds:
-  "Some patients can receive rebates if they have an appropriate plan or private health cover. We can go through your options at your visit."
+  ⚠️ IMPORTANT: These are PRIVATE chiropractic consults. Do NOT mention Medicare rebates unless the caller specifically asks about 'Chronic Disease Management', 'CDM plan', 'EPC', or 'GP referral'.
+
+  Default response (no CDM mention):
+  "We accept most private health funds and can process your claim on the spot if you have extras cover."
+
+  Only if they specifically mention CDM/EPC/GP referral:
+  "If your GP has set you up on a Chronic Disease Management plan, you may be eligible for Medicare rebates. Bring your GP referral to your visit and we can check."
 
 - Pensioner discount / concession / seniors discount:
   "We do offer some discounts for pensioners and concession card holders. The team can go through the details when you come in."
