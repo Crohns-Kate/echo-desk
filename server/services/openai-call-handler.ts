@@ -2766,6 +2766,8 @@ export async function handleOpenAIConversation(
         /what time works (best|for you)/i,
         /what time would work/i,
         /which\s*time\s*works\s*best/i,  // "Which time works best?"
+        /is there a (specific )?time you'?d like/i,  // "Is there a specific time you'd like to come in?"
+        /specific time.*(come in|appointment|book)/i,  // "specific time" + booking context
         /can i (help|assist) you with (a|an)? (booking|appointment)/i,
         /would you like to (set up|arrange)/i,
         /i('ve| have) got slots available/i,  // "I've got slots available"
@@ -2789,6 +2791,7 @@ export async function handleOpenAIConversation(
          replyLower.includes('when would work') ||
          replyLower.includes('what time') ||
          replyLower.includes('which time') ||
+         replyLower.includes('specific time') ||  // "Is there a specific time..."
          replyLower.includes('book an appointment') ||
          replyLower.includes('slots available'));
 
