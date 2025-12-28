@@ -1315,6 +1315,10 @@ export async function handleOpenAIConversation(
     // 2c-bis. SEPARATE APPOINTMENTS REQUEST DETECTION
     // If user says "separate" or "book separately", convert from group to individual
     // ═══════════════════════════════════════════════
+    // Track if user explicitly requested separate appointments
+    // This is set BEFORE AI call and preserved AFTER to prevent AI from resetting gb=true
+    let separateAppointmentsRequested = false;
+
     if (isGroupBookingMode && context.currentState.awaitingNewGroupBookingTime) {
       const lowerUtterance = userUtterance.toLowerCase();
       const wantsSeparate = lowerUtterance.includes('separate') ||
@@ -1324,6 +1328,7 @@ export async function handleOpenAIConversation(
 
       if (wantsSeparate) {
         console.log('[OpenAICallHandler] 🔀 User requested separate appointments - converting from group to individual');
+        separateAppointmentsRequested = true;  // Mark for post-AI protection
 
         // Keep only the first patient (typically the caller)
         const firstPatient = context.currentState.gp?.[0];
@@ -2200,6 +2205,48 @@ export async function handleOpenAIConversation(
       }
 
       // ═══════════════════════════════════════════════
+      // CRITICAL: Block AI from asking for time when tp is already set
+      // If AI asks "when would work for you" but tp is set, override reply
+      // ═══════════════════════════════════════════════
+      if (context.currentState.tp) {
+        const replyLower = finalResponse.reply.toLowerCase();
+        const isAskingForTime =
+          replyLower.includes('when would') ||
+          replyLower.includes('what time') ||
+          replyLower.includes('when would you like') ||
+          replyLower.includes('what time works') ||
+          replyLower.includes('when works for');
+
+        if (isAskingForTime) {
+          console.log('[OpenAICallHandler] ⚠️ AI asked for time but tp is already set:', context.currentState.tp);
+          console.log('[OpenAICallHandler]   Original reply:', finalResponse.reply);
+
+          // Check if we have real names yet
+          const allNamesValid = Array.isArray(context.currentState.gp) &&
+            context.currentState.gp.length >= 2 &&
+            context.currentState.gp.every((p: { name: string }) => isValidPersonName(p.name));
+
+          if (allNamesValid) {
+            // We have names AND time - trigger booking
+            console.log('[OpenAICallHandler]   ✅ All info present - proceeding to book');
+            finalResponse.reply = `Perfect, let me check what's available at ${context.currentState.tp} for you both.`;
+            finalResponse.state.rs = true;  // Trigger slot fetch
+          } else {
+            // We have time but need names - ask for names only
+            const firstName = context.currentState.gp?.[0]?.name;
+            const firstNameValid = firstName && isValidPersonName(firstName);
+            if (firstNameValid) {
+              finalResponse.reply = `Thanks ${firstName.split(' ')[0]}. And what's the full name of the other person?`;
+            } else {
+              finalResponse.reply = "No problem, I can book for both of you. May I have both full names please?";
+            }
+            context.currentState.askedForNamesAt = Date.now();
+          }
+          console.log('[OpenAICallHandler]   Overridden reply:', finalResponse.reply);
+        }
+      }
+
+      // ═══════════════════════════════════════════════
       // CRITICAL: Block AI from confirming group booking when executor hasn't run
       // If AI sets bc=true but groupBookingComplete is false, the executor didn't run
       // → Override reply, reset bc, prevent false confirmation
@@ -2274,6 +2321,20 @@ export async function handleOpenAIConversation(
       if (field in finalResponse.state) {
         console.log('[OpenAICallHandler] ⛔ STRIPPED backend-only field from AI response:', field, '=', (finalResponse.state as any)[field]);
         delete (finalResponse.state as any)[field];
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // CRITICAL: Preserve separate appointments decision
+    // If user explicitly requested separate appointments (set earlier in this function),
+    // ensure AI doesn't reset gb=true. Force gb=false and keep first patient only.
+    // ═══════════════════════════════════════════════
+    if (separateAppointmentsRequested) {
+      console.log('[OpenAICallHandler] 🔒 Preserving separate appointments decision (preventing AI gb=true override)');
+      finalResponse.state.gb = false;
+      // Ensure gp stays as single patient (first one)
+      if (Array.isArray(context.currentState.gp) && context.currentState.gp.length === 1) {
+        finalResponse.state.gp = context.currentState.gp;
       }
     }
 
