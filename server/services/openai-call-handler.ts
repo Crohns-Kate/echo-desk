@@ -1808,11 +1808,23 @@ export async function handleOpenAIConversation(
 
             // Send intake forms for each patient with their Cliniko patient ID
             // CRITICAL: Each patient gets a UNIQUE token to prevent form collisions
-            for (const result of groupBookingResults) {
-              // Validate patientId to prevent token collisions
-              if (!result.patientId) {
-                console.error('[GroupBookingExecutor] ❌ CRITICAL: Missing patientId for', result.name);
-                console.error('[GroupBookingExecutor]   Cannot send form - would cause token collision');
+            for (let i = 0; i < groupBookingResults.length; i++) {
+              const result = groupBookingResults[i];
+
+              // Determine token format based on whether we have patientId
+              // If patientId is missing, use index as fallback to ensure unique tokens
+              let formToken: string;
+              let clinikoPatientId: string | undefined;
+
+              if (result.patientId) {
+                // Normal case: use patientId for unique token
+                formToken = `form_${callSid}_${result.patientId}`;
+                clinikoPatientId = result.patientId;
+              } else {
+                // Fallback: use index + name hash for uniqueness
+                console.warn('[GroupBookingExecutor] ⚠️ Missing patientId for', result.name, '- using fallback token');
+                formToken = `form_${callSid}_p${i}_${result.name.replace(/\s+/g, '')}`;
+                clinikoPatientId = undefined;  // Will trigger warning in SMS function
 
                 // Create alert for manual follow-up
                 if (tenantId) {
@@ -1825,7 +1837,7 @@ export async function handleOpenAIConversation(
                         callSid,
                         patientName: result.name,
                         appointmentId: result.appointmentId,
-                        message: 'Group booking form skipped - missing Cliniko patientId'
+                        message: 'Group booking form sent without Cliniko patientId - manual linking required'
                       },
                       status: 'open'
                     });
@@ -1833,21 +1845,17 @@ export async function handleOpenAIConversation(
                     console.error('[GroupBookingExecutor] Failed to create alert:', alertErr);
                   }
                 }
-                continue;  // Skip this patient's form, don't cause collision
               }
 
-              // Token format: form_{callSid}_{patientId} - ensures uniqueness per patient
-              const formToken = `form_${callSid}_${result.patientId}`;
-
-              // CRITICAL: Pass patient name so SMS clearly identifies WHO the form is for
+              // ALWAYS send form - patient needs the link regardless of patientId status
               await sendNewPatientForm({
                 to: callerPhone,
                 token: formToken,
                 clinicName: clinicName || 'Spinalogic',
-                clinikoPatientId: result.patientId,  // Link form to correct Cliniko patient
+                clinikoPatientId,  // May be undefined if patientId was missing
                 patientName: result.name  // Identify who this form is for (critical for group bookings)
               });
-              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId, 'token:', formToken);
+              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId || 'NONE', 'token:', formToken);
             }
             context.currentState.smsIntakeSent = true;
           }
