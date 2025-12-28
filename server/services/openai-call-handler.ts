@@ -1318,6 +1318,8 @@ export async function handleOpenAIConversation(
     // Track if user explicitly requested separate appointments
     // This is set BEFORE AI call and preserved AFTER to prevent AI from resetting gb=true
     let separateAppointmentsRequested = false;
+    // Track if user said "different time" without specifying - we need to ask for specific time
+    let askedForDifferentTimeNoSpec = false;
 
     if (isGroupBookingMode && context.currentState.awaitingNewGroupBookingTime) {
       const lowerUtterance = userUtterance.toLowerCase();
@@ -1325,6 +1327,18 @@ export async function handleOpenAIConversation(
                             lowerUtterance.includes('individually') ||
                             lowerUtterance.includes('one at a time') ||
                             lowerUtterance.includes('book them separately');
+
+      // Check if user said "a different time" or "check another time" WITHOUT a specific time
+      const wantsDifferentTimeGeneral =
+        (lowerUtterance.includes('different time') ||
+         lowerUtterance.includes('another time') ||
+         lowerUtterance.includes('other time') ||
+         lowerUtterance.includes('check different') ||
+         lowerUtterance.includes('try different') ||
+         lowerUtterance === 'different' ||
+         lowerUtterance === 'a different time' ||
+         lowerUtterance === 'different time') &&
+        !extractTimePreferenceFromUtterance(userUtterance);  // No specific time detected
 
       if (wantsSeparate) {
         console.log('[OpenAICallHandler] 🔀 User requested separate appointments - converting from group to individual');
@@ -1340,6 +1354,34 @@ export async function handleOpenAIConversation(
           context.currentState.nm = firstPatient.name;  // Set as primary patient
           // Keep tp null so we can get a new time preference
         }
+      } else if (wantsDifferentTimeGeneral) {
+        // User wants a different time but didn't specify - ask for specific time
+        // CRITICAL: Preserve names (gp) - don't let AI ask for them again!
+        console.log('[OpenAICallHandler] 🕐 User wants different time but no specific time given');
+        console.log('[OpenAICallHandler]   Preserving gp:', context.currentState.gp?.map((p: {name: string}) => p.name).join(', '));
+        askedForDifferentTimeNoSpec = true;
+
+        // Return TwiML directly to ask for specific time - don't go to AI
+        const patientNames = context.currentState.gp?.map((p: {name: string}) => p.name.split(' ')[0]).join(' and ') || 'you both';
+        const vr = new twilio.twiml.VoiceResponse();
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          profanityFilter: false,
+          actionOnEmptyResult: true,
+          hints: 'tomorrow, today, this afternoon, this morning, 9am, 10am, 11am, 2pm, 3pm, next week, monday, tuesday'
+        });
+        saySafe(gather, `No problem. What time would work better for ${patientNames}?`);
+
+        // Keep awaitingNewGroupBookingTime true so next response triggers slot fetch
+        await saveConversationContext(callSid, context);
+        return vr;
       }
     }
 
