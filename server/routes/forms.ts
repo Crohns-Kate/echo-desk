@@ -1,6 +1,7 @@
 import { Express, Request, Response } from "express";
 import { storage } from "../storage";
 import { updateClinikoPatient } from "../integrations/cliniko";
+import { findPatientByPhoneRobust, getOrCreatePatient } from "../services/cliniko";
 
 /**
  * Form collection routes
@@ -440,17 +441,84 @@ export function registerForms(app: Express) {
       console.log('[POST /api/forms/submit] ✅ Form data stored for token:', token, isEdit ? '(EDIT)' : '(NEW)');
       console.log('[POST /api/forms/submit] Total form submissions:', Object.keys(updatedFormSubmissions).length);
 
-      // Update patient in Cliniko with correct details
-      // CRITICAL: Only update if we have an explicit patientId - NEVER fall back to phone lookup
-      // Phone lookup can match the WRONG patient (e.g., existing patient "john smith" instead of new caller)
-      const effectivePatientId = clinikoPatientId || existingFormSubmissions[token]?.clinikoPatientId;
+      // ═══════════════════════════════════════════════════════════════════════
+      // CLINIKO PATIENT UPDATE LOGIC
+      // ═══════════════════════════════════════════════════════════════════════
+      //
+      // Priority:
+      // 1. Use explicit clinikoPatientId if provided (most reliable)
+      // 2. If patientMode === 'existing', safe to do phone lookup (caller is known patient)
+      // 3. If patientMode === 'new' or undefined, use getOrCreatePatient (may create new record)
+      //
+      // Traceability: Include callSid and conversationId in all logs
+      // ═══════════════════════════════════════════════════════════════════════
+
+      const callerPhone = call.fromNumber;
+      const patientMode = existingContext?.patientMode;  // 'new' | 'existing' | undefined
+
+      console.log('[POST /api/forms/submit] ═══════════════════════════════════════════');
+      console.log('[POST /api/forms/submit] CLINIKO UPDATE DECISION');
+      console.log('[POST /api/forms/submit]   - callSid:', callSid);
+      console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+      console.log('[POST /api/forms/submit]   - callerPhone:', callerPhone);
+      console.log('[POST /api/forms/submit]   - patientMode from context:', patientMode || 'NOT SET');
+      console.log('[POST /api/forms/submit]   - clinikoPatientId from form:', clinikoPatientId || 'NOT PROVIDED');
+      console.log('[POST /api/forms/submit]   - clinikoPatientId from previous:', existingFormSubmissions[token]?.clinikoPatientId || 'NONE');
+
+      // Step 1: Try to resolve patient ID
+      let effectivePatientId = clinikoPatientId || existingFormSubmissions[token]?.clinikoPatientId;
+      let patientResolutionMethod = effectivePatientId ? 'explicit' : 'none';
+
+      // Step 2: If no explicit patientId, try lookup based on patientMode
+      if (!effectivePatientId && callerPhone) {
+        if (patientMode === 'existing') {
+          // SAFE: Caller identified as existing patient - phone lookup is appropriate
+          console.log('[POST /api/forms/submit] 🔍 patientMode=existing - attempting safe phone lookup...');
+          try {
+            const foundPatient = await findPatientByPhoneRobust(callerPhone);
+            if (foundPatient) {
+              effectivePatientId = foundPatient.id;
+              patientResolutionMethod = 'phone_lookup_existing';
+              console.log('[POST /api/forms/submit] ✅ Found existing patient via phone lookup:', effectivePatientId);
+              console.log('[POST /api/forms/submit]   - Name in Cliniko:', foundPatient.first_name, foundPatient.last_name);
+            } else {
+              console.log('[POST /api/forms/submit] ⚠️ Phone lookup returned no results');
+            }
+          } catch (lookupError: any) {
+            console.error('[POST /api/forms/submit] ❌ Phone lookup failed:', lookupError?.message);
+          }
+        } else {
+          // patientMode is 'new' or undefined - use getOrCreatePatient
+          // This creates a new patient if not found, or returns existing if phone matches
+          console.log('[POST /api/forms/submit] 🆕 patientMode=', patientMode || 'undefined', '- using getOrCreatePatient...');
+          try {
+            const patient = await getOrCreatePatient({
+              phone: callerPhone,
+              fullName: `${firstName} ${lastName}`,
+              email: email
+            });
+            if (patient) {
+              effectivePatientId = patient.id;
+              patientResolutionMethod = 'get_or_create';
+              console.log('[POST /api/forms/submit] ✅ Patient resolved via getOrCreatePatient:', effectivePatientId);
+              console.log('[POST /api/forms/submit]   - Name:', patient.first_name, patient.last_name);
+            }
+          } catch (createError: any) {
+            console.error('[POST /api/forms/submit] ❌ getOrCreatePatient failed:', createError?.message);
+          }
+        }
+      }
+
+      console.log('[POST /api/forms/submit] Resolution result:');
+      console.log('[POST /api/forms/submit]   - effectivePatientId:', effectivePatientId || 'NONE');
+      console.log('[POST /api/forms/submit]   - method:', patientResolutionMethod);
+      console.log('[POST /api/forms/submit] ═══════════════════════════════════════════');
 
       if (effectivePatientId) {
         try {
-          console.log('[POST /api/forms/submit] Using direct clinikoPatientId:', effectivePatientId);
+          console.log('[POST /api/forms/submit] Updating Cliniko patient:', effectivePatientId);
 
           // Update patient with correct name spelling, email, and phone
-          const callerPhone = call.fromNumber;
           const updatePayload: {
             first_name: string;
             last_name: string;
@@ -472,18 +540,26 @@ export function registerForms(app: Express) {
 
           await updateClinikoPatient(effectivePatientId, updatePayload);
           console.log('[POST /api/forms/submit] ✅ Cliniko patient updated with form data');
+          console.log('[POST /api/forms/submit]   - callSid:', callSid);
+          console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+          console.log('[POST /api/forms/submit]   - method:', patientResolutionMethod);
 
           res.json({
             success: true,
             message: isEdit ? 'Details updated successfully' : 'Form submitted successfully',
-            clinikoUpdated: true
+            clinikoUpdated: true,
+            patientResolutionMethod
           });
         } catch (clinikoError: any) {
           // ═══════════════════════════════════════════════════════════════════
           // CRITICAL: Cliniko update FAILED - create alert for manual sync
           // ═══════════════════════════════════════════════════════════════════
-          console.error('[POST /api/forms/submit] ❌ CRITICAL: Cliniko update FAILED:', clinikoError?.message || clinikoError);
+          console.error('[POST /api/forms/submit] ❌ CRITICAL: Cliniko update FAILED');
+          console.error('[POST /api/forms/submit]   - callSid:', callSid);
+          console.error('[POST /api/forms/submit]   - conversationId:', call.conversationId);
           console.error('[POST /api/forms/submit]   - patientId:', effectivePatientId);
+          console.error('[POST /api/forms/submit]   - method:', patientResolutionMethod);
+          console.error('[POST /api/forms/submit]   - error:', clinikoError?.message || clinikoError);
           console.error('[POST /api/forms/submit]   - formData:', formData);
 
           // Create alert for clinic to manually sync this patient
@@ -498,7 +574,9 @@ export function registerForms(app: Express) {
                 reason: 'cliniko_sync_failed',
                 payload: {
                   callSid,
+                  conversationId: call.conversationId,
                   clinikoPatientId: effectivePatientId,
+                  patientResolutionMethod,
                   formData,
                   callerPhone: call.fromNumber,
                   error: clinikoError?.message || 'Unknown error',
@@ -522,11 +600,13 @@ export function registerForms(app: Express) {
           });
         }
       } else {
-        // NO patientId provided - do NOT attempt phone lookup (prevents wrong patient updates)
-        // Form data is saved in conversation context - team will manually confirm details
-        console.error('[POST /api/forms/submit] ⚠️ NO patientId provided - cannot update Cliniko safely');
+        // NO patientId could be resolved via any method
+        // This is unusual - getOrCreatePatient should have created one
+        console.error('[POST /api/forms/submit] ⚠️ Could not resolve patientId via any method');
         console.error('[POST /api/forms/submit]   - callSid:', callSid);
         console.error('[POST /api/forms/submit]   - conversationId:', call.conversationId);
+        console.error('[POST /api/forms/submit]   - patientMode:', patientMode || 'NOT SET');
+        console.error('[POST /api/forms/submit]   - callerPhone:', callerPhone);
         console.error('[POST /api/forms/submit]   - formData:', formData);
 
         // Create alert for team to manually confirm patient details
@@ -539,16 +619,18 @@ export function registerForms(app: Express) {
             await storage.createAlert({
               tenantId,
               conversationId: call.conversationId || undefined,
-              reason: 'form_missing_patient_id',
+              reason: 'form_no_patient_resolved',
               payload: {
                 callSid,
+                conversationId: call.conversationId,
+                patientMode: patientMode || 'not_set',
                 formData,
                 callerPhone: call.fromNumber,
-                message: 'Intake form submitted without patient ID - manual confirmation required'
+                message: 'Intake form submitted but no patient could be resolved - manual creation required'
               },
               status: 'open'
             });
-            console.log('[POST /api/forms/submit] ✅ Created alert for manual review');
+            console.log('[POST /api/forms/submit] ✅ Created alert for manual patient creation');
           }
         } catch (alertError) {
           console.error('[POST /api/forms/submit] Failed to create alert:', alertError);
