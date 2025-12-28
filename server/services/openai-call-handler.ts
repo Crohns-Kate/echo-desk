@@ -2440,14 +2440,23 @@ export async function handleOpenAIConversation(
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
 
+            // CRITICAL: Validate patient_id before sending form
+            const patientIdForForm = appointment.patient_id;
+            if (!patientIdForForm) {
+              console.error('[OpenAICallHandler] ❌ CRITICAL: appointment.patient_id is missing!');
+              console.error('[OpenAICallHandler]   Appointment object:', JSON.stringify(appointment, null, 2));
+            }
+
             await sendNewPatientForm({
               to: callerPhone,
               token: formToken,
               clinicName: clinicName || 'Spinalogic',
-              clinikoPatientId: appointment.patient_id  // Link form to correct Cliniko patient
+              clinikoPatientId: patientIdForForm  // Link form to correct Cliniko patient
             });
             context.currentState.smsIntakeSent = true;
-            console.log('[OpenAICallHandler] ✅ New patient form SMS sent with patientId:', appointment.patient_id);
+            console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+            console.log('[OpenAICallHandler]   - Token:', formToken);
+            console.log('[OpenAICallHandler]   - PatientId:', patientIdForForm || 'MISSING!');
           } else if (isNewPatient) {
             console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
           }

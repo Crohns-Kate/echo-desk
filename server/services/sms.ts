@@ -203,6 +203,18 @@ export async function sendNewPatientForm(params: {
 }): Promise<void> {
   try {
     const publicUrl = env.PUBLIC_BASE_URL || 'http://localhost:3000';
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CRITICAL: Validate and log patientId - this is essential for Cliniko sync
+    // Without patientId, form submissions cannot update the correct patient
+    // ═══════════════════════════════════════════════════════════════════
+    if (!params.clinikoPatientId) {
+      console.warn('[SMS] ⚠️ WARNING: sendNewPatientForm called WITHOUT clinikoPatientId!');
+      console.warn('[SMS]   Token:', params.token);
+      console.warn('[SMS]   PatientName:', params.patientName || 'N/A');
+      console.warn('[SMS]   This form submission will NOT auto-update Cliniko');
+    }
+
     // Include patientId in URL if available for direct Cliniko update
     const patientIdParam = params.clinikoPatientId ? `?patientId=${params.clinikoPatientId}` : '';
     const link = `${publicUrl}/intake/${params.token}${patientIdParam}`;
@@ -218,9 +230,10 @@ export async function sendNewPatientForm(params: {
       to: params.to
     });
 
-    console.log('[SMS] Sent new patient form link to', params.to, params.patientName ? `for ${params.patientName}` : '');
+    console.log('[SMS] ✅ Sent new patient form link to', params.to, params.patientName ? `for ${params.patientName}` : '');
     console.log('[SMS]   Token:', params.token);
-    console.log('[SMS]   PatientId:', params.clinikoPatientId || 'NOT PROVIDED');
+    console.log('[SMS]   PatientId:', params.clinikoPatientId || '❌ NOT PROVIDED');
+    console.log('[SMS]   Link:', link);
   } catch (e) {
     console.error('[SMS] Failed to send new patient form link', e);
   }
