@@ -252,6 +252,7 @@ export async function getOrCreatePatient(params: {
   phone: string;
   fullName?: string;
   email?: string;
+  isFormSubmission?: boolean;
 }): Promise<ClinikoPatient> {
   return intGetOrCreatePatient(params) as Promise<ClinikoPatient>;
 }
