@@ -2277,19 +2277,25 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ⚠️ AI asked for time but tp is already set:', context.currentState.tp);
           console.log('[OpenAICallHandler]   Original reply:', finalResponse.reply);
 
-          // Check if we have real names yet
-          const allNamesValid = Array.isArray(context.currentState.gp) &&
-            context.currentState.gp.length >= 2 &&
-            context.currentState.gp.every((p: { name: string }) => isValidPersonName(p.name));
+          // Check if we have real names - use BOTH current state AND AI response
+          // AI may have just extracted names from this turn's utterance
+          const currentGp = finalResponse.state.gp || context.currentState.gp || [];
+          const allNamesValid = Array.isArray(currentGp) &&
+            currentGp.length >= 2 &&
+            currentGp.every((p: { name: string }) => isValidPersonName(p.name));
+
+          console.log('[OpenAICallHandler]   - gp from AI:', finalResponse.state.gp?.map((p: {name: string}) => p.name).join(', ') || 'none');
+          console.log('[OpenAICallHandler]   - gp from context:', context.currentState.gp?.map((p: {name: string}) => p.name).join(', ') || 'none');
+          console.log('[OpenAICallHandler]   - allNamesValid:', allNamesValid);
 
           if (allNamesValid) {
-            // We have names AND time - trigger booking
-            console.log('[OpenAICallHandler]   ✅ All info present - proceeding to book');
+            // We have names AND time - trigger booking/slot fetch
+            console.log('[OpenAICallHandler]   ✅ All info present - proceeding to check slots');
             finalResponse.reply = `Perfect, let me check what's available at ${context.currentState.tp} for you both.`;
             finalResponse.state.rs = true;  // Trigger slot fetch
           } else {
             // We have time but need names - ask for names only
-            const firstName = context.currentState.gp?.[0]?.name;
+            const firstName = currentGp?.[0]?.name;
             const firstNameValid = firstName && isValidPersonName(firstName);
             if (firstNameValid) {
               finalResponse.reply = `Thanks ${firstName.split(' ')[0]}. And what's the full name of the other person?`;
