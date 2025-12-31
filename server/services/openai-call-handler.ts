@@ -285,10 +285,10 @@ function extractTimePreferenceFromUtterance(utterance: string, existingDayContex
     dayInUtterance = 'sunday';
   }
 
-  // Use day from utterance, or fall back to existing context, or default to tomorrow
-  // CRITICAL: Don't default to "today" because if slots weren't found, we're likely
-  // looking at tomorrow or later
-  const effectiveDay = dayInUtterance || existingDayContext || 'tomorrow';
+  // Use day from utterance, or fall back to existing context, or default to TODAY
+  // CHANGED: Default to "today" since most callers want same-day appointments.
+  // If the requested time has passed, parseTimePreference will handle shifting to future.
+  const effectiveDay = dayInUtterance || existingDayContext || 'today';
 
   console.log('[extractTimePreference] Day detection: utterance="%s", existing="%s", effective="%s"',
     dayInUtterance || 'none', existingDayContext || 'none', effectiveDay);
@@ -314,21 +314,27 @@ function extractTimePreferenceFromUtterance(utterance: string, existingDayContex
 
   // ═══════════════════════════════════════════════
   // PATTERN 2: Time of day with optional day reference
-  // "this afternoon", "tomorrow morning", "today evening"
+  // "this afternoon", "tomorrow morning", "today evening", "the afternoon", "in the morning"
   // ═══════════════════════════════════════════════
   const timeOfDayMatch = lower.match(
-    /\b(this|today|tomorrow|next)?\s*(morning|afternoon|evening|arvo)\b/i
+    /\b(this|today|tomorrow|next|the|in the)?\s*(morning|afternoon|evening|arvo)\b/i
   );
 
   if (timeOfDayMatch) {
-    const dayRef = timeOfDayMatch[1] || 'today';
+    let dayRef = timeOfDayMatch[1] || null;
     let timeOfDay = timeOfDayMatch[2];
 
     // Normalize "arvo" to "afternoon" (Australian slang)
     if (timeOfDay === 'arvo') timeOfDay = 'afternoon';
 
     // "this afternoon" → "today afternoon"
-    const normalizedDay = dayRef === 'this' ? 'today' : dayRef;
+    // "the afternoon" / "in the morning" → use effectiveDay (from utterance or context)
+    let normalizedDay: string;
+    if (dayRef === 'this' || dayRef === 'the' || dayRef === 'in the' || !dayRef) {
+      normalizedDay = effectiveDay;  // Use detected day or default
+    } else {
+      normalizedDay = dayRef;
+    }
 
     console.log('[extractTimePreference] Matched time-of-day pattern:', `${normalizedDay} ${timeOfDay}`);
     return `${normalizedDay} ${timeOfDay}`;
@@ -806,8 +812,16 @@ function parseTimePreference(
     end = baseDay.hour(18).minute(0);
   }
 
-  // If start time is in the past, move to now
-  if (start.isBefore(now)) {
+  // If the ENTIRE range is in the past (end time has passed), shift to tomorrow
+  // This handles "today afternoon" when it's already evening
+  if (end.isBefore(now)) {
+    console.log('[parseTimePreference] ⏰ Requested time range is entirely in the past - shifting to tomorrow');
+    start = start.add(1, 'day');
+    end = end.add(1, 'day');
+  }
+  // If only start is in the past (but end is still future), move start to now
+  else if (start.isBefore(now)) {
+    console.log('[parseTimePreference] Start time in past, adjusting to now');
     start = now;
   }
 
