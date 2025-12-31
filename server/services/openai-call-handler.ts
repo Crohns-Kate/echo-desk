@@ -294,6 +294,41 @@ function extractTimePreferenceFromUtterance(utterance: string, existingDayContex
     dayInUtterance || 'none', existingDayContext || 'none', effectiveDay);
 
   // ═══════════════════════════════════════════════
+  // PATTERN 0 (STT QUIRK): Handle transcription without colon
+  // e.g., "100 p.m." → "1:00 p.m.", "230 pm" → "2:30 pm"
+  // STT often drops the colon in times like "1:00"
+  // ═══════════════════════════════════════════════
+  const sttTimeMatch = lower.match(
+    /\b(?:at|around|about)?\s*(\d{3,4})\s*(a\.?m\.?|p\.?m\.?)\b/i
+  );
+
+  if (sttTimeMatch) {
+    const digits = sttTimeMatch[1];
+    const meridiem = sttTimeMatch[2].toLowerCase().replace(/\./g, '');
+    let hour: number;
+    let minute: string;
+
+    if (digits.length === 3) {
+      // "100" → 1:00, "230" → 2:30, "945" → 9:45
+      hour = parseInt(digits[0], 10);
+      minute = digits.slice(1);
+    } else {
+      // "1000" → 10:00, "1130" → 11:30, "1245" → 12:45
+      hour = parseInt(digits.slice(0, 2), 10);
+      minute = digits.slice(2);
+    }
+
+    // Validate the parsed time makes sense
+    const minuteNum = parseInt(minute, 10);
+    if (hour >= 1 && hour <= 12 && minuteNum >= 0 && minuteNum <= 59) {
+      const timeStr = `${hour}:${minute}${meridiem}`;
+      console.log('[extractTimePreference] Matched STT quirk time "%s" → "%s %s"', sttTimeMatch[0], effectiveDay, timeStr);
+      return `${effectiveDay} ${timeStr}`;
+    }
+    // If not valid, fall through to other patterns
+  }
+
+  // ═══════════════════════════════════════════════
   // PATTERN 1 (HIGHEST PRIORITY): Specific time with explicit meridiem
   // e.g., "4pm", "4:30pm", "at 3 p.m.", "around 10:00am"
   // MUST have am/pm to be considered specific
