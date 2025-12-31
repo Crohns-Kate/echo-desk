@@ -1544,6 +1544,8 @@ export async function handleOpenAIConversation(
         'ok thanks', 'okay thanks', 'ok thank you', 'okay thank you', 'perfect thanks',
         'great thanks', 'great thank you', 'sounds good bye', 'sounds good goodbye',
         'nothing', 'no i\'m good', 'no im good', 'alright bye', 'alright goodbye',
+        // Simple "thanks" / "thank you" - common way to signal call is complete
+        'thanks', 'thank you', 'cheers',
         // "OK that's it" variations - common closing phrase
         "ok that's it", "ok thats it", "okay that's it", "okay thats it",
         "ok that's all", "ok thats all", "okay that's all", "okay thats all",
@@ -3059,6 +3061,45 @@ export async function handleOpenAIConversation(
 
           console.log('[TerminalFaq] Modified reply to offer closing:', finalResponse.reply);
         }
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // 6e. TERMINAL STATE AUTO-HANGUP: If AI responds with farewell, end the call
+    // This prevents the "All set. Thanks for calling." loop where AI says goodbye
+    // but the gather keeps listening for more input.
+    // ═══════════════════════════════════════════════
+    if (isTerminalState || context.currentState.terminalGuard) {
+      const replyLowerForFarewell = finalResponse.reply.toLowerCase();
+
+      // Detect if AI's response is primarily a farewell/closing statement
+      const farewellPhrases = [
+        'all set', 'thanks for calling', 'thank you for calling',
+        'goodbye', 'bye', 'take care', 'have a lovely day', 'have a great day',
+        'have a nice day', 'have a wonderful day', 'see you soon', 'see you then',
+        'we\'re all done', "we're all done", 'all done', 'looking forward to seeing you'
+      ];
+
+      const isFarewellResponse = farewellPhrases.some(phrase => replyLowerForFarewell.includes(phrase));
+
+      // Also check if the response is very short and contains no question (likely a closing statement)
+      const hasQuestion = replyLowerForFarewell.includes('?');
+      const isShortClosing = finalResponse.reply.length < 80 && !hasQuestion;
+
+      if (isFarewellResponse && (isShortClosing || replyLowerForFarewell.includes('goodbye'))) {
+        console.log('[TerminalAutoHangup] 🚪 AI response is farewell in terminal state - ending call');
+        console.log('[TerminalAutoHangup]   Reply:', finalResponse.reply);
+
+        // Ensure we say goodbye if not already in the response
+        let farewellReply = finalResponse.reply;
+        if (!replyLowerForFarewell.includes('goodbye') && !replyLowerForFarewell.includes('bye')) {
+          farewellReply = farewellReply.replace(/[.!]?\s*$/, '') + '. Goodbye!';
+        }
+
+        saySafe(vr, farewellReply);
+        vr.hangup();
+        await saveConversationContext(callSid, context);
+        return vr;
       }
     }
 
