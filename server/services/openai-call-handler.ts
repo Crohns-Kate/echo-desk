@@ -1790,11 +1790,15 @@ export async function handleOpenAIConversation(
           console.log('[GroupBookingExecutor] 📋 Proposing times before booking');
 
           // Use first names only for natural speech
+          // Add comma after name for clearer TTS pronunciation (prevents "Jim" sounding like "gym")
           const getFirstName = (fullName: string) => fullName.split(' ')[0];
           const proposedSummary = groupPatients.map((p: { name: string }, i: number) => {
             const slot = context.availableSlots?.[i];
-            return `${getFirstName(p.name)} at ${slot?.speakable || 'an available time'}`;
-          }).join(' and ');
+            const firstName = getFirstName(p.name);
+            return `${firstName}, at ${slot?.speakable || 'an available time'}`;
+          }).join(', and ');
+
+          console.log('[GroupBookingExecutor] 📣 Proposing:', proposedSummary);
 
           context.currentState.groupBookingProposed = true;
           await saveConversationContext(callSid, context);
@@ -1812,7 +1816,7 @@ export async function handleOpenAIConversation(
             actionOnEmptyResult: true,
             hints: 'yes, yeah, sounds good, that works, no, different time'
           });
-          saySafe(gather, `I can book ${proposedSummary}. Does that work?`);
+          saySafe(gather, `I can book ${proposedSummary}. Does that work for you?`);
 
           return vr;
         }
@@ -1973,10 +1977,12 @@ export async function handleOpenAIConversation(
 
           // Generate confirmation TwiML - bypass AI entirely
           // IMPORTANT: Use first names only for natural speech (not "John Smith and Matthew Smith")
+          // Add comma after name for clearer TTS pronunciation (prevents "Jim" sounding like "gym")
           const getFirstName = (fullName: string) => fullName.split(' ')[0];
           const bookedFirstNames = groupBookingResults.map(r => getFirstName(r.name)).join(' and ');
-          const bookedSummary = groupBookingResults.map(r => `${getFirstName(r.name)} at ${r.time}`).join(' and ');
-          const confirmationMessage = `Perfect! You're both booked: ${bookedSummary}. I'm texting you the details and forms now. Anything else?`;
+          const bookedSummary = groupBookingResults.map(r => `${getFirstName(r.name)}, at ${r.time}`).join(', and ');
+          const confirmationMessage = `Perfect! You're both booked. That's ${bookedSummary}. I'm texting you the details and forms now. Anything else?`;
+          console.log('[GroupBookingExecutor] 📣 Confirmation:', confirmationMessage);
 
           const gather = vr.gather({
             input: ['speech'],

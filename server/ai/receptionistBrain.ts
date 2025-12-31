@@ -618,7 +618,9 @@ STEP 3: Collect time preference (one time for all)
 STEP 4: Offer slots and book
 - Once you have all names + time preference, set rs=true
 - Backend fetches slots, then book all appointments
-- Confirm: "Great! I've booked [time1] for you and [time2] for [other name]. You're all set!"
+- ⚠️ CRITICAL: Use the EXACT names from gp[] when confirming - do NOT paraphrase or change spelling
+- Confirm: "Great! I've booked [time1] for [gp[0].name] and [time2] for [gp[1].name]. You're all set!"
+- Example: If gp contains {"name": "Jim Brown"}, say "Jim" NOT "gym" or any other variation
 
 For NEW patients in a group:
 - "I'm sending you a text with forms to confirm everyone's details."
