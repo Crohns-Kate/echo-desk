@@ -508,12 +508,14 @@ export function registerForms(app: Express) {
         } else {
           // patientMode is 'new' or undefined - use getOrCreatePatient
           // This creates a new patient if not found, or returns existing if phone matches
-          console.log('[POST /api/forms/submit] 🆕 patientMode=', patientMode || 'undefined', '- using getOrCreatePatient...');
+          // IMPORTANT: isFormSubmission=true allows name/email updates since this is verified user input
+          console.log('[POST /api/forms/submit] 🆕 patientMode=', patientMode || 'undefined', '- using getOrCreatePatient (isFormSubmission=true)...');
           try {
             const patient = await getOrCreatePatient({
               phone: callerPhone,
               fullName: `${firstName} ${lastName}`,
-              email: email
+              email: email,
+              isFormSubmission: true
             });
             if (patient) {
               effectivePatientId = patient.id;

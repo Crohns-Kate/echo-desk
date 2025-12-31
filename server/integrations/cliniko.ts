@@ -304,36 +304,66 @@ async function updatePatient(patientId: string, updates: {
  * Check if patient needs updating and update if necessary
  * Returns true if update was performed
  *
- * IMPORTANT: We NEVER update names here to prevent data corruption.
- * Name updates should ONLY happen through explicit form submission.
+ * @param isFormSubmission - If true, this is from a verified web form and
+ *   name/email updates are allowed. If false, only missing emails are added
+ *   to prevent voice transcription errors from corrupting data.
  */
 async function checkAndUpdatePatient(
   patient: any,
   newFullName?: string,
-  newEmail?: string | null
+  newEmail?: string | null,
+  isFormSubmission: boolean = false
 ): Promise<boolean> {
-  const updates: { email?: string } = {};
+  const updates: { first_name?: string; last_name?: string; email?: string } = {};
 
-  // CRITICAL: DO NOT update names through this function
-  // Names should only be updated through explicit user form submission
-  // Updating names here can corrupt ALL existing appointments for the patient
+  // Name updates: Only allow from verified form submissions
   if (newFullName && newFullName.trim()) {
-    console.log('[Cliniko] checkAndUpdatePatient: Name provided but NOT updating');
-    console.log('[Cliniko]   - Existing name:', patient.first_name, patient.last_name);
-    console.log('[Cliniko]   - New name (ignored):', newFullName);
-    console.log('[Cliniko]   - Reason: Names only updated via form submission to prevent data corruption');
+    if (isFormSubmission) {
+      // Form submission - user explicitly entered their name, trust it
+      const nameParts = newFullName.trim().split(/\s+/);
+      const firstName = nameParts[0];
+      const lastName = nameParts.slice(1).join(' ') || '';
+
+      const existingFirst = (patient.first_name || '').trim();
+      const existingLast = (patient.last_name || '').trim();
+
+      if (firstName !== existingFirst || lastName !== existingLast) {
+        console.log('[Cliniko] checkAndUpdatePatient: FORM SUBMISSION - updating name');
+        console.log('[Cliniko]   - Existing name:', existingFirst, existingLast);
+        console.log('[Cliniko]   - New name:', firstName, lastName);
+        updates.first_name = firstName;
+        if (lastName) updates.last_name = lastName;
+      }
+    } else {
+      // Voice/API call - DO NOT update names (prevents transcription errors from corrupting data)
+      console.log('[Cliniko] checkAndUpdatePatient: Name provided but NOT updating (not a form submission)');
+      console.log('[Cliniko]   - Existing name:', patient.first_name, patient.last_name);
+      console.log('[Cliniko]   - New name (ignored):', newFullName);
+      console.log('[Cliniko]   - Reason: Names only updated via form submission to prevent data corruption');
+    }
   }
 
-  // Check if email needs updating (ONLY if currently missing)
+  // Email updates
   if (newEmail) {
     const sanitized = sanitizeEmail(newEmail);
     const existingEmail = (patient.email || '').trim().toLowerCase();
+    const sanitizedLower = sanitized?.toLowerCase() || '';
 
-    // Only update email if patient doesn't have one yet
-    if (sanitized && !existingEmail) {
-      console.log('[Cliniko] Email update needed:');
-      console.log('[Cliniko]   Patient has no email, adding:', sanitized);
-      updates.email = sanitized;
+    if (isFormSubmission) {
+      // Form submission - update email if different (user explicitly provided it)
+      if (sanitized && sanitizedLower !== existingEmail) {
+        console.log('[Cliniko] checkAndUpdatePatient: FORM SUBMISSION - updating email');
+        console.log('[Cliniko]   - Existing email:', existingEmail || '(none)');
+        console.log('[Cliniko]   - New email:', sanitized);
+        updates.email = sanitized;
+      }
+    } else {
+      // Voice/API call - only add email if patient doesn't have one
+      if (sanitized && !existingEmail) {
+        console.log('[Cliniko] Email update needed:');
+        console.log('[Cliniko]   Patient has no email, adding:', sanitized);
+        updates.email = sanitized;
+      }
     }
   }
 
@@ -409,15 +439,88 @@ export async function findPatientByPhone(phoneRaw: string) {
   }
 }
 
+/**
+ * Check if two names are similar enough to be the same person.
+ * Uses a simple first-name + last-name comparison with fuzzy tolerance.
+ */
+function namesAreSimilar(name1: string, name2: string): boolean {
+  const normalize = (s: string) => s.toLowerCase().trim().replace(/\s+/g, ' ');
+  const n1 = normalize(name1);
+  const n2 = normalize(name2);
+
+  // Exact match
+  if (n1 === n2) return true;
+
+  // Split into parts
+  const parts1 = n1.split(' ').filter(p => p.length > 0);
+  const parts2 = n2.split(' ').filter(p => p.length > 0);
+
+  // If either has no parts, can't compare
+  if (parts1.length === 0 || parts2.length === 0) return false;
+
+  // Check if first names match (allowing for typos - 2 char difference)
+  const first1 = parts1[0];
+  const first2 = parts2[0];
+  const firstNameSimilar = first1 === first2 ||
+    (first1.length > 2 && first2.length > 2 && levenshteinDistance(first1, first2) <= 2);
+
+  // If first names are completely different, not the same person
+  if (!firstNameSimilar) {
+    console.log('[Cliniko] namesAreSimilar: First names too different:', first1, 'vs', first2);
+    return false;
+  }
+
+  // First names match - if both have last names, check those too
+  if (parts1.length > 1 && parts2.length > 1) {
+    const last1 = parts1[parts1.length - 1];
+    const last2 = parts2[parts2.length - 1];
+    const lastNameSimilar = last1 === last2 ||
+      (last1.length > 2 && last2.length > 2 && levenshteinDistance(last1, last2) <= 2);
+    return lastNameSimilar;
+  }
+
+  // Only first names provided - consider similar if first names match
+  return firstNameSimilar;
+}
+
+/**
+ * Simple Levenshtein distance for typo detection
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
 // --- Upsert/Create patient ---
 export async function getOrCreatePatient({
   fullName,
   email: emailRaw,
-  phone: phoneRaw
+  phone: phoneRaw,
+  isFormSubmission = false
 }: {
   fullName?: string;
   email?: string;
   phone?: string;
+  isFormSubmission?: boolean;
 }) {
   const email = sanitizeEmail(emailRaw || "");
   const phone = sanitizePhoneE164AU(phoneRaw || "");
@@ -428,6 +531,7 @@ export async function getOrCreatePatient({
   console.log('[Cliniko]   - email (sanitized):', email);
   console.log('[Cliniko]   - phone (raw):', phoneRaw);
   console.log('[Cliniko]   - phone (sanitized):', phone);
+  console.log('[Cliniko]   - isFormSubmission:', isFormSubmission);
 
   // Try finders first
   if (email) {
@@ -438,15 +542,35 @@ export async function getOrCreatePatient({
       console.log('[Cliniko]   - Existing name:', p.first_name, p.last_name);
       console.log('[Cliniko]   - Existing email:', p.email);
 
-      // Check if we need to update name or email
-      const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
-      if (needsUpdate) {
-        // Refetch the updated patient
-        const updated = await findPatientByEmail(email);
-        console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
-        return updated || p;
+      // CRITICAL: Check if names are similar before updating
+      // If names are very different, this is likely a different person sharing the email
+      if (fullName && fullName.trim()) {
+        const existingFullName = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+        const similar = namesAreSimilar(existingFullName, fullName);
+
+        if (!similar) {
+          console.log('[Cliniko] ⚠️ Found patient by email BUT name mismatch:');
+          console.log('[Cliniko]   Existing:', existingFullName);
+          console.log('[Cliniko]   New:', fullName);
+          console.log('[Cliniko]   → Creating NEW patient to avoid data corruption');
+          // Don't return p - fall through to create new patient
+        } else {
+          console.log('[Cliniko] Names are similar enough - using existing patient');
+          // Names match - check if we need to update
+          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+          if (needsUpdate) {
+            // Refetch the updated patient
+            const updated = await findPatientByEmail(email);
+            console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
+            return updated || p;
+          }
+          return p;
+        }
+      } else {
+        // No name provided - return existing patient but don't update
+        console.log('[Cliniko] No name provided to verify - returning existing patient');
+        return p;
       }
-      return p;
     }
   }
   if (phone) {
@@ -473,7 +597,7 @@ export async function getOrCreatePatient({
           console.log('[Cliniko] Found existing patient by phone with matching name:', p.id);
 
           // Update patient if needed (e.g., email was missing or changed)
-          const needsUpdate = await checkAndUpdatePatient(p, fullName, email);
+          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
           if (needsUpdate && phone) {
             // Refetch the updated patient
             const updated = await findPatientByPhone(phone);
