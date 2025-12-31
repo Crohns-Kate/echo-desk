@@ -339,11 +339,25 @@ export function registerForms(app: Express) {
    * Accepts optional clinikoPatientId for direct patient updates
    */
   app.post("/api/forms/submit", async (req: Request, res: Response) => {
+    console.log('');
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('[POST /api/forms/submit] 📋 FORM SUBMISSION RECEIVED');
+    console.log('[POST /api/forms/submit] Timestamp:', new Date().toISOString());
+    console.log('[POST /api/forms/submit] Body keys:', Object.keys(req.body || {}));
+    console.log('═══════════════════════════════════════════════════════════════');
+
     try {
       const { token, firstName, lastName, email, phone, clinikoPatientId, isEdit } = req.body;
 
       // Validate inputs
       if (!token || !firstName || !lastName || !email || !phone) {
+        console.log('[POST /api/forms/submit] ❌ Missing required fields:', {
+          hasToken: !!token,
+          hasFirstName: !!firstName,
+          hasLastName: !!lastName,
+          hasEmail: !!email,
+          hasPhone: !!phone
+        });
         return res.status(400).json({ error: 'Missing required fields' });
       }
 
@@ -470,6 +484,10 @@ export function registerForms(app: Express) {
       let patientResolutionMethod = effectivePatientId ? 'explicit' : 'none';
 
       // Step 2: If no explicit patientId, try lookup based on patientMode
+      if (!effectivePatientId && !callerPhone) {
+        console.log('[POST /api/forms/submit] ⚠️ WARNING: No callerPhone available (call.fromNumber is empty)');
+        console.log('[POST /api/forms/submit]   → Cannot perform phone-based patient lookup');
+      }
       if (!effectivePatientId && callerPhone) {
         if (patientMode === 'existing') {
           // SAFE: Caller identified as existing patient - phone lookup is appropriate
