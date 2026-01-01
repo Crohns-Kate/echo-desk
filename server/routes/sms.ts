@@ -88,26 +88,22 @@ export function registerSMS(app: Express) {
 
             if (patient && patient.id) {
               console.log('[SMS_INBOUND] 🔍 Found patient in Cliniko:', patient.id);
+              console.log('[SMS_INBOUND]   - Patient name:', patient.first_name, patient.last_name);
 
-              // Only update if this is a returning patient, not a new patient
-              // Check if patientMode is 'existing' to avoid overwriting wrong records
-              const patientMode = existingContext.patientMode;
+              // UPDATE: If we found the patient by phone in Cliniko, they exist and should be updated.
+              // The patientMode check was wrong - by the time the patient replies to the SMS,
+              // the booking has already been made and the patient has been created in Cliniko.
+              // So even if patientMode was 'new' at the start of the call, the patient exists now.
+              await updateClinikoPatientEmail(patient.id, possibleEmail);
+              console.log('[SMS_INBOUND] ✅ Updated Cliniko patient email successfully');
 
-              if (patientMode === 'new') {
-                console.log('[SMS_INBOUND] ⚠️  Patient is NEW - skipping Cliniko update to prevent data corruption');
-                console.log('[SMS_INBOUND]   Email will be set when patient record is created during booking');
-              } else {
-                await updateClinikoPatientEmail(patient.id, possibleEmail);
-                console.log('[SMS_INBOUND] ✅ Updated Cliniko patient email successfully');
+              await sendEmailUpdateConfirmation({
+                to: from,
+                email: possibleEmail,
+                clinicName: 'Echo Desk'
+              });
 
-                await sendEmailUpdateConfirmation({
-                  to: from,
-                  email: possibleEmail,
-                  clinicName: 'Echo Desk'
-                });
-
-                console.log('[SMS_INBOUND] ✅ Sent confirmation SMS');
-              }
+              console.log('[SMS_INBOUND] ✅ Sent confirmation SMS');
             } else {
               console.log('[SMS_INBOUND] ⚠️  Patient not found in Cliniko');
               console.log('[SMS_INBOUND]   Email saved to context - will be used during appointment booking');
