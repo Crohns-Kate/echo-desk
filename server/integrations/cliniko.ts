@@ -583,20 +583,24 @@ export async function getOrCreatePatient({
 
       // Check if the name matches (if fullName is provided)
       if (fullName && fullName.trim()) {
-        const existingFullName = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
-        const newFullName = fullName.trim().toLowerCase();
+        const existingFullName = `${p.first_name || ''} ${p.last_name || ''}`.trim();
 
-        // If names don't match, this is a different person using the same phone
-        if (existingFullName !== newFullName) {
-          console.log('[Cliniko] Found patient by phone BUT name mismatch:');
+        // Use namesAreSimilar() for fuzzy matching (allows typos and variations)
+        // This matches the behavior of the email lookup path for consistency
+        const similar = namesAreSimilar(existingFullName, fullName);
+
+        if (!similar) {
+          console.log('[Cliniko] ⚠️ Found patient by phone BUT name mismatch:');
           console.log('[Cliniko]   Existing:', existingFullName);
-          console.log('[Cliniko]   New:', newFullName);
+          console.log('[Cliniko]   New:', fullName);
           console.log('[Cliniko]   → Creating NEW patient for different person');
           // Don't return p - fall through to create new patient
         } else {
-          console.log('[Cliniko] Found existing patient by phone with matching name:', p.id);
+          console.log('[Cliniko] Found existing patient by phone with similar name:', p.id);
+          console.log('[Cliniko]   Existing:', existingFullName);
+          console.log('[Cliniko]   New:', fullName);
 
-          // Update patient if needed (e.g., email was missing or changed)
+          // Update patient if needed (e.g., email was missing, name spelling corrected)
           const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
           if (needsUpdate && phone) {
             // Refetch the updated patient
