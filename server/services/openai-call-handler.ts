@@ -724,6 +724,71 @@ function extractTwoNamesFromUtterance(utterance: string): Array<{ name: string; 
   return null;
 }
 
+/**
+ * Extract a SINGLE name from an utterance.
+ * Used in group booking mode when the user provides one name at a time.
+ * Examples:
+ * - "Chris Dodds" → { name: "Chris Dodds" }
+ * - "My name is John Smith" → { name: "John Smith" }
+ * - "It's Chris, Dodds" → { name: "Chris Dodds" }
+ */
+function extractSingleNameFromUtterance(utterance: string): { name: string; relation?: string } | null {
+  const cleaned = utterance.trim();
+
+  // Skip if utterance is too short or empty
+  if (cleaned.length < 3) return null;
+
+  console.log('[extractSingleName] Analyzing utterance:', cleaned);
+
+  // Normalize: "Chris, Dodds" → "Chris Dodds" (remove comma between name parts)
+  const normalized = cleaned.replace(/,\s*/, ' ');
+
+  // Pattern 1: Full name "FirstName LastName"
+  const fullNamePattern = /\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/i;
+  const fullNameMatch = normalized.match(fullNamePattern);
+
+  if (fullNameMatch) {
+    const name = `${fullNameMatch[1]} ${fullNameMatch[2]}`;
+    if (isValidPersonName(name)) {
+      console.log('[extractSingleName] ✅ Matched full name:', name);
+      return { name, relation: 'caller' };
+    }
+  }
+
+  // Pattern 2: Prefixed with introduction - "My name is X Y" / "I'm X Y" / "It's X Y"
+  const introPattern = /(?:my name is|i'm|i am|name is|it's|its)\s+([A-Z][a-z]+)\s+([A-Z][a-z]+)/i;
+  const introMatch = normalized.match(introPattern);
+
+  if (introMatch) {
+    const name = `${introMatch[1]} ${introMatch[2]}`;
+    if (isValidPersonName(name)) {
+      console.log('[extractSingleName] ✅ Matched intro pattern:', name);
+      return { name, relation: 'caller' };
+    }
+  }
+
+  // Pattern 3: Just two capitalized words (lenient matching for STT output)
+  // Handles: "chris dodds" when STT doesn't capitalize properly
+  const lenientPattern = /\b(\w+)\s+(\w+)\b/i;
+  const lenientMatch = normalized.match(lenientPattern);
+
+  if (lenientMatch) {
+    // Capitalize first letter of each word
+    const first = lenientMatch[1].charAt(0).toUpperCase() + lenientMatch[1].slice(1).toLowerCase();
+    const last = lenientMatch[2].charAt(0).toUpperCase() + lenientMatch[2].slice(1).toLowerCase();
+    const name = `${first} ${last}`;
+
+    // Only accept if it looks like a valid name (not common words)
+    if (isValidPersonName(name) && lenientMatch[1].length >= 2 && lenientMatch[2].length >= 2) {
+      console.log('[extractSingleName] ✅ Matched lenient pattern:', name);
+      return { name, relation: 'caller' };
+    }
+  }
+
+  console.log('[extractSingleName] ❌ No single name pattern found');
+  return null;
+}
+
 // ═══════════════════════════════════════════════
 // Day Context Extraction from Time Preference
 // ═══════════════════════════════════════════════
@@ -2195,6 +2260,43 @@ export async function handleOpenAIConversation(
           // Preserve existing gp
           finalResponse.state.gp = context.currentState.gp;
           console.log('[OpenAICallHandler]   Preserved existing gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
+        }
+      }
+
+      // ═══════════════════════════════════════════════
+      // POST-PROCESSING: Extract names from utterance if AI missed them
+      // This handles cases where AI returns gp:[] but user clearly said a name
+      // ═══════════════════════════════════════════════
+      const currentGpForExtraction = finalResponse.state.gp || context.currentState.gp || [];
+      const hasValidNamesInGp = Array.isArray(currentGpForExtraction) &&
+        currentGpForExtraction.some((p: { name: string }) => p.name && isValidPersonName(p.name));
+
+      if (!hasValidNamesInGp && userUtterance && userUtterance.trim().length > 3) {
+        console.log('[OpenAICallHandler] 📝 AI returned empty/invalid gp - attempting name extraction from utterance');
+
+        // Try to extract two names first (e.g., "John Smith and Jane Doe")
+        const twoNames = extractTwoNamesFromUtterance(userUtterance);
+        if (twoNames && twoNames.length >= 2) {
+          console.log('[OpenAICallHandler] ✅ POST-PROC: Extracted two names:', twoNames.map(p => p.name).join(', '));
+          finalResponse.state.gp = twoNames;
+        } else {
+          // Try to extract a single name
+          const singleName = extractSingleNameFromUtterance(userUtterance);
+          if (singleName) {
+            console.log('[OpenAICallHandler] ✅ POST-PROC: Extracted single name:', singleName.name);
+            // Add to existing gp (don't replace valid entries)
+            const existingValidNames = (currentGpForExtraction || []).filter(
+              (p: { name: string }) => p.name && isValidPersonName(p.name)
+            );
+            // Check if this name is already in the list
+            const alreadyExists = existingValidNames.some(
+              (p: { name: string }) => p.name.toLowerCase() === singleName.name.toLowerCase()
+            );
+            if (!alreadyExists) {
+              finalResponse.state.gp = [...existingValidNames, singleName];
+              console.log('[OpenAICallHandler]   Updated gp:', finalResponse.state.gp.map((p: {name: string}) => p.name).join(', '));
+            }
+          }
         }
       }
 

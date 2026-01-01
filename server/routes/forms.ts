@@ -442,15 +442,62 @@ export function registerForms(app: Express) {
         }
       };
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // GROUP BOOKING BYPASS: Populate gp array with form data immediately
+      // When a verified form is submitted, we ALWAYS update gp with this name
+      // This bypasses any AI state protection since form input is authoritative
+      // ═══════════════════════════════════════════════════════════════════════
+      const currentState = latestContext.currentState || {};
+      const isGroupBooking = currentState.gb === true;
+      const formFullName = `${firstName} ${lastName}`.trim();
+
+      let updatedGp = currentState.gp || [];
+      let formAddedToGp = false;
+
+      if (formFullName && formFullName.length > 2) {
+        // Check if this name is already in gp (case-insensitive match)
+        const alreadyInGp = updatedGp.some(
+          (p: { name: string }) => p.name && p.name.toLowerCase() === formFullName.toLowerCase()
+        );
+
+        if (!alreadyInGp) {
+          // Add the form name to gp
+          updatedGp = [...updatedGp, { name: formFullName, relation: 'caller', fromForm: true }];
+          formAddedToGp = true;
+          console.log('[POST /api/forms/submit] ✅ FORM BYPASS: Added name to gp:', formFullName);
+          console.log('[POST /api/forms/submit]   Updated gp:', updatedGp.map((p: { name: string }) => p.name).join(', '));
+        } else {
+          // Update the existing entry with fromForm flag
+          updatedGp = updatedGp.map((p: { name: string }) =>
+            p.name && p.name.toLowerCase() === formFullName.toLowerCase()
+              ? { ...p, fromForm: true }
+              : p
+          );
+          console.log('[POST /api/forms/submit] ℹ️ Name already in gp, marked as fromForm:', formFullName);
+        }
+      }
+
+      // Always set hasRealNames when form is submitted (form data is authoritative)
+      const updatedCurrentState = {
+        ...currentState,
+        gp: updatedGp,
+        hasRealNamesFromForm: true,
+        // If we just added the first name and this looks like a group booking, set gb=true
+        gb: isGroupBooking || (formAddedToGp && updatedGp.length >= 1) ? true : currentState.gb
+      };
+
       await storage.updateConversation(call.conversationId, {
         context: {
           ...latestContext,  // Use LATEST context from DB
           formToken: token,  // Track latest token (backward compatibility)
           formData: formData,  // Keep legacy field (backward compatibility)
           formSubmissions: updatedFormSubmissions,  // Per-token submissions with race condition fix
-          formSubmittedAt: new Date().toISOString()
+          formSubmittedAt: new Date().toISOString(),
+          currentState: updatedCurrentState  // Updated state with gp populated
         }
       });
+
+      console.log('[POST /api/forms/submit] 📋 Saved context with updated gp:', updatedGp.length, 'entries');
 
       console.log('[POST /api/forms/submit] ✅ Form data stored for token:', token, isEdit ? '(EDIT)' : '(NEW)');
       console.log('[POST /api/forms/submit] Total form submissions:', Object.keys(updatedFormSubmissions).length);
