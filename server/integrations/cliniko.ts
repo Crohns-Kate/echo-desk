@@ -442,8 +442,9 @@ export async function findPatientByPhone(phoneRaw: string) {
 /**
  * Check if two names are similar enough to be the same person.
  * Uses a simple first-name + last-name comparison with fuzzy tolerance.
+ * Exported for use in forms.ts to handle group booking name matching.
  */
-function namesAreSimilar(name1: string, name2: string): boolean {
+export function namesAreSimilar(name1: string, name2: string): boolean {
   const normalize = (s: string) => s.toLowerCase().trim().replace(/\s+/g, ' ');
   const n1 = normalize(name1);
   const n2 = normalize(name2);
