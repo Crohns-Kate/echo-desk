@@ -137,8 +137,10 @@ export interface CompactCallState {
    * gp = group_patients: list of people to book for
    * Each entry has name (required) and relation (optional)
    * e.g. [{name: "John Smith", relation: "self"}, {name: "Tommy Smith", relation: "son"}]
+   * fromForm = true if this entry came from a verified web form
+   * clinikoPatientId = Cliniko patient ID if already created/linked
    */
-  gp?: Array<{ name: string; relation?: string }>;
+  gp?: Array<{ name: string; relation?: string; fromForm?: boolean; clinikoPatientId?: string }>;
 
   /**
    * groupBookingComplete = number of group members booked so far
@@ -151,6 +153,12 @@ export interface CompactCallState {
    * Set BEFORE booking to ensure user confirms times before we create appointments
    */
   groupBookingProposed?: boolean;
+
+  /**
+   * hasRealNamesFromForm = true when names in gp[] came from verified form submissions
+   * Form data is authoritative and should never be overwritten by AI state
+   */
+  hasRealNamesFromForm?: boolean;
 
   /**
    * awaitingNewGroupBookingTime = true when no slots found for group booking
