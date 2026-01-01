@@ -642,7 +642,7 @@ export function registerForms(app: Express) {
         console.error('[POST /api/forms/submit] ⚠️ Could not resolve patientId via any method');
         console.error('[POST /api/forms/submit]   - callSid:', callSid);
         console.error('[POST /api/forms/submit]   - conversationId:', call.conversationId);
-        console.error('[POST /api/forms/submit]   - patientMode:', patientMode || 'NOT SET');
+        console.error('[POST /api/forms/submit]   - patientMode: N/A (simplified flow)');
         console.error('[POST /api/forms/submit]   - callerPhone:', callerPhone);
         console.error('[POST /api/forms/submit]   - formData:', formData);
 
@@ -660,7 +660,7 @@ export function registerForms(app: Express) {
               payload: {
                 callSid,
                 conversationId: call.conversationId,
-                patientMode: patientMode || 'not_set',
+                patientMode: 'not_applicable',
                 formData,
                 callerPhone: call.fromNumber,
                 message: 'Intake form submitted but no patient could be resolved - manual creation required'
