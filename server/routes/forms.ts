@@ -628,10 +628,58 @@ export function registerForms(app: Express) {
           console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
           console.log('[POST /api/forms/submit]   - method:', patientResolutionMethod);
 
+          // ═══════════════════════════════════════════════════════════════════════
+          // CRITICAL: Save clinikoPatientId back to conversation context's gp array
+          // This ensures the booking flow knows which Cliniko patient to use
+          // ═══════════════════════════════════════════════════════════════════════
+          try {
+            const latestCtx = await storage.getConversation(call.conversationId);
+            const ctxData = (latestCtx?.context || {}) as any;
+            const currentGp = ctxData.currentState?.gp || [];
+            const formFullName = `${firstName} ${lastName}`.trim().toLowerCase();
+
+            // Find and update the matching person in gp with their clinikoPatientId
+            const updatedGpWithId = currentGp.map((p: { name: string; clinikoPatientId?: string }) => {
+              if (p.name && p.name.toLowerCase() === formFullName) {
+                console.log('[POST /api/forms/submit] 📌 Linking clinikoPatientId to gp entry:', p.name, '→', effectivePatientId);
+                return { ...p, clinikoPatientId: effectivePatientId, fromForm: true };
+              }
+              return p;
+            });
+
+            // Also update the formSubmissions entry with the clinikoPatientId
+            const updatedFormSubmissions = {
+              ...(ctxData.formSubmissions || {}),
+              [token]: {
+                ...(ctxData.formSubmissions?.[token] || {}),
+                clinikoPatientId: effectivePatientId,
+                clinikoUpdatedAt: new Date().toISOString()
+              }
+            };
+
+            await storage.updateConversation(call.conversationId, {
+              context: {
+                ...ctxData,
+                currentState: {
+                  ...ctxData.currentState,
+                  gp: updatedGpWithId,
+                  hasRealNamesFromForm: true
+                },
+                formSubmissions: updatedFormSubmissions
+              }
+            });
+
+            console.log('[POST /api/forms/submit] ✅ Saved clinikoPatientId to context');
+            console.log('[POST /api/forms/submit]   - gp entries with IDs:', updatedGpWithId.filter((p: any) => p.clinikoPatientId).length);
+          } catch (ctxError: any) {
+            console.error('[POST /api/forms/submit] ⚠️ Failed to save clinikoPatientId to context:', ctxError?.message);
+          }
+
           res.json({
             success: true,
             message: isEdit ? 'Details updated successfully' : 'Form submitted successfully',
             clinikoUpdated: true,
+            clinikoPatientId: effectivePatientId,
             patientResolutionMethod
           });
         } catch (clinikoError: any) {
