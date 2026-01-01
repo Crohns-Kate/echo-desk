@@ -124,15 +124,51 @@ async function saveConversationContext(
     // ═══════════════════════════════════════════════════════════════════
     // CRITICAL: Preserve ALL form-related fields from DB, not just formSubmissions
     // The form submission POST handler also updates: formToken, formData, formSubmittedAt
+    // Also preserve form-provided gp entries (they have fromForm:true or clinikoPatientId)
     // ═══════════════════════════════════════════════════════════════════
+
+    // Merge gp arrays: preserve form-provided entries, add new entries from AI
+    const dbGp = dbContext.currentState?.gp || [];
+    const contextGp = context.currentState?.gp || [];
+
+    // Get form entries from DB (these are authoritative)
+    const dbFormEntries = dbGp.filter(
+      (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
+    );
+
+    // Get valid entries from context that aren't already in form entries
+    const contextNewEntries = contextGp.filter((p: { name: string; fromForm?: boolean }) => {
+      if (!p.name) return false;
+      // Don't duplicate form entries
+      const isDuplicate = dbFormEntries.some(
+        (dbEntry: { name: string }) => dbEntry.name?.toLowerCase() === p.name.toLowerCase()
+      );
+      return !isDuplicate;
+    });
+
+    // Merged gp: form entries first (authoritative), then new context entries
+    const mergedGp = [...dbFormEntries, ...contextNewEntries];
+
+    // Merge currentState, preserving form flags
+    const mergedCurrentState = {
+      ...context.currentState,
+      gp: mergedGp.length > 0 ? mergedGp : context.currentState?.gp,
+      hasRealNamesFromForm: dbContext.currentState?.hasRealNamesFromForm || context.currentState?.hasRealNamesFromForm
+    };
+
     const mergedContext = {
       ...context,
+      currentState: mergedCurrentState,
       // Preserve form-related fields from DB if they exist and are more recent
       formToken: dbContext.formToken || (context as any).formToken,
       formData: dbContext.formData || (context as any).formData,
       formSubmittedAt: dbContext.formSubmittedAt || (context as any).formSubmittedAt,
       formSubmissions: Object.keys(mergedFormSubmissions).length > 0 ? mergedFormSubmissions : undefined
     };
+
+    if (dbFormEntries.length > 0) {
+      console.log('[OpenAICallHandler] 📋 Preserved form-provided gp entries:', dbFormEntries.map((p: {name: string}) => p.name).join(', '));
+    }
 
     await storage.updateConversation(call.conversationId, {
       context: mergedContext as any // JSONB field stores the entire context
@@ -2240,6 +2276,7 @@ export async function handleOpenAIConversation(
     // 3d. PROTECT GROUP BOOKING STATE FROM AI OVERWRITE
     // Group booking state is SYSTEM-OWNED, not AI-OWNED.
     // Once gb=true is set, the AI must NEVER reset it or clear gp/tp.
+    // EXCEPTION: Form submissions can ALWAYS update gp (they are authoritative)
     // ═══════════════════════════════════════════════
     if (context.currentState.gb === true) {
       console.log('[OpenAICallHandler] 🔒 PROTECTING group booking state from AI overwrite');
@@ -2247,8 +2284,38 @@ export async function handleOpenAIConversation(
       // ALWAYS preserve gb=true
       finalResponse.state.gb = true;
 
-      // NEVER let AI clear gp (patient list)
-      if (Array.isArray(context.currentState.gp) && context.currentState.gp.length > 0) {
+      // Check if we have form-provided data - ALWAYS preserve it
+      const hasFormData = context.currentState.hasRealNamesFromForm === true;
+      const formProvidedEntries = (context.currentState.gp || []).filter(
+        (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
+      );
+
+      if (formProvidedEntries.length > 0) {
+        // Form data is SACRED - never overwrite it with AI guesses
+        console.log('[OpenAICallHandler]   📋 FORM DATA PROTECTED - preserving', formProvidedEntries.length, 'form entries');
+        console.log('[OpenAICallHandler]   Form entries:', formProvidedEntries.map((p: {name: string}) => p.name).join(', '));
+
+        // Merge: keep form entries, add any valid AI entries that aren't duplicates
+        const aiGp = finalResponse.state.gp || [];
+        const mergedGp = [...formProvidedEntries];
+
+        // Add valid AI names that aren't already in the list
+        for (const aiEntry of aiGp) {
+          if (aiEntry.name && isValidPersonName(aiEntry.name)) {
+            const isDuplicate = mergedGp.some(
+              (p: { name: string }) => p.name.toLowerCase() === aiEntry.name.toLowerCase()
+            );
+            if (!isDuplicate) {
+              mergedGp.push(aiEntry);
+            }
+          }
+        }
+
+        finalResponse.state.gp = mergedGp;
+        finalResponse.state.hasRealNamesFromForm = true;
+        console.log('[OpenAICallHandler]   Merged gp:', mergedGp.map((p: {name: string}) => p.name).join(', '));
+      } else if (Array.isArray(context.currentState.gp) && context.currentState.gp.length > 0) {
+        // No form data, but we have existing gp entries
         // If AI provided new names that pass validation, allow update
         // Otherwise preserve existing gp
         const aiGp = finalResponse.state.gp;
