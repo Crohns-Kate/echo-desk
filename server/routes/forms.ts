@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { storage } from "../storage";
-import { updateClinikoPatient } from "../integrations/cliniko";
+import { updateClinikoPatient, namesAreSimilar } from "../integrations/cliniko";
 import { findPatientByPhoneRobust, getOrCreatePatient } from "../services/cliniko";
 
 /**
@@ -458,75 +458,92 @@ export function registerForms(app: Express) {
       // ═══════════════════════════════════════════════════════════════════════
       // CLINIKO PATIENT UPDATE LOGIC
       // ═══════════════════════════════════════════════════════════════════════
+      // CLINIKO PATIENT RESOLUTION - SIMPLIFIED LOGIC
       //
       // Priority:
       // 1. Use explicit clinikoPatientId if provided (most reliable)
-      // 2. If patientMode === 'existing', safe to do phone lookup (caller is known patient)
-      // 3. If patientMode === 'new' or undefined, use getOrCreatePatient (may create new record)
+      // 2. ALWAYS try findPatientByPhoneRobust as fallback (works for group bookings)
+      // 3. If not found, use getOrCreatePatient to create new patient
       //
-      // Traceability: Include callSid and conversationId in all logs
+      // NOTE: We ignore patientMode here because by the time a form is submitted,
+      // the booking is likely complete and the patient exists in Cliniko.
+      // Form submissions should ALWAYS update Cliniko immediately.
       // ═══════════════════════════════════════════════════════════════════════
 
       const callerPhone = call.fromNumber;
-      const patientMode = existingContext?.patientMode;  // 'new' | 'existing' | undefined
 
       console.log('[POST /api/forms/submit] ═══════════════════════════════════════════');
       console.log('[POST /api/forms/submit] CLINIKO UPDATE DECISION');
       console.log('[POST /api/forms/submit]   - callSid:', callSid);
       console.log('[POST /api/forms/submit]   - conversationId:', call.conversationId);
       console.log('[POST /api/forms/submit]   - callerPhone:', callerPhone);
-      console.log('[POST /api/forms/submit]   - patientMode from context:', patientMode || 'NOT SET');
+      console.log('[POST /api/forms/submit]   - formName:', firstName, lastName);
+      console.log('[POST /api/forms/submit]   - formEmail:', email);
       console.log('[POST /api/forms/submit]   - clinikoPatientId from form:', clinikoPatientId || 'NOT PROVIDED');
       console.log('[POST /api/forms/submit]   - clinikoPatientId from previous:', existingFormSubmissions[token]?.clinikoPatientId || 'NONE');
 
-      // Step 1: Try to resolve patient ID
+      // Step 1: Try to resolve patient ID from explicit sources
       let effectivePatientId = clinikoPatientId || existingFormSubmissions[token]?.clinikoPatientId;
       let patientResolutionMethod = effectivePatientId ? 'explicit' : 'none';
 
-      // Step 2: If no explicit patientId, try lookup based on patientMode
+      // Step 2: If no explicit patientId, ALWAYS try phone lookup first
+      // This works for group bookings where multiple forms are submitted
+      // IMPORTANT: Verify name matches for group bookings (multiple patients on same phone)
+      if (!effectivePatientId && callerPhone) {
+        console.log('[POST /api/forms/submit] 🔍 No explicit patientId - trying phone lookup...');
+        try {
+          const foundPatient = await findPatientByPhoneRobust(callerPhone);
+          if (foundPatient) {
+            const foundFullName = `${foundPatient.first_name} ${foundPatient.last_name}`.trim();
+            const formFullName = `${firstName} ${lastName}`.trim();
+
+            // Check if names are similar (handles typos, slight variations)
+            if (namesAreSimilar(foundFullName, formFullName)) {
+              effectivePatientId = foundPatient.id;
+              patientResolutionMethod = 'phone_lookup';
+              console.log('[POST /api/forms/submit] ✅ Found patient via phone lookup (name matches):', effectivePatientId);
+              console.log('[POST /api/forms/submit]   - Name in Cliniko:', foundFullName);
+              console.log('[POST /api/forms/submit]   - Name in form:', formFullName);
+            } else {
+              // Names don't match - this might be a group booking with multiple patients on same phone
+              // Fall through to getOrCreatePatient which will find/create the correct patient
+              console.log('[POST /api/forms/submit] ⚠️ Phone lookup found patient but NAME MISMATCH:');
+              console.log('[POST /api/forms/submit]   - Cliniko name:', foundFullName);
+              console.log('[POST /api/forms/submit]   - Form name:', formFullName);
+              console.log('[POST /api/forms/submit]   → Will use getOrCreatePatient to find/create correct patient');
+            }
+          } else {
+            console.log('[POST /api/forms/submit] ⚠️ Phone lookup returned no results');
+          }
+        } catch (lookupError: any) {
+          console.error('[POST /api/forms/submit] ❌ Phone lookup failed:', lookupError?.message);
+        }
+      }
+
+      // Step 3: If still no patient found, use getOrCreatePatient
+      if (!effectivePatientId && callerPhone) {
+        console.log('[POST /api/forms/submit] 🆕 Patient not found - using getOrCreatePatient...');
+        try {
+          const patient = await getOrCreatePatient({
+            phone: callerPhone,
+            fullName: `${firstName} ${lastName}`,
+            email: email,
+            isFormSubmission: true
+          });
+          if (patient) {
+            effectivePatientId = patient.id;
+            patientResolutionMethod = 'get_or_create';
+            console.log('[POST /api/forms/submit] ✅ Patient resolved via getOrCreatePatient:', effectivePatientId);
+            console.log('[POST /api/forms/submit]   - Name:', patient.first_name, patient.last_name);
+          }
+        } catch (createError: any) {
+          console.error('[POST /api/forms/submit] ❌ getOrCreatePatient failed:', createError?.message);
+        }
+      }
+
       if (!effectivePatientId && !callerPhone) {
         console.log('[POST /api/forms/submit] ⚠️ WARNING: No callerPhone available (call.fromNumber is empty)');
-        console.log('[POST /api/forms/submit]   → Cannot perform phone-based patient lookup');
-      }
-      if (!effectivePatientId && callerPhone) {
-        if (patientMode === 'existing') {
-          // SAFE: Caller identified as existing patient - phone lookup is appropriate
-          console.log('[POST /api/forms/submit] 🔍 patientMode=existing - attempting safe phone lookup...');
-          try {
-            const foundPatient = await findPatientByPhoneRobust(callerPhone);
-            if (foundPatient) {
-              effectivePatientId = foundPatient.id;
-              patientResolutionMethod = 'phone_lookup_existing';
-              console.log('[POST /api/forms/submit] ✅ Found existing patient via phone lookup:', effectivePatientId);
-              console.log('[POST /api/forms/submit]   - Name in Cliniko:', foundPatient.first_name, foundPatient.last_name);
-            } else {
-              console.log('[POST /api/forms/submit] ⚠️ Phone lookup returned no results');
-            }
-          } catch (lookupError: any) {
-            console.error('[POST /api/forms/submit] ❌ Phone lookup failed:', lookupError?.message);
-          }
-        } else {
-          // patientMode is 'new' or undefined - use getOrCreatePatient
-          // This creates a new patient if not found, or returns existing if phone matches
-          // IMPORTANT: isFormSubmission=true allows name/email updates since this is verified user input
-          console.log('[POST /api/forms/submit] 🆕 patientMode=', patientMode || 'undefined', '- using getOrCreatePatient (isFormSubmission=true)...');
-          try {
-            const patient = await getOrCreatePatient({
-              phone: callerPhone,
-              fullName: `${firstName} ${lastName}`,
-              email: email,
-              isFormSubmission: true
-            });
-            if (patient) {
-              effectivePatientId = patient.id;
-              patientResolutionMethod = 'get_or_create';
-              console.log('[POST /api/forms/submit] ✅ Patient resolved via getOrCreatePatient:', effectivePatientId);
-              console.log('[POST /api/forms/submit]   - Name:', patient.first_name, patient.last_name);
-            }
-          } catch (createError: any) {
-            console.error('[POST /api/forms/submit] ❌ getOrCreatePatient failed:', createError?.message);
-          }
-        }
+        console.log('[POST /api/forms/submit]   → Cannot perform patient lookup or creation');
       }
 
       console.log('[POST /api/forms/submit] Resolution result:');
