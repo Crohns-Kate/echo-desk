@@ -1403,27 +1403,51 @@ export async function handleOpenAIConversation(
       // Set group booking flag
       context.currentState.gb = true;
 
-      // Try to extract ACTUAL names from the utterance first
-      const extractedNames = extractTwoNamesFromUtterance(userUtterance);
+      // PROTECT FORM DATA: Check if gp already has entries from form or real names
+      const existingGp = context.currentState.gp || [];
+      const hasFormData = existingGp.some(
+        (p: { name: string; fromForm?: boolean }) => p.fromForm === true
+      );
+      const hasRealNames = existingGp.some(
+        (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
+      );
+      const hasClinikoIds = existingGp.some(
+        (p: { clinikoPatientId?: string }) => p.clinikoPatientId
+      );
 
-      if (extractedNames && extractedNames.length >= 2) {
-        // Found actual names - use them directly!
-        context.currentState.gp = extractedNames;
-        console.log('[OpenAICallHandler] 🎯 EXTRACTED REAL NAMES:', extractedNames.map(p => p.name).join(', '));
-      } else if (!context.currentState.gp || context.currentState.gp.length < 2) {
-        // No names found - seed with placeholders
-        // These will be replaced with actual names when AI extracts them
-        let relation = 'family member';
-        const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
-        if (relationMatch) {
-          relation = relationMatch[1].toLowerCase();
+      console.log('[OpenAICallHandler]   - existingGp.length:', existingGp.length);
+      console.log('[OpenAICallHandler]   - hasFormData:', hasFormData);
+      console.log('[OpenAICallHandler]   - hasRealNames:', hasRealNames);
+      console.log('[OpenAICallHandler]   - hasClinikoIds:', hasClinikoIds);
+
+      // NEVER overwrite form data or Cliniko data
+      if (hasFormData || hasClinikoIds) {
+        console.log('[OpenAICallHandler] 🛡️ PROTECTING: gp has form data or Cliniko IDs - NOT seeding placeholders');
+      } else if (hasRealNames) {
+        console.log('[OpenAICallHandler] 🛡️ PROTECTING: gp has real names - NOT seeding placeholders');
+      } else {
+        // Try to extract ACTUAL names from the utterance first
+        const extractedNames = extractTwoNamesFromUtterance(userUtterance);
+
+        if (extractedNames && extractedNames.length >= 2) {
+          // Found actual names - use them directly!
+          context.currentState.gp = extractedNames;
+          console.log('[OpenAICallHandler] 🎯 EXTRACTED REAL NAMES:', extractedNames.map(p => p.name).join(', '));
+        } else if (!context.currentState.gp || context.currentState.gp.length < 2) {
+          // No names found and no protected data - seed with placeholders
+          // These will be replaced with actual names when AI extracts them
+          let relation = 'family member';
+          const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
+          if (relationMatch) {
+            relation = relationMatch[1].toLowerCase();
+          }
+
+          context.currentState.gp = [
+            { name: 'PRIMARY', relation: 'caller' },
+            { name: 'SECONDARY', relation: relation }
+          ];
+          console.log('[OpenAICallHandler]   Seeded gp with placeholders:', context.currentState.gp);
         }
-
-        context.currentState.gp = [
-          { name: 'PRIMARY', relation: 'caller' },
-          { name: 'SECONDARY', relation: relation }
-        ];
-        console.log('[OpenAICallHandler]   Seeded gp with placeholders:', context.currentState.gp);
       }
 
       // Also extract time preference if present (pass day context if available)
@@ -1452,15 +1476,22 @@ export async function handleOpenAIConversation(
     // 2c-bis. IMMEDIATE NAME EXTRACTION FOR GROUP BOOKING
     // If gb=true and we don't have real names yet, extract from utterance BEFORE AI call
     // This ensures names are captured immediately, breaking the "ask twice" loop
+    // CRITICAL: Never overwrite form data or Cliniko IDs!
     // ═══════════════════════════════════════════════
     const hasPlaceholders = context.currentState.gp?.some(
       (p: { name: string }) => p.name === 'PRIMARY' || p.name === 'SECONDARY'
     );
 
     const currentGpIsEmpty = !context.currentState.gp || context.currentState.gp.length === 0;
-    const currentGpHasNoRealNames = !context.currentState.gp?.some(
-      (p: { name: string }) => p.name && isValidPersonName(p.name)
+
+    // FORM DATA PROTECTION: Check for entries that must NEVER be overwritten
+    const gpForProtection = context.currentState.gp || [];
+    const formProtectedEntries = gpForProtection.filter(
+      (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
+        p.fromForm === true || p.clinikoPatientId
     );
+    const hasProtectedData = formProtectedEntries.length > 0;
+
     // Count how many REAL names we have (not placeholders)
     const realNameCount = (context.currentState.gp || []).filter(
       (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
@@ -1468,7 +1499,7 @@ export async function handleOpenAIConversation(
     const needsMoreNames = realNameCount < 2;
 
     // Run extraction if: group booking mode AND (gp is empty OR has placeholders OR needs more names)
-    // This ensures we keep extracting until we have at least 2 real names
+    // BUT SKIP if we have form data or Cliniko IDs - those are sacred!
     if (context.currentState.gb && (currentGpIsEmpty || hasPlaceholders || needsMoreNames)) {
       console.log('[OpenAICallHandler] 📝 IMMEDIATE NAME EXTRACTION: Attempting to extract names from utterance');
       console.log('[OpenAICallHandler]   - Utterance:', userUtterance);
@@ -1476,31 +1507,41 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler]   - hasPlaceholders:', hasPlaceholders);
       console.log('[OpenAICallHandler]   - realNameCount:', realNameCount);
       console.log('[OpenAICallHandler]   - needsMoreNames:', needsMoreNames);
+      console.log('[OpenAICallHandler]   - hasProtectedData:', hasProtectedData);
 
-      // Try to extract two names first
-      const extractedNames = extractTwoNamesFromUtterance(userUtterance);
-      if (extractedNames && extractedNames.length >= 2) {
-        console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted two names:', extractedNames.map(p => p.name).join(', '));
-        context.currentState.gp = extractedNames;
+      // PROTECT FORM DATA: Never overwrite entries from forms or Cliniko
+      if (hasProtectedData) {
+        console.log('[OpenAICallHandler] 🛡️ FORM PROTECTION: Skipping name extraction - gp has form data or Cliniko IDs');
+        console.log('[OpenAICallHandler]   Protected entries:', formProtectedEntries.map((p: {name: string}) => p.name).join(', '));
       } else {
-        // Try to extract a single name
-        const singleName = extractSingleNameFromUtterance(userUtterance);
-        if (singleName) {
-          console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted single name:', singleName.name);
-          // Get existing valid names (not placeholders)
-          const existingValid = (context.currentState.gp || []).filter(
-            (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
-          );
-          // Check if this name is already in the list
-          const alreadyExists = existingValid.some(
-            (p: { name: string }) => p.name.toLowerCase() === singleName.name.toLowerCase()
-          );
-          if (!alreadyExists) {
-            context.currentState.gp = [...existingValid, singleName];
-            console.log('[OpenAICallHandler]   Updated gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
-          }
+        // Try to extract two names first
+        const extractedNames = extractTwoNamesFromUtterance(userUtterance);
+        if (extractedNames && extractedNames.length >= 2) {
+          console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted two names:', extractedNames.map(p => p.name).join(', '));
+          context.currentState.gp = extractedNames;
         } else {
-          console.log('[OpenAICallHandler] ⚠️ IMMEDIATE: No names found in utterance');
+          // Try to extract a single name
+          const singleName = extractSingleNameFromUtterance(userUtterance);
+          if (singleName) {
+            console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted single name:', singleName.name);
+            // Get existing valid names (not placeholders) - PRESERVE fromForm and clinikoPatientId flags!
+            const existingValid = (context.currentState.gp || []).filter(
+              (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
+                (p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY') ||
+                p.fromForm === true ||
+                p.clinikoPatientId
+            );
+            // Check if this name is already in the list
+            const alreadyExists = existingValid.some(
+              (p: { name: string }) => p.name.toLowerCase() === singleName.name.toLowerCase()
+            );
+            if (!alreadyExists) {
+              context.currentState.gp = [...existingValid, singleName];
+              console.log('[OpenAICallHandler]   Updated gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
+            }
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ IMMEDIATE: No names found in utterance');
+          }
         }
       }
     }
