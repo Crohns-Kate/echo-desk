@@ -136,15 +136,24 @@ async function saveConversationContext(
       (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
     );
 
+    // Helper: Check if a name is a placeholder (should never be saved)
+    const isPlaceholderName = (name: string) =>
+      name === 'PRIMARY' || name === 'SECONDARY' ||
+      name.toLowerCase() === 'primary' || name.toLowerCase() === 'secondary';
+
     // Get ALL other valid entries from DB (AI-extracted names from previous turns)
+    // EXCLUDE placeholders - they should never be persisted
     const dbOtherEntries = dbGp.filter(
       (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
-        p.name && !p.fromForm && !p.clinikoPatientId
+        p.name && !p.fromForm && !p.clinikoPatientId && !isPlaceholderName(p.name)
     );
 
     // Get valid entries from context that aren't already in DB
+    // EXCLUDE placeholders - they should never be persisted
     const contextNewEntries = contextGp.filter((p: { name: string; fromForm?: boolean }) => {
       if (!p.name) return false;
+      // Never save placeholders
+      if (isPlaceholderName(p.name)) return false;
       // Don't duplicate ANY existing DB entries (form or otherwise)
       const isDuplicateOfForm = dbFormEntries.some(
         (dbEntry: { name: string }) => dbEntry.name?.toLowerCase() === p.name.toLowerCase()
@@ -157,6 +166,7 @@ async function saveConversationContext(
 
     // Merged gp: form entries first (authoritative), then DB entries, then new context entries
     // This ensures AI-extracted names from previous turns are preserved
+    // Placeholders are EXCLUDED from all sources
     const mergedGp = [...dbFormEntries, ...dbOtherEntries, ...contextNewEntries];
 
     console.log('[OpenAICallHandler] 📋 saveConversationContext gp merge:');
@@ -2303,6 +2313,7 @@ export async function handleOpenAIConversation(
     // Group booking state is SYSTEM-OWNED, not AI-OWNED.
     // Once gb=true is set, the AI must NEVER reset it or clear gp/tp.
     // EXCEPTION: Form submissions can ALWAYS update gp (they are authoritative)
+    // EXCEPTION: Placeholders (PRIMARY/SECONDARY) should NOT be protected - they should be replaced
     // ═══════════════════════════════════════════════
     if (context.currentState.gb === true) {
       console.log('[OpenAICallHandler] 🔒 PROTECTING group booking state from AI overwrite');
@@ -2316,6 +2327,21 @@ export async function handleOpenAIConversation(
       // Helper: Check if array has entries (empty arrays are truthy in JS, so we need length check)
       const hasEntries = (arr: any) => Array.isArray(arr) && arr.length > 0;
 
+      // Helper: Check if a name is a placeholder (should be replaceable, not protected)
+      const isPlaceholder = (name: string) => name === 'PRIMARY' || name === 'SECONDARY';
+
+      // Helper: Check if gp contains ONLY placeholders (no real names)
+      const containsOnlyPlaceholders = (gp: Array<{ name: string }>) => {
+        if (!Array.isArray(gp) || gp.length === 0) return false;
+        return gp.every(p => isPlaceholder(p.name));
+      };
+
+      // Check if context has only placeholders - these should NOT be protected
+      const contextHasOnlyPlaceholders = containsOnlyPlaceholders(context.currentState.gp || []);
+      if (contextHasOnlyPlaceholders) {
+        console.log('[OpenAICallHandler]   ⚠️ Context has ONLY placeholders (PRIMARY/SECONDARY) - NOT protecting');
+      }
+
       // Check if we have form-provided data - ALWAYS preserve it
       const hasFormData = context.currentState.hasRealNamesFromForm === true;
       const formProvidedEntries = (context.currentState.gp || []).filter(
@@ -2324,16 +2350,17 @@ export async function handleOpenAIConversation(
 
       if (formProvidedEntries.length > 0) {
         // Form data is SACRED - never overwrite it with AI guesses
+        // Also clear any placeholders when form data arrives
         console.log('[OpenAICallHandler]   📋 FORM DATA PROTECTED - preserving', formProvidedEntries.length, 'form entries');
         console.log('[OpenAICallHandler]   Form entries:', formProvidedEntries.map((p: {name: string}) => p.name).join(', '));
 
-        // Merge: keep form entries, add any valid AI entries that aren't duplicates
+        // Merge: keep form entries (excluding placeholders), add any valid AI entries that aren't duplicates
         const aiGp = finalResponse.state.gp || [];
-        const mergedGp = [...formProvidedEntries];
+        const mergedGp = [...formProvidedEntries.filter((p: { name: string }) => !isPlaceholder(p.name))];
 
-        // Add valid AI names that aren't already in the list
+        // Add valid AI names that aren't already in the list and aren't placeholders
         for (const aiEntry of aiGp) {
-          if (aiEntry.name && isValidPersonName(aiEntry.name)) {
+          if (aiEntry.name && isValidPersonName(aiEntry.name) && !isPlaceholder(aiEntry.name)) {
             const isDuplicate = mergedGp.some(
               (p: { name: string }) => p.name.toLowerCase() === aiEntry.name.toLowerCase()
             );
@@ -2346,21 +2373,23 @@ export async function handleOpenAIConversation(
         finalResponse.state.gp = mergedGp;
         finalResponse.state.hasRealNamesFromForm = true;
         console.log('[OpenAICallHandler]   Merged gp:', mergedGp.map((p: {name: string}) => p.name).join(', '));
-      } else if (hasEntries(context.currentState.gp)) {
-        // No form data, but we have existing gp entries
+      } else if (hasEntries(context.currentState.gp) && !contextHasOnlyPlaceholders) {
+        // No form data, but we have existing gp entries with REAL names (not just placeholders)
         // If AI provided new names that pass validation, allow update
         // Otherwise preserve existing gp
         const aiGp = finalResponse.state.gp;
         if (Array.isArray(aiGp) && aiGp.length >= 2 &&
-            aiGp.every((p: { name: string }) => isValidPersonName(p.name))) {
+            aiGp.every((p: { name: string }) => isValidPersonName(p.name) && !isPlaceholder(p.name))) {
           console.log('[OpenAICallHandler]   AI provided valid names, updating gp');
           // Allow the update - AI extracted real names
         } else {
-          // Preserve existing gp
+          // Preserve existing gp (which has real names, not placeholders)
           finalResponse.state.gp = context.currentState.gp;
           console.log('[OpenAICallHandler]   Preserved existing gp:', (context.currentState.gp || []).map((p: {name: string}) => p.name).join(', '));
         }
       }
+      // NOTE: If contextHasOnlyPlaceholders is true, we fall through here and let AI's gp be used
+      // This allows real names from AI to replace placeholders
 
       // ═══════════════════════════════════════════════
       // POST-PROCESSING: Extract names from utterance if AI missed them
