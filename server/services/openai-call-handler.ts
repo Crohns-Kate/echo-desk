@@ -223,6 +223,16 @@ async function loadConversationContext(
       loadedContext.currentState = {};
     }
 
+    // DEBUG: Log form-related data for tracing
+    const gp = loadedContext.currentState?.gp || [];
+    const formEntries = gp.filter((p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId);
+    if (formEntries.length > 0) {
+      console.log('[OpenAICallHandler] 📋 loadConversationContext: Found form data in DB');
+      console.log('[OpenAICallHandler]   - gp entries:', gp.length);
+      console.log('[OpenAICallHandler]   - form entries:', formEntries.length, formEntries.map((p: {name: string}) => p.name).join(', '));
+      console.log('[OpenAICallHandler]   - hasRealNamesFromForm:', loadedContext.currentState?.hasRealNamesFromForm);
+    }
+
     return loadedContext;
   } catch (error) {
     console.error('[OpenAICallHandler] Error loading conversation context:', error);
@@ -2280,9 +2290,15 @@ export async function handleOpenAIConversation(
     // ═══════════════════════════════════════════════
     if (context.currentState.gb === true) {
       console.log('[OpenAICallHandler] 🔒 PROTECTING group booking state from AI overwrite');
+      console.log('[OpenAICallHandler]   - context.currentState.gp:', JSON.stringify(context.currentState.gp || []));
+      console.log('[OpenAICallHandler]   - finalResponse.state.gp:', JSON.stringify(finalResponse.state.gp || []));
+      console.log('[OpenAICallHandler]   - hasRealNamesFromForm:', context.currentState.hasRealNamesFromForm);
 
       // ALWAYS preserve gb=true
       finalResponse.state.gb = true;
+
+      // Helper: Check if array has entries (empty arrays are truthy in JS, so we need length check)
+      const hasEntries = (arr: any) => Array.isArray(arr) && arr.length > 0;
 
       // Check if we have form-provided data - ALWAYS preserve it
       const hasFormData = context.currentState.hasRealNamesFromForm === true;
@@ -2314,7 +2330,7 @@ export async function handleOpenAIConversation(
         finalResponse.state.gp = mergedGp;
         finalResponse.state.hasRealNamesFromForm = true;
         console.log('[OpenAICallHandler]   Merged gp:', mergedGp.map((p: {name: string}) => p.name).join(', '));
-      } else if (Array.isArray(context.currentState.gp) && context.currentState.gp.length > 0) {
+      } else if (hasEntries(context.currentState.gp)) {
         // No form data, but we have existing gp entries
         // If AI provided new names that pass validation, allow update
         // Otherwise preserve existing gp
@@ -2326,20 +2342,33 @@ export async function handleOpenAIConversation(
         } else {
           // Preserve existing gp
           finalResponse.state.gp = context.currentState.gp;
-          console.log('[OpenAICallHandler]   Preserved existing gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
+          console.log('[OpenAICallHandler]   Preserved existing gp:', (context.currentState.gp || []).map((p: {name: string}) => p.name).join(', '));
         }
       }
 
       // ═══════════════════════════════════════════════
       // POST-PROCESSING: Extract names from utterance if AI missed them
       // This handles cases where AI returns gp:[] but user clearly said a name
+      // FIX: Empty arrays are truthy in JS, so use proper length checks
       // ═══════════════════════════════════════════════
-      const currentGpForExtraction = finalResponse.state.gp || context.currentState.gp || [];
+      // Get the best available gp (prefer non-empty arrays)
+      const gpFromResponse = hasEntries(finalResponse.state.gp) ? finalResponse.state.gp : null;
+      const gpFromContext = hasEntries(context.currentState.gp) ? context.currentState.gp : null;
+      const currentGpForExtraction = gpFromResponse || gpFromContext || [];
+
+      console.log('[OpenAICallHandler]   POST-PROC: gpFromResponse=', gpFromResponse ? gpFromResponse.length + ' entries' : 'null');
+      console.log('[OpenAICallHandler]   POST-PROC: gpFromContext=', gpFromContext ? gpFromContext.length + ' entries' : 'null');
+      console.log('[OpenAICallHandler]   POST-PROC: currentGpForExtraction=', currentGpForExtraction.length, 'entries');
+
       const hasValidNamesInGp = Array.isArray(currentGpForExtraction) &&
         currentGpForExtraction.some((p: { name: string }) => p.name && isValidPersonName(p.name));
 
+      console.log('[OpenAICallHandler]   POST-PROC: hasValidNamesInGp=', hasValidNamesInGp);
+      console.log('[OpenAICallHandler]   POST-PROC: userUtterance=', userUtterance?.substring(0, 50) || 'null');
+
       if (!hasValidNamesInGp && userUtterance && userUtterance.trim().length > 3) {
         console.log('[OpenAICallHandler] 📝 AI returned empty/invalid gp - attempting name extraction from utterance');
+        console.log('[OpenAICallHandler]   Utterance:', userUtterance);
 
         // Try to extract two names first (e.g., "John Smith and Jane Doe")
         const twoNames = extractTwoNamesFromUtterance(userUtterance);
@@ -2363,6 +2392,8 @@ export async function handleOpenAIConversation(
               finalResponse.state.gp = [...existingValidNames, singleName];
               console.log('[OpenAICallHandler]   Updated gp:', finalResponse.state.gp.map((p: {name: string}) => p.name).join(', '));
             }
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ POST-PROC: No name pattern found in utterance');
           }
         }
       }
