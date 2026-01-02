@@ -1807,6 +1807,37 @@ export async function handleOpenAIConversation(
     });
 
     // ═══════════════════════════════════════════════
+    // GROUP BOOKING COMPLETION - GOODBYE HANDLING
+    // CRITICAL: Allow goodbye after group booking is complete
+    // This MUST run BEFORE the confirmation flow to prevent "no, that's it" being treated as decline
+    // ═══════════════════════════════════════════════
+    if (context.currentState.gb && context.currentState.groupBookingComplete) {
+      const utteranceLowerGb = userUtterance.toLowerCase().trim();
+      const completedGoodbyePhrases = [
+        "that's it", "thats it", "that's all", "thats all", "that is it", "that is all",
+        "i'm good", "im good", "i'm done", "im done", "all done", "all set",
+        "nothing else", "that's everything", "thats everything", "no thanks", "no thank you",
+        "bye", "goodbye", "good bye", "thanks bye", "thank you bye", "cheers",
+        "we're done", "were done", "finished", "i'm finished", "im finished",
+        "no", "nope", "nah" // Standalone "no" after booking complete = goodbye
+      ];
+      const isGoodbyeAfterComplete = completedGoodbyePhrases.some(phrase => utteranceLowerGb.includes(phrase));
+
+      // Check for phrases that indicate wanting to book MORE (not goodbye)
+      const wantsMorePhrases = ['another', 'more', 'also', 'additional', 'one more', 'book more'];
+      const wantsMore = wantsMorePhrases.some(phrase => utteranceLowerGb.includes(phrase));
+
+      if (isGoodbyeAfterComplete && !wantsMore) {
+        console.log('[GroupBookingExecutor] 👋 GOODBYE after group booking complete - ending call');
+        console.log('[GroupBookingExecutor]   - groupBookingComplete:', context.currentState.groupBookingComplete);
+        console.log('[GroupBookingExecutor]   - utterance:', userUtterance);
+        saySafe(vr, "All set! Thanks for calling. Have a lovely day!");
+        vr.hangup();
+        return vr;
+      }
+    }
+
+    // ═══════════════════════════════════════════════
     // GROUP BOOKING CONFIRMATION FLOW
     // Step 1: Propose times and ask "Does that work?"
     // Step 2: If user confirms, execute bookings
@@ -1822,11 +1853,35 @@ export async function handleOpenAIConversation(
       const utteranceLowerConfirm = userUtterance.toLowerCase().trim();
       const isConfirming = confirmationPhrases.some(phrase => utteranceLowerConfirm.includes(phrase));
 
+      // GOODBYE DETECTION: Check if user wants to end call BEFORE checking for decline
+      // "No, that's it" should be goodbye, NOT declining the proposed times
+      const goodbyePhrasesConfirm = [
+        "that's it", "thats it", "that's all", "thats all", "that is it", "that is all",
+        "i'm good", "im good", "i'm done", "im done", "all done", "all set",
+        "nothing else", "that's everything", "thats everything", "no thanks", "no thank you",
+        "bye", "goodbye", "good bye", "thanks bye", "thank you bye", "cheers",
+        "we're done", "were done", "finished", "i'm finished", "im finished"
+      ];
+      const isGoodbye = goodbyePhrasesConfirm.some(phrase => utteranceLowerConfirm.includes(phrase));
+
+      // DECLINE DETECTION: Only treat as decline if NOT a goodbye
+      // "No" alone or "no, I want different times" = decline
+      // "No, that's it" or "no thanks" = goodbye (NOT decline)
       const declinePhrases = ['no', 'nope', 'nah', 'different', 'change', 'other', 'not'];
-      const isDeclining = declinePhrases.some(phrase => utteranceLowerConfirm.includes(phrase));
+      const hasDeclineWord = declinePhrases.some(phrase => utteranceLowerConfirm.includes(phrase));
+      const isDeclining = hasDeclineWord && !isGoodbye; // Only decline if NOT saying goodbye
 
       console.log('[GroupBookingExecutor] 🔄 Waiting for confirmation - utterance:', userUtterance);
-      console.log('[GroupBookingExecutor]   isConfirming:', isConfirming, 'isDeclining:', isDeclining);
+      console.log('[GroupBookingExecutor]   isConfirming:', isConfirming, 'isDeclining:', isDeclining, 'isGoodbye:', isGoodbye);
+
+      // GOODBYE HANDLING: If user says goodbye before confirming times, allow them to leave
+      // This handles cases like "no thanks, I'll call back later"
+      if (isGoodbye && !isConfirming) {
+        console.log('[GroupBookingExecutor] 👋 Goodbye detected before confirmation - ending call without booking');
+        saySafe(vr, "No worries! Feel free to call back when you're ready. Goodbye!");
+        vr.hangup();
+        return vr;
+      }
 
       if (isDeclining) {
         // User wants different times - reset proposed flag
