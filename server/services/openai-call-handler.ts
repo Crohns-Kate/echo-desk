@@ -127,27 +127,43 @@ async function saveConversationContext(
     // Also preserve form-provided gp entries (they have fromForm:true or clinikoPatientId)
     // ═══════════════════════════════════════════════════════════════════
 
-    // Merge gp arrays: preserve form-provided entries, add new entries from AI
+    // Merge gp arrays: preserve ALL valid entries from DB, prioritize form entries
     const dbGp = dbContext.currentState?.gp || [];
     const contextGp = context.currentState?.gp || [];
 
-    // Get form entries from DB (these are authoritative)
+    // Get form entries from DB (these are HIGHEST priority - authoritative)
     const dbFormEntries = dbGp.filter(
       (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
     );
 
-    // Get valid entries from context that aren't already in form entries
+    // Get ALL other valid entries from DB (AI-extracted names from previous turns)
+    const dbOtherEntries = dbGp.filter(
+      (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
+        p.name && !p.fromForm && !p.clinikoPatientId
+    );
+
+    // Get valid entries from context that aren't already in DB
     const contextNewEntries = contextGp.filter((p: { name: string; fromForm?: boolean }) => {
       if (!p.name) return false;
-      // Don't duplicate form entries
-      const isDuplicate = dbFormEntries.some(
+      // Don't duplicate ANY existing DB entries (form or otherwise)
+      const isDuplicateOfForm = dbFormEntries.some(
         (dbEntry: { name: string }) => dbEntry.name?.toLowerCase() === p.name.toLowerCase()
       );
-      return !isDuplicate;
+      const isDuplicateOfOther = dbOtherEntries.some(
+        (dbEntry: { name: string }) => dbEntry.name?.toLowerCase() === p.name.toLowerCase()
+      );
+      return !isDuplicateOfForm && !isDuplicateOfOther;
     });
 
-    // Merged gp: form entries first (authoritative), then new context entries
-    const mergedGp = [...dbFormEntries, ...contextNewEntries];
+    // Merged gp: form entries first (authoritative), then DB entries, then new context entries
+    // This ensures AI-extracted names from previous turns are preserved
+    const mergedGp = [...dbFormEntries, ...dbOtherEntries, ...contextNewEntries];
+
+    console.log('[OpenAICallHandler] 📋 saveConversationContext gp merge:');
+    console.log('[OpenAICallHandler]   - dbFormEntries:', dbFormEntries.length, dbFormEntries.map((p: {name: string}) => p.name).join(', ') || 'none');
+    console.log('[OpenAICallHandler]   - dbOtherEntries:', dbOtherEntries.length, dbOtherEntries.map((p: {name: string}) => p.name).join(', ') || 'none');
+    console.log('[OpenAICallHandler]   - contextNewEntries:', contextNewEntries.length, contextNewEntries.map((p: {name: string}) => p.name).join(', ') || 'none');
+    console.log('[OpenAICallHandler]   - mergedGp:', mergedGp.length, mergedGp.map((p: {name: string}) => p.name).join(', ') || 'none');
 
     // Merge currentState, preserving form flags
     const mergedCurrentState = {
