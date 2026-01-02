@@ -1449,18 +1449,59 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
-    // 2c-bis. NAME EXTRACTION FOR EXISTING GROUP BOOKING
-    // If gp has placeholders and utterance contains names, replace them
+    // 2c-bis. IMMEDIATE NAME EXTRACTION FOR GROUP BOOKING
+    // If gb=true and we don't have real names yet, extract from utterance BEFORE AI call
+    // This ensures names are captured immediately, breaking the "ask twice" loop
     // ═══════════════════════════════════════════════
     const hasPlaceholders = context.currentState.gp?.some(
       (p: { name: string }) => p.name === 'PRIMARY' || p.name === 'SECONDARY'
     );
 
-    if (context.currentState.gb && hasPlaceholders) {
+    const currentGpIsEmpty = !context.currentState.gp || context.currentState.gp.length === 0;
+    const currentGpHasNoRealNames = !context.currentState.gp?.some(
+      (p: { name: string }) => p.name && isValidPersonName(p.name)
+    );
+    // Count how many REAL names we have (not placeholders)
+    const realNameCount = (context.currentState.gp || []).filter(
+      (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
+    ).length;
+    const needsMoreNames = realNameCount < 2;
+
+    // Run extraction if: group booking mode AND (gp is empty OR has placeholders OR needs more names)
+    // This ensures we keep extracting until we have at least 2 real names
+    if (context.currentState.gb && (currentGpIsEmpty || hasPlaceholders || needsMoreNames)) {
+      console.log('[OpenAICallHandler] 📝 IMMEDIATE NAME EXTRACTION: Attempting to extract names from utterance');
+      console.log('[OpenAICallHandler]   - Utterance:', userUtterance);
+      console.log('[OpenAICallHandler]   - currentGpIsEmpty:', currentGpIsEmpty);
+      console.log('[OpenAICallHandler]   - hasPlaceholders:', hasPlaceholders);
+      console.log('[OpenAICallHandler]   - realNameCount:', realNameCount);
+      console.log('[OpenAICallHandler]   - needsMoreNames:', needsMoreNames);
+
+      // Try to extract two names first
       const extractedNames = extractTwoNamesFromUtterance(userUtterance);
       if (extractedNames && extractedNames.length >= 2) {
-        console.log('[OpenAICallHandler] 📝 REPLACING PLACEHOLDERS with real names:', extractedNames.map(p => p.name).join(', '));
+        console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted two names:', extractedNames.map(p => p.name).join(', '));
         context.currentState.gp = extractedNames;
+      } else {
+        // Try to extract a single name
+        const singleName = extractSingleNameFromUtterance(userUtterance);
+        if (singleName) {
+          console.log('[OpenAICallHandler] ✅ IMMEDIATE: Extracted single name:', singleName.name);
+          // Get existing valid names (not placeholders)
+          const existingValid = (context.currentState.gp || []).filter(
+            (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
+          );
+          // Check if this name is already in the list
+          const alreadyExists = existingValid.some(
+            (p: { name: string }) => p.name.toLowerCase() === singleName.name.toLowerCase()
+          );
+          if (!alreadyExists) {
+            context.currentState.gp = [...existingValid, singleName];
+            console.log('[OpenAICallHandler]   Updated gp:', context.currentState.gp.map((p: {name: string}) => p.name).join(', '));
+          }
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ IMMEDIATE: No names found in utterance');
+        }
       }
     }
 
