@@ -617,6 +617,16 @@ function isValidPersonName(name: string): boolean {
     return false;
   }
 
+  // Check if name ends with trailing conjunctions/prepositions
+  // e.g., "Jenkins and" or "Chris for" - these are partial names, not complete
+  const trailingConjunctions = [' and', ' or', ' with', ' for', ' to', ' the', ' a'];
+  for (const suffix of trailingConjunctions) {
+    if (lower.endsWith(suffix)) {
+      console.log('[isValidPersonName] ❌ Rejected - ends with conjunction/preposition:', name);
+      return false;
+    }
+  }
+
   // Check for possessive reference matches
   for (const ref of possessiveReferences) {
     if (lower.includes(ref)) {
@@ -1593,12 +1603,16 @@ export async function handleOpenAIConversation(
           }
         }
 
-        // Log successful patient lookups
+        // Log successful patient lookups and SAVE TO DATABASE
         const hasClinikoIds = gpForLookup.some(
           (p: { clinikoPatientId?: string }) => p.clinikoPatientId
         );
         if (hasClinikoIds) {
           console.log('[OpenAICallHandler] 📌 Individual patient lookup complete - gp entries now have clinikoPatientId');
+          // CRITICAL: Save clinikoPatientId to database immediately
+          // This ensures form submissions can find the patient ID
+          await saveConversationContext(callSid, context);
+          console.log('[OpenAICallHandler] 💾 Saved clinikoPatientIds to database');
         }
       }
     }
