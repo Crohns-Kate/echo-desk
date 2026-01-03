@@ -1547,6 +1547,63 @@ export async function handleOpenAIConversation(
     }
 
     // ═══════════════════════════════════════════════
+    // 2c-ter. INDIVIDUAL PATIENT LOOKUP FOR GROUP BOOKING
+    // As soon as ANY real name is extracted, immediately look up/create patient in Cliniko
+    // Don't wait for the entire group to be ready - trigger identity lookup immediately
+    // This ensures Cliniko has patient records as names are provided
+    // ═══════════════════════════════════════════════
+    if (context.currentState.gb && Array.isArray(context.currentState.gp)) {
+      const gpForLookup = context.currentState.gp;
+
+      // Find entries that have real names but no clinikoPatientId yet
+      const needsLookup = gpForLookup.filter(
+        (p: { name: string; clinikoPatientId?: string; fromForm?: boolean }) =>
+          p.name &&
+          isValidPersonName(p.name) &&
+          p.name !== 'PRIMARY' &&
+          p.name !== 'SECONDARY' &&
+          !p.clinikoPatientId &&
+          !p.fromForm  // Don't look up form entries - form handles its own Cliniko sync
+      );
+
+      if (needsLookup.length > 0) {
+        console.log('[OpenAICallHandler] 🔍 INDIVIDUAL PATIENT LOOKUP: Found', needsLookup.length, 'names needing Cliniko lookup');
+
+        for (const entry of needsLookup) {
+          console.log('[OpenAICallHandler] 🔍 Looking up patient:', entry.name);
+          try {
+            // Import getOrCreatePatient if not already available
+            const { getOrCreatePatient } = await import('./cliniko');
+
+            const patient = await getOrCreatePatient({
+              phone: callerPhone,
+              fullName: entry.name,
+              isFormSubmission: false  // This is from voice, not form
+            });
+
+            if (patient) {
+              console.log('[OpenAICallHandler] ✅ INDIVIDUAL LOOKUP: Found/created patient for', entry.name, '→', patient.id);
+              // Update the entry with clinikoPatientId
+              entry.clinikoPatientId = patient.id;
+            } else {
+              console.log('[OpenAICallHandler] ⚠️ INDIVIDUAL LOOKUP: Could not resolve patient for', entry.name);
+            }
+          } catch (lookupError: any) {
+            console.error('[OpenAICallHandler] ❌ INDIVIDUAL LOOKUP failed for', entry.name, ':', lookupError?.message);
+          }
+        }
+
+        // Log successful patient lookups
+        const hasClinikoIds = gpForLookup.some(
+          (p: { clinikoPatientId?: string }) => p.clinikoPatientId
+        );
+        if (hasClinikoIds) {
+          console.log('[OpenAICallHandler] 📌 Individual patient lookup complete - gp entries now have clinikoPatientId');
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════
     // 2d. DETERMINISTIC TP EXTRACTION: For group bookings, extract time preference
     // from utterance BEFORE calling AI. This ensures tp is set even if LLM doesn't.
     // ═══════════════════════════════════════════════
@@ -1823,24 +1880,33 @@ export async function handleOpenAIConversation(
 
     // Check if gp contains ACTUAL names (not placeholders, pronouns, or possessive references)
     // Uses isValidPersonName() to reject phrases like "myself", "my son", "for myself", etc.
-    const hasRealNames = Array.isArray(context.currentState.gp) &&
-                          context.currentState.gp.length >= 2 &&
-                          context.currentState.gp.every((p: { name: string }) =>
-                            p.name &&
-                            isValidPersonName(p.name)
-                          );
+    //
+    // SPLIT INTO TWO CHECKS:
+    // 1. hasAnyRealName - true if ANY entry has a real name (for logging/display)
+    // 2. allNamesValidForBooking - true if we have 2+ entries and ALL are valid (for group booking ready)
+    const gpArray = context.currentState.gp || [];
+    const realNameEntries = gpArray.filter((p: { name: string }) =>
+      p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
+    );
+    const hasAnyRealName = realNameEntries.length > 0;
+    const allNamesValidForBooking = realNameEntries.length >= 2;
+
+    // For backwards compatibility, hasRealNames now means "has enough real names for booking"
+    const hasRealNames = allNamesValidForBooking;
 
     const groupBookingReady = context.currentState.gb === true &&
-                               hasRealNames &&
+                               allNamesValidForBooking &&
                                context.currentState.tp &&
                                !context.currentState.groupBookingComplete;
 
     // Hard logging for verification
     console.log('[GroupBookingExecutor] CHECK:', {
       gb: context.currentState.gb,
-      gpLength: Array.isArray(context.currentState.gp) ? context.currentState.gp.length : 0,
-      gpNames: context.currentState.gp?.map((p: { name: string }) => p.name) || [],
-      hasRealNames,
+      gpLength: gpArray.length,
+      gpNames: gpArray.map((p: { name: string }) => p.name),
+      realNameCount: realNameEntries.length,
+      hasAnyRealName,
+      hasRealNames,  // Now means "has 2+ real names"
       tp: context.currentState.tp || 'null',
       groupBookingComplete: context.currentState.groupBookingComplete || false,
       groupBookingProposed: context.currentState.groupBookingProposed || false,
