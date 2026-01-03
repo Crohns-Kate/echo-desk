@@ -533,6 +533,43 @@ export function registerForms(app: Express) {
       let effectivePatientId = clinikoPatientId || existingFormSubmissions[token]?.clinikoPatientId;
       let patientResolutionMethod = effectivePatientId ? 'explicit' : 'none';
 
+      // Step 1.5: Check gp array for matching name with clinikoPatientId
+      // This handles cases where voice call already created the patient
+      if (!effectivePatientId && call.conversationId) {
+        try {
+          const latestConv = await storage.getConversation(call.conversationId);
+          const ctxData = (latestConv?.context || {}) as any;
+          const gpArray = ctxData.currentState?.gp || [];
+          const formFullName = `${firstName} ${lastName}`.trim().toLowerCase();
+
+          console.log('[POST /api/forms/submit] 🔍 Checking gp array for matching name...');
+          console.log('[POST /api/forms/submit]   - Form name:', formFullName);
+          console.log('[POST /api/forms/submit]   - gp entries:', gpArray.length);
+
+          // Find entry with matching name and clinikoPatientId
+          for (const entry of gpArray) {
+            if (entry.clinikoPatientId && entry.name) {
+              const gpName = entry.name.toLowerCase();
+              // Check for exact match or close match
+              if (gpName === formFullName || namesAreSimilar(entry.name, `${firstName} ${lastName}`)) {
+                effectivePatientId = entry.clinikoPatientId;
+                patientResolutionMethod = 'gp_array_match';
+                console.log('[POST /api/forms/submit] ✅ Found clinikoPatientId in gp array:', effectivePatientId);
+                console.log('[POST /api/forms/submit]   - gp name:', entry.name);
+                console.log('[POST /api/forms/submit]   - form name:', `${firstName} ${lastName}`);
+                break;
+              }
+            }
+          }
+
+          if (!effectivePatientId) {
+            console.log('[POST /api/forms/submit]   No matching clinikoPatientId found in gp array');
+          }
+        } catch (gpLookupError: any) {
+          console.error('[POST /api/forms/submit] ❌ gp array lookup failed:', gpLookupError?.message);
+        }
+      }
+
       // Step 2: If no explicit patientId, ALWAYS try phone lookup first
       // This works for group bookings where multiple forms are submitted
       // IMPORTANT: Verify name matches for group bookings (multiple patients on same phone)

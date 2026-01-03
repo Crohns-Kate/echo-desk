@@ -513,7 +513,7 @@ function levenshteinDistance(a: string, b: string): number {
 
 // --- Upsert/Create patient ---
 export async function getOrCreatePatient({
-  fullName,
+  fullName: fullNameRaw,
   email: emailRaw,
   phone: phoneRaw,
   isFormSubmission = false
@@ -526,8 +526,23 @@ export async function getOrCreatePatient({
   const email = sanitizeEmail(emailRaw || "");
   const phone = sanitizePhoneE164AU(phoneRaw || "");
 
+  // Sanitize name: strip trailing conjunctions/prepositions
+  // e.g., "Jenkins and" → "Jenkins", "Chris for" → "Chris"
+  let fullName = fullNameRaw?.trim() || "";
+  const trailingPatterns = [/ and$/i, / or$/i, / with$/i, / for$/i, / to$/i, / the$/i, / a$/i];
+  for (const pattern of trailingPatterns) {
+    fullName = fullName.replace(pattern, '').trim();
+  }
+  // If name was just a conjunction, clear it
+  if (fullName.toLowerCase() === 'and' || fullName.toLowerCase() === 'or' ||
+      fullName.toLowerCase() === 'with' || fullName.toLowerCase() === 'for') {
+    console.log('[Cliniko] ⚠️ Name is just a conjunction - clearing it');
+    fullName = "";
+  }
+
   console.log('[Cliniko] getOrCreatePatient called with:');
-  console.log('[Cliniko]   - fullName:', fullName);
+  console.log('[Cliniko]   - fullName (raw):', fullNameRaw);
+  console.log('[Cliniko]   - fullName (sanitized):', fullName);
   console.log('[Cliniko]   - email (raw):', emailRaw);
   console.log('[Cliniko]   - email (sanitized):', email);
   console.log('[Cliniko]   - phone (raw):', phoneRaw);
