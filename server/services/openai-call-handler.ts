@@ -2231,6 +2231,7 @@ export async function handleOpenAIConversation(
             const memberName = sanitizePatientName(member.name) || member.name;
 
             console.log('[GroupBookingExecutor] 📋 Creating appointment', i + 1, 'for:', memberName, 'at', slot.speakable);
+            console.log('[GroupBookingExecutor]   clinikoPatientId:', member.clinikoPatientId || 'NONE (will lookup)');
 
             const appointment = await createAppointmentForPatient(callerPhone, {
               practitionerId,
@@ -2242,7 +2243,8 @@ export async function handleOpenAIConversation(
                 : `Group booking: ${member.relation || 'family'}`,
               tenantCtx,
               callSid,  // For traceability
-              conversationId: context.conversationId  // For traceability
+              conversationId: context.conversationId,  // For traceability
+              clinikoPatientId: member.clinikoPatientId  // Use pre-existing patient ID from voice lookup
             });
 
             // CRITICAL: Verify appointment was actually created (has ID)
