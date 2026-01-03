@@ -1391,17 +1391,24 @@ export async function handleOpenAIConversation(
 
     // Group booking phrase patterns - detect multi-person booking intent
     const groupBookingPatterns = [
-      /myself and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
-      /me and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i,
-      /my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother) and (me|myself|i)/i,
+      /myself and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother|friend)/i,
+      /me and my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother|friend)/i,
+      /my (son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother|friend) and (me|myself|i)/i,
+      // "friend and I" patterns - CRITICAL for detecting group bookings
+      /for my friend and (me|myself|i)/i,
+      /for (me|myself|i) and my friend/i,
+      /my friend and (me|myself|i)/i,
+      /(me|myself|i) and my friend/i,
+      /appointment for my friend/i,  // Implies caller + friend = 2 people
+      /book(ing)? for my friend/i,   // Implies caller + friend = 2 people
       /both of us/i,
       /two of us/i,
       /for (both|two|the two)/i,
       /appointments? for (both|two|me and)/i,
       /book(ing)? for (me|myself) and/i,
       /for myself and/i,
-      /(book|appointment|see).+(son|child|daughter|kids?).+and.+(me|myself)/i,
-      /(book|appointment|see).+(me|myself).+and.+(son|child|daughter|kids?)/i
+      /(book|appointment|see).+(son|child|daughter|kids?|friend).+and.+(me|myself)/i,
+      /(book|appointment|see).+(me|myself).+and.+(son|child|daughter|kids?|friend)/i
     ];
 
     const isGroupBookingUtterance = groupBookingPatterns.some(pattern => pattern.test(userUtterance));
@@ -1447,7 +1454,7 @@ export async function handleOpenAIConversation(
           // No names found and no protected data - seed with placeholders
           // These will be replaced with actual names when AI extracts them
           let relation = 'family member';
-          const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother)/i);
+          const relationMatch = userUtterance.match(/my\s+(son|child|daughter|kids?|husband|wife|partner|mum|mom|dad|father|mother|friend)/i);
           if (relationMatch) {
             relation = relationMatch[1].toLowerCase();
           }
@@ -1553,6 +1560,16 @@ export async function handleOpenAIConversation(
             console.log('[OpenAICallHandler] ⚠️ IMMEDIATE: No names found in utterance');
           }
         }
+      }
+
+      // CRITICAL: Save names to database immediately after extraction
+      // This prevents "amnesia" where names are forgotten between turns
+      const extractedRealNames = (context.currentState.gp || []).filter(
+        (p: { name: string }) => p.name && isValidPersonName(p.name) && p.name !== 'PRIMARY' && p.name !== 'SECONDARY'
+      );
+      if (extractedRealNames.length > 0) {
+        console.log('[OpenAICallHandler] 💾 IMMEDIATE SAVE: Saving', extractedRealNames.length, 'extracted names to database');
+        await saveConversationContext(callSid, context);
       }
     }
 
