@@ -736,6 +736,7 @@ export async function createAppointmentForPatient(phone: string, payload: {
   tenantCtx?: TenantContext;
   callSid?: string;  // For traceability
   conversationId?: number;  // For traceability
+  clinikoPatientId?: string;  // Pre-existing patient ID (skips getOrCreatePatient)
 }): Promise<ClinikoAppointment> {
   const startTime = Date.now();
   const traceId = payload.callSid || `booking_${Date.now()}`;
@@ -756,17 +757,26 @@ export async function createAppointmentForPatient(phone: string, payload: {
   const { base, headers } = getClinikoConfig(payload.tenantCtx);
 
   try {
-    // Step 1: Get or create patient
-    console.log('[Cliniko][BOOKING] Step 1: Getting/creating patient...');
-    const patient = await getOrCreatePatient({
-      phone,
-      fullName: payload.fullName,
-      email: payload.email
-    });
+    // Step 1: Get or create patient (skip if clinikoPatientId provided)
+    let patientId: string;
 
-    console.log('[Cliniko][BOOKING] ✅ Patient resolved:');
-    console.log('[Cliniko][BOOKING]   - PatientID:', patient.id);
-    console.log('[Cliniko][BOOKING]   - Name:', patient.first_name, patient.last_name);
+    if (payload.clinikoPatientId) {
+      // Use pre-existing patient ID (from earlier voice lookup)
+      console.log('[Cliniko][BOOKING] Step 1: Using pre-existing clinikoPatientId:', payload.clinikoPatientId);
+      patientId = payload.clinikoPatientId;
+    } else {
+      // Lookup or create patient
+      console.log('[Cliniko][BOOKING] Step 1: Getting/creating patient...');
+      const patient = await getOrCreatePatient({
+        phone,
+        fullName: payload.fullName,
+        email: payload.email
+      });
+      patientId = patient.id;
+      console.log('[Cliniko][BOOKING] ✅ Patient resolved:');
+      console.log('[Cliniko][BOOKING]   - PatientID:', patient.id);
+      console.log('[Cliniko][BOOKING]   - Name:', patient.first_name, patient.last_name);
+    }
 
     // Step 2: Get business ID if not provided
     let businessId = payload.businessId;
@@ -798,7 +808,7 @@ export async function createAppointmentForPatient(phone: string, payload: {
 
     const requestBody = {
       business_id: businessId,
-      patient_id: patient.id,
+      patient_id: patientId,
       practitioner_id: payload.practitionerId,
       appointment_type_id: payload.appointmentTypeId,
       starts_at: payload.startsAt,
