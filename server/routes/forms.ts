@@ -4,13 +4,14 @@ import { updateClinikoPatient, namesAreSimilar } from "../integrations/cliniko";
 import { findPatientByPhoneRobust, getOrCreatePatient } from "../services/cliniko";
 
 /**
- * Check if a name is a filler phrase from speech transcription (NOT a real name)
- * These are common verbal fillers that may be incorrectly transcribed as names
+ * Check if a name is a filler phrase or invalid for booking (NOT a real name)
+ * These are common verbal fillers, single words, or placeholders
  */
 function isFillerName(name: string): boolean {
   if (!name) return true;
 
   const lower = name.toLowerCase().trim();
+  const words = lower.split(/\s+/);
 
   // Common filler phrases from speech transcription
   const fillerPhrases = [
@@ -34,6 +35,24 @@ function isFillerName(name: string): boolean {
     'myself', 'yourself', 'himself', 'herself', 'me', 'you', 'him', 'her',
     'i', 'we', 'they', 'my', 'your', 'his', 'her'
   ];
+
+  // First words that indicate filler (even if followed by real name)
+  const fillerFirstWords = [
+    'you', 'i', 'like', 'so', 'um', 'uh', 'ah', 'oh', 'well', 'okay', 'ok',
+    'right', 'sure', 'yeah', 'yes', 'no', 'actually', 'basically', 'wait', 'know'
+  ];
+
+  // CRITICAL: Single-word names are likely partial transcriptions (e.g., "Jackson" without first name)
+  if (words.length === 1) {
+    console.log('[isFillerName] ⚠️ Single-word name detected (likely partial):', name);
+    return true;
+  }
+
+  // Check if first word is a filler
+  if (fillerFirstWords.includes(words[0])) {
+    console.log('[isFillerName] ⚠️ First word is filler:', name);
+    return true;
+  }
 
   return fillerPhrases.includes(lower) ||
          placeholders.includes(lower) ||
@@ -621,6 +640,44 @@ export function registerForms(app: Express) {
           if (!effectivePatientId) {
             console.log('[POST /api/forms/submit]   No matching clinikoPatientId found in gp array');
           }
+
+          // ═══════════════════════════════════════════════════════════════════════
+          // PHANTOM RECORD DETECTION: Check for gp entries with clinikoPatientId
+          // that are filler names or partial names (e.g., "Jackson" when form says "Jill Jackson")
+          // If found, we UPDATE that Cliniko record with the correct name from the form
+          // ═══════════════════════════════════════════════════════════════════════
+          if (!effectivePatientId) {
+            console.log('[POST /api/forms/submit] 👻 Checking for phantom records...');
+            const formLastName = lastName.toLowerCase().trim();
+
+            for (const entry of gpArray) {
+              if (!entry.clinikoPatientId || !entry.name) continue;
+
+              const gpNameLower = entry.name.toLowerCase().trim();
+              const isPhantom = isFillerName(entry.name);
+
+              // Check if this is a phantom that matches our form's last name
+              // e.g., gp has "Jackson" (phantom) and form has "Jill Jackson"
+              const gpWords = gpNameLower.split(/\s+/);
+              const lastNameMatches = gpWords.length === 1 && gpNameLower === formLastName;
+              const containsFormLastName = gpNameLower.includes(formLastName) || formLastName.includes(gpNameLower);
+
+              if (isPhantom && (lastNameMatches || containsFormLastName)) {
+                console.log('[POST /api/forms/submit] 👻 PHANTOM DETECTED!');
+                console.log('[POST /api/forms/submit]   - Phantom name:', entry.name);
+                console.log('[POST /api/forms/submit]   - Form name:', `${firstName} ${lastName}`);
+                console.log('[POST /api/forms/submit]   - Cliniko ID:', entry.clinikoPatientId);
+                console.log('[POST /api/forms/submit]   → Will UPDATE this phantom record with correct name');
+
+                effectivePatientId = entry.clinikoPatientId;
+                patientResolutionMethod = 'phantom_merge';
+
+                // Mark this entry for deletion from gp (will be replaced by form name)
+                entry._markedForDeletion = true;
+                break;
+              }
+            }
+          }
         } catch (gpLookupError: any) {
           console.error('[POST /api/forms/submit] ❌ gp array lookup failed:', gpLookupError?.message);
         }
@@ -724,21 +781,63 @@ export function registerForms(app: Express) {
           // ═══════════════════════════════════════════════════════════════════════
           // CRITICAL: Save clinikoPatientId back to conversation context's gp array
           // This ensures the booking flow knows which Cliniko patient to use
+          // Also removes phantom/filler entries and replaces with real form data
           // ═══════════════════════════════════════════════════════════════════════
           try {
             const latestCtx = await storage.getConversation(call.conversationId);
             const ctxData = (latestCtx?.context || {}) as any;
             const currentGp = ctxData.currentState?.gp || [];
-            const formFullName = `${firstName} ${lastName}`.trim().toLowerCase();
+            const formFullName = `${firstName} ${lastName}`.trim();
+            const formFullNameLower = formFullName.toLowerCase();
 
-            // Find and update the matching person in gp with their clinikoPatientId
-            const updatedGpWithId = currentGp.map((p: { name: string; clinikoPatientId?: string }) => {
-              if (p.name && p.name.toLowerCase() === formFullName) {
-                console.log('[POST /api/forms/submit] 📌 Linking clinikoPatientId to gp entry:', p.name, '→', effectivePatientId);
-                return { ...p, clinikoPatientId: effectivePatientId, fromForm: true };
+            console.log('[POST /api/forms/submit] 🔄 Updating gp array:');
+            console.log('[POST /api/forms/submit]   - Current entries:', currentGp.length);
+
+            // Step 1: Remove phantom/filler entries that should be replaced by form data
+            // Keep entries that: have fromForm=true, OR are valid names not matching our form's last name
+            const cleanedGp = currentGp.filter((p: { name: string; fromForm?: boolean; _markedForDeletion?: boolean }) => {
+              // Always remove entries marked for deletion
+              if (p._markedForDeletion) {
+                console.log('[POST /api/forms/submit] 🗑️ Removing marked phantom:', p.name);
+                return false;
               }
-              return p;
+              // Always keep form entries
+              if (p.fromForm) return true;
+              // Remove filler/phantom names
+              if (isFillerName(p.name)) {
+                console.log('[POST /api/forms/submit] 🗑️ Removing filler/phantom:', p.name);
+                return false;
+              }
+              return true;
             });
+
+            // Step 2: Check if form name already exists in cleaned gp
+            let formNameExists = cleanedGp.some(
+              (p: { name: string }) => p.name && p.name.toLowerCase() === formFullNameLower
+            );
+
+            // Step 3: Update existing entry OR add new one with clinikoPatientId
+            let updatedGpWithId;
+            if (formNameExists) {
+              // Update existing entry with clinikoPatientId
+              updatedGpWithId = cleanedGp.map((p: { name: string; clinikoPatientId?: string }) => {
+                if (p.name && p.name.toLowerCase() === formFullNameLower) {
+                  console.log('[POST /api/forms/submit] 📌 Updating gp entry:', p.name, '→ clinikoPatientId:', effectivePatientId);
+                  return { ...p, clinikoPatientId: effectivePatientId, fromForm: true };
+                }
+                return p;
+              });
+            } else {
+              // Add new entry with form name and clinikoPatientId
+              console.log('[POST /api/forms/submit] ➕ Adding form name to gp:', formFullName, '→ clinikoPatientId:', effectivePatientId);
+              updatedGpWithId = [
+                ...cleanedGp,
+                { name: formFullName, clinikoPatientId: effectivePatientId, fromForm: true, relation: 'caller' }
+              ];
+            }
+
+            console.log('[POST /api/forms/submit]   - Updated entries:', updatedGpWithId.length);
+            console.log('[POST /api/forms/submit]   - Names:', updatedGpWithId.map((p: any) => p.name).join(', '));
 
             // Also update the formSubmissions entry with the clinikoPatientId
             const updatedFormSubmissions = {

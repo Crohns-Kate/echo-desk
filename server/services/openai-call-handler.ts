@@ -692,7 +692,39 @@ function isValidPersonName(name: string): boolean {
     return false;
   }
 
-  // Valid name
+  // CRITICAL: Reject single-word names for booking purposes
+  // We need first AND last name (e.g., "Jill Jackson" not just "Jackson")
+  // Single words are likely partial transcriptions or mishearings
+  if (words.length === 1) {
+    console.log('[isValidPersonName] ❌ Rejected single-word name (need first + last):', name);
+    return false;
+  }
+
+  // Reject names that START with filler phrases (e.g., "you know Jackson")
+  const fillerStarts = [
+    'you know ', 'i mean ', 'like ', 'so ', 'um ', 'uh ', 'ah ', 'oh ',
+    'well ', 'okay ', 'ok ', 'right ', 'sure ', 'yeah ', 'yes ', 'no ',
+    'actually ', 'basically ', 'honestly ', 'wait '
+  ];
+  for (const filler of fillerStarts) {
+    if (lower.startsWith(filler)) {
+      console.log('[isValidPersonName] ❌ Rejected - starts with filler phrase:', name);
+      return false;
+    }
+  }
+
+  // Reject if first word is a filler/interjection (even if followed by a real name)
+  const firstWord = words[0];
+  const fillerFirstWords = [
+    'you', 'i', 'like', 'so', 'um', 'uh', 'ah', 'oh', 'well', 'okay', 'ok',
+    'right', 'sure', 'yeah', 'yes', 'no', 'actually', 'basically', 'wait', 'know'
+  ];
+  if (fillerFirstWords.includes(firstWord)) {
+    console.log('[isValidPersonName] ❌ Rejected - first word is filler:', name);
+    return false;
+  }
+
+  // Valid name (must have at least 2 words that aren't fillers)
   console.log('[isValidPersonName] ✅ Accepted valid name:', name);
   return true;
 }
