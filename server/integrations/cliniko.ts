@@ -261,13 +261,25 @@ async function clinikoPost(path: string, payload: any): Promise<any> {
 
 async function clinikoPatch(path: string, payload: any): Promise<any> {
   return withRetry(async () => {
+    console.log('[Cliniko] PATCH request:', path);
+    console.log('[Cliniko] PATCH payload:', JSON.stringify(payload, null, 2));
+
     const res = await fetch(CLINIKO_BASE + path, {
       method: "PATCH",
       headers: headers(),
       body: JSON.stringify(payload),
     });
     const text = await res.text();
+
+    console.log('[Cliniko] PATCH response status:', res.status);
+    console.log('[Cliniko] PATCH response body:', text);
+
     if (!res.ok) {
+      console.error('[Cliniko] ❌ PATCH FAILED');
+      console.error('[Cliniko]   - Path:', path);
+      console.error('[Cliniko]   - Status:', res.status);
+      console.error('[Cliniko]   - Response:', text);
+      console.error('[Cliniko]   - Payload was:', JSON.stringify(payload, null, 2));
       throw new Error(`Cliniko PATCH ${path} ${res.status}: ${text}`);
     }
     return text ? JSON.parse(text) : {};
@@ -568,8 +580,23 @@ export async function getOrCreatePatient({
           console.log('[Cliniko] ⚠️ Found patient by email BUT name mismatch:');
           console.log('[Cliniko]   Existing:', existingFullName);
           console.log('[Cliniko]   New:', fullName);
-          console.log('[Cliniko]   → Creating NEW patient to avoid data corruption');
-          // Don't return p - fall through to create new patient
+          console.log('[Cliniko]   isFormSubmission:', isFormSubmission);
+
+          // CRITICAL: For form submissions, TRUST the form and update existing patient
+          // Form data is manually entered and authoritative - overwrite voice errors
+          if (isFormSubmission) {
+            console.log('[Cliniko]   → FORM SUBMISSION: Trusting form data, updating existing patient');
+            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+            if (needsUpdate) {
+              const updated = await findPatientByEmail(email);
+              console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
+              return updated || p;
+            }
+            return p;
+          } else {
+            console.log('[Cliniko]   → Creating NEW patient to avoid data corruption');
+            // Don't return p - fall through to create new patient
+          }
         } else {
           console.log('[Cliniko] Names are similar enough - using existing patient');
           // Names match - check if we need to update
@@ -609,8 +636,23 @@ export async function getOrCreatePatient({
           console.log('[Cliniko] ⚠️ Found patient by phone BUT name mismatch:');
           console.log('[Cliniko]   Existing:', existingFullName);
           console.log('[Cliniko]   New:', fullName);
-          console.log('[Cliniko]   → Creating NEW patient for different person');
-          // Don't return p - fall through to create new patient
+          console.log('[Cliniko]   isFormSubmission:', isFormSubmission);
+
+          // CRITICAL: For form submissions, TRUST the form and update existing patient
+          // Form data is manually entered and authoritative - overwrite voice errors
+          if (isFormSubmission) {
+            console.log('[Cliniko]   → FORM SUBMISSION: Trusting form data, updating existing patient');
+            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+            if (needsUpdate && phone) {
+              const updated = await findPatientByPhone(phone);
+              console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
+              return updated || p;
+            }
+            return p;
+          } else {
+            console.log('[Cliniko]   → Creating NEW patient for different person');
+            // Don't return p - fall through to create new patient
+          }
         } else {
           console.log('[Cliniko] Found existing patient by phone with similar name:', p.id);
           console.log('[Cliniko]   Existing:', existingFullName);
