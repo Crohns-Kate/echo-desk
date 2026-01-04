@@ -4,6 +4,44 @@ import { updateClinikoPatient, namesAreSimilar } from "../integrations/cliniko";
 import { findPatientByPhoneRobust, getOrCreatePatient } from "../services/cliniko";
 
 /**
+ * Check if a name is a filler phrase from speech transcription (NOT a real name)
+ * These are common verbal fillers that may be incorrectly transcribed as names
+ */
+function isFillerName(name: string): boolean {
+  if (!name) return true;
+
+  const lower = name.toLowerCase().trim();
+
+  // Common filler phrases from speech transcription
+  const fillerPhrases = [
+    'you know', 'i mean', 'like', 'actually', 'basically', 'literally',
+    'honestly', 'obviously', 'well', 'okay', 'ok', 'right', 'sure', 'yeah',
+    'yep', 'nope', 'so', 'um', 'uh', 'ah', 'oh', 'hmm', 'hm',
+    'anyway', 'anyways', 'whatever', 'really', 'seriously',
+    'just', 'maybe', 'probably', 'definitely', 'certainly',
+    'hello', 'hi', 'hey', 'bye', 'goodbye', 'thanks', 'thank you',
+    'please', 'sorry', 'excuse me', 'pardon', 'what', 'yes', 'no',
+    'good morning', 'good afternoon', 'good evening', 'good day',
+    'you know what', 'i guess', 'i think', 'i suppose', 'let me see',
+    'hold on', 'wait', 'alright', 'all right'
+  ];
+
+  // Placeholders
+  const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2', 'person1', 'person2'];
+
+  // Pronouns
+  const pronouns = [
+    'myself', 'yourself', 'himself', 'herself', 'me', 'you', 'him', 'her',
+    'i', 'we', 'they', 'my', 'your', 'his', 'her'
+  ];
+
+  return fillerPhrases.includes(lower) ||
+         placeholders.includes(lower) ||
+         pronouns.includes(lower) ||
+         lower.length < 2;
+}
+
+/**
  * Form collection routes
  * Handles new patient intake forms sent via SMS
  */
@@ -453,6 +491,24 @@ export function registerForms(app: Express) {
 
       let updatedGp = currentState.gp || [];
       let formAddedToGp = false;
+
+      // CRITICAL: Clean out filler names from gp BEFORE adding form name
+      // This removes junk transcription artifacts like "You know", "I mean", etc.
+      const fillerNamesRemoved = updatedGp.filter((p: { name: string; fromForm?: boolean }) => {
+        // Always keep entries that came from forms
+        if (p.fromForm) return true;
+        // Remove filler names
+        if (isFillerName(p.name)) {
+          console.log('[POST /api/forms/submit] 🧹 Removing filler name from gp:', p.name);
+          return false;
+        }
+        return true;
+      });
+
+      if (fillerNamesRemoved.length < updatedGp.length) {
+        console.log('[POST /api/forms/submit] 🧹 Cleaned', updatedGp.length - fillerNamesRemoved.length, 'filler names from gp');
+        updatedGp = fillerNamesRemoved;
+      }
 
       if (formFullName && formFullName.length > 2) {
         // Check if this name is already in gp (case-insensitive match)
