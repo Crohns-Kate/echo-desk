@@ -589,6 +589,27 @@ function isValidPersonName(name: string): boolean {
   // Placeholder markers we use internally
   const placeholders = ['primary', 'secondary', 'caller', 'patient1', 'patient2', 'person1', 'person2'];
 
+  // CRITICAL: Filler phrases from speech transcription that are NOT names
+  // These are common verbal fillers/interjections that may be transcribed
+  const fillerPhrases = [
+    'you know', 'i mean', 'like', 'actually', 'basically', 'literally',
+    'honestly', 'obviously', 'well', 'okay', 'ok', 'right', 'sure', 'yeah',
+    'yep', 'nope', 'so', 'um', 'uh', 'ah', 'oh', 'hmm', 'hm',
+    'anyway', 'anyways', 'whatever', 'really', 'seriously',
+    'just', 'maybe', 'probably', 'definitely', 'certainly',
+    'hello', 'hi', 'hey', 'bye', 'goodbye', 'thanks', 'thank you',
+    'please', 'sorry', 'excuse me', 'pardon', 'what', 'yes', 'no',
+    'good morning', 'good afternoon', 'good evening', 'good day',
+    'you know what', 'i guess', 'i think', 'i suppose', 'let me see',
+    'hold on', 'wait', 'alright', 'all right'
+  ];
+
+  // Check for exact filler phrase match first (highest priority)
+  if (fillerPhrases.includes(lower)) {
+    console.log('[isValidPersonName] ❌ Rejected filler phrase:', name);
+    return false;
+  }
+
   // Check for exact pronoun match
   if (pronouns.includes(lower)) {
     console.log('[isValidPersonName] ❌ Rejected pronoun:', name);
