@@ -211,7 +211,24 @@ async function clinikoPost<T>(endpoint: string, body: any, base: string, headers
   // Parse and return the response
   try {
     const parsed = JSON.parse(text);
-    console.log('[Cliniko] POST parsed response ID:', parsed.id || 'N/A');
+
+    // CRITICAL FIX: Log full response including any validation_errors
+    // Cliniko may return 200/201 with partial success or warnings
+    console.log('[Cliniko] POST parsed response:');
+    console.log('[Cliniko]   - ID:', parsed.id || 'N/A');
+    console.log('[Cliniko]   - Full response:', JSON.stringify(parsed, null, 2));
+
+    // Check for validation errors or warnings that might indicate issues
+    if (parsed.validation_errors) {
+      console.warn('[Cliniko] ⚠️ POST returned validation_errors:', JSON.stringify(parsed.validation_errors, null, 2));
+    }
+    if (parsed.errors) {
+      console.warn('[Cliniko] ⚠️ POST returned errors:', JSON.stringify(parsed.errors, null, 2));
+    }
+    if (parsed.message && !parsed.id) {
+      console.warn('[Cliniko] ⚠️ POST returned message without ID:', parsed.message);
+    }
+
     return parsed;
   } catch (parseError) {
     console.error('[Cliniko] ❌ Failed to parse response:', text);
@@ -842,20 +859,39 @@ export async function createAppointmentForPatient(phone: string, payload: {
     }
 
     // Step 4: Compute times and create appointment
-    const startsAt = new Date(payload.startsAt);
-    const endsAt = new Date(startsAt.getTime() + duration * 60 * 1000);
+    // CRITICAL FIX: Use explicit timezone offset instead of UTC 'Z'
+    // Cliniko prefers YYYY-MM-DDTHH:mm:ss+10:00 format for Brisbane timezone
+    const BUSINESS_TZ = payload.tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+    const startsAtDayjs = dayjs(payload.startsAt).tz(BUSINESS_TZ);
+    const endsAtDayjs = startsAtDayjs.add(duration, 'minute');
 
-    const requestBody = {
+    // Format with explicit timezone offset (e.g., 2024-01-15T10:00:00+10:00)
+    const startsAtFormatted = startsAtDayjs.format('YYYY-MM-DDTHH:mm:ssZ');
+    const endsAtFormatted = endsAtDayjs.format('YYYY-MM-DDTHH:mm:ssZ');
+
+    console.log('[Cliniko][BOOKING] Step 4: Time formatting');
+    console.log('[Cliniko][BOOKING]   - Original startsAt:', payload.startsAt);
+    console.log('[Cliniko][BOOKING]   - Timezone:', BUSINESS_TZ);
+    console.log('[Cliniko][BOOKING]   - Formatted starts_at:', startsAtFormatted);
+    console.log('[Cliniko][BOOKING]   - Formatted ends_at:', endsAtFormatted);
+
+    // CRITICAL FIX: Wrap payload in { individual_appointment: {...} }
+    // Cliniko API requires this root wrapper for POST requests
+    const appointmentData = {
       business_id: businessId,
       patient_id: patientId,
       practitioner_id: payload.practitionerId,
       appointment_type_id: payload.appointmentTypeId,
-      starts_at: payload.startsAt,
-      ends_at: endsAt.toISOString(),
+      starts_at: startsAtFormatted,
+      ends_at: endsAtFormatted,
       notes: payload.notes || null
     };
 
-    console.log('[Cliniko][BOOKING] Step 4: Creating appointment...');
+    const requestBody = {
+      individual_appointment: appointmentData
+    };
+
+    console.log('[Cliniko][BOOKING] Step 5: Creating appointment...');
     console.log('[Cliniko][BOOKING] Request payload:', JSON.stringify(requestBody, null, 2));
 
     const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', requestBody, base, headers);
