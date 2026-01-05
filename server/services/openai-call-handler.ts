@@ -2266,6 +2266,13 @@ export async function handleOpenAIConversation(
             }
           }
 
+          // CRITICAL: Log all group patients with their clinikoPatientIds BEFORE the loop
+          console.log('[GroupBookingExecutor] 📋 PRE-BOOKING CHECK - All patients:');
+          for (let j = 0; j < groupPatients.length; j++) {
+            const p = groupPatients[j];
+            console.log(`[GroupBookingExecutor]   ${j + 1}. ${p.name} → clinikoPatientId: ${p.clinikoPatientId || 'MISSING!'}`);
+          }
+
           // Book appointments for each group member
           for (let i = 0; i < groupPatients.length; i++) {
             const member = groupPatients[i];
@@ -2283,8 +2290,13 @@ export async function handleOpenAIConversation(
             // Sanitize name
             const memberName = sanitizePatientName(member.name) || member.name;
 
-            console.log('[GroupBookingExecutor] 📋 Creating appointment', i + 1, 'for:', memberName, 'at', slot.speakable);
+            console.log('[GroupBookingExecutor] ═══════════════════════════════════════════════');
+            console.log('[GroupBookingExecutor] 📋 Creating appointment', i + 1, 'of', groupPatients.length);
+            console.log('[GroupBookingExecutor]   Name:', memberName);
+            console.log('[GroupBookingExecutor]   Time:', slot.speakable);
             console.log('[GroupBookingExecutor]   clinikoPatientId:', member.clinikoPatientId || 'NONE (will lookup)');
+            console.log('[GroupBookingExecutor]   Slot ISO:', slot.startISO);
+            console.log('[GroupBookingExecutor] ───────────────────────────────────────────────');
 
             const appointment = await createAppointmentForPatient(callerPhone, {
               practitionerId,

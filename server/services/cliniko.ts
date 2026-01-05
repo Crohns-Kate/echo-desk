@@ -187,31 +187,70 @@ async function clinikoGet<T>(endpoint: string, base: string, headers: Record<str
 async function clinikoPost<T>(endpoint: string, body: any, base: string, headers: Record<string, string>): Promise<T> {
   const url = `${base}${endpoint}`;
   console.log('[Cliniko] POST', url.replace(base, ''));
+  console.log('[Cliniko] POST body:', JSON.stringify(body, null, 2));
+
   const res = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
   });
+
+  const text = await res.text();
+  console.log('[Cliniko] POST response status:', res.status);
+  console.log('[Cliniko] POST response body:', text);
+
   if (!res.ok) {
-    const text = await res.text();
+    console.error('[Cliniko] ❌ POST FAILED');
+    console.error('[Cliniko]   - Endpoint:', endpoint);
+    console.error('[Cliniko]   - Status:', res.status);
+    console.error('[Cliniko]   - Response:', text);
+    console.error('[Cliniko]   - Request body was:', JSON.stringify(body, null, 2));
     throw new Error(`Cliniko API error ${res.status}: ${text}`);
   }
-  return res.json();
+
+  // Parse and return the response
+  try {
+    const parsed = JSON.parse(text);
+    console.log('[Cliniko] POST parsed response ID:', parsed.id || 'N/A');
+    return parsed;
+  } catch (parseError) {
+    console.error('[Cliniko] ❌ Failed to parse response:', text);
+    throw new Error(`Cliniko API returned invalid JSON: ${text}`);
+  }
 }
 
 async function clinikoPatch<T>(endpoint: string, body: any, base: string, headers: Record<string, string>): Promise<T> {
   const url = `${base}${endpoint}`;
   console.log('[Cliniko] PATCH', url);
+  console.log('[Cliniko] PATCH body:', JSON.stringify(body, null, 2));
+
   const res = await fetch(url, {
     method: 'PATCH',
     headers,
     body: JSON.stringify(body)
   });
+
+  const text = await res.text();
+  console.log('[Cliniko] PATCH response status:', res.status);
+  console.log('[Cliniko] PATCH response body:', text);
+
   if (!res.ok) {
-    const text = await res.text();
+    console.error('[Cliniko] ❌ PATCH FAILED');
+    console.error('[Cliniko]   - Endpoint:', endpoint);
+    console.error('[Cliniko]   - Status:', res.status);
+    console.error('[Cliniko]   - Response:', text);
+    console.error('[Cliniko]   - Request body was:', JSON.stringify(body, null, 2));
     throw new Error(`Cliniko API error ${res.status}: ${text}`);
   }
-  return res.json();
+
+  try {
+    const parsed = JSON.parse(text);
+    console.log('[Cliniko] PATCH parsed response ID:', parsed.id || 'N/A');
+    return parsed;
+  } catch (parseError) {
+    console.error('[Cliniko] ❌ Failed to parse PATCH response:', text);
+    throw new Error(`Cliniko API returned invalid JSON: ${text}`);
+  }
 }
 
 export async function getBusinesses(tenantCtx?: TenantContext): Promise<ClinikoBusiness[]> {
