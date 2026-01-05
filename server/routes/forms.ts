@@ -536,19 +536,21 @@ export function registerForms(app: Express) {
         );
 
         if (!alreadyInGp) {
-          // Add the form name to gp
-          updatedGp = [...updatedGp, { name: formFullName, relation: 'caller', fromForm: true }];
+          // Add the form name to gp WITH email and phone (protected from voice overwrite)
+          updatedGp = [...updatedGp, { name: formFullName, relation: 'caller', fromForm: true, email, phone }];
           formAddedToGp = true;
           console.log('[POST /api/forms/submit] ✅ FORM BYPASS: Added name to gp:', formFullName);
+          console.log('[POST /api/forms/submit]   → email:', email, ', phone:', phone);
           console.log('[POST /api/forms/submit]   Updated gp:', updatedGp.map((p: { name: string }) => p.name).join(', '));
         } else {
-          // Update the existing entry with fromForm flag
+          // Update the existing entry with fromForm flag AND email/phone (source of truth)
           updatedGp = updatedGp.map((p: { name: string }) =>
             p.name && p.name.toLowerCase() === formFullName.toLowerCase()
-              ? { ...p, fromForm: true }
+              ? { ...p, fromForm: true, email, phone }
               : p
           );
-          console.log('[POST /api/forms/submit] ℹ️ Name already in gp, marked as fromForm:', formFullName);
+          console.log('[POST /api/forms/submit] ℹ️ Name already in gp, updated with form data:', formFullName);
+          console.log('[POST /api/forms/submit]   → email:', email, ', phone:', phone);
         }
       }
 
@@ -817,22 +819,25 @@ export function registerForms(app: Express) {
             );
 
             // Step 3: Update existing entry OR add new one with clinikoPatientId
+            // CRITICAL: Store email/phone on gp entry so they're protected from voice overwrite
             let updatedGpWithId;
             if (formNameExists) {
-              // Update existing entry with clinikoPatientId
-              updatedGpWithId = cleanedGp.map((p: { name: string; clinikoPatientId?: string }) => {
+              // Update existing entry with clinikoPatientId, email, phone
+              updatedGpWithId = cleanedGp.map((p: { name: string; clinikoPatientId?: string; email?: string; phone?: string }) => {
                 if (p.name && p.name.toLowerCase() === formFullNameLower) {
                   console.log('[POST /api/forms/submit] 📌 Updating gp entry:', p.name, '→ clinikoPatientId:', effectivePatientId);
-                  return { ...p, clinikoPatientId: effectivePatientId, fromForm: true };
+                  console.log('[POST /api/forms/submit]   → email:', email, ', phone:', phone);
+                  return { ...p, clinikoPatientId: effectivePatientId, fromForm: true, email, phone };
                 }
                 return p;
               });
             } else {
-              // Add new entry with form name and clinikoPatientId
+              // Add new entry with form name, clinikoPatientId, email, phone
               console.log('[POST /api/forms/submit] ➕ Adding form name to gp:', formFullName, '→ clinikoPatientId:', effectivePatientId);
+              console.log('[POST /api/forms/submit]   → email:', email, ', phone:', phone);
               updatedGpWithId = [
                 ...cleanedGp,
-                { name: formFullName, clinikoPatientId: effectivePatientId, fromForm: true, relation: 'caller' }
+                { name: formFullName, clinikoPatientId: effectivePatientId, fromForm: true, relation: 'caller', email, phone }
               ];
             }
 
