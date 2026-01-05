@@ -246,16 +246,39 @@ async function clinikoGet(path: string, params?: Record<string, string>): Promis
 
 async function clinikoPost(path: string, payload: any): Promise<any> {
   return withRetry(async () => {
+    console.log('[Cliniko] POST request:', path);
+    console.log('[Cliniko] POST payload:', JSON.stringify(payload, null, 2));
+
     const res = await fetch(CLINIKO_BASE + path, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify(payload),
     });
     const text = await res.text();
+
+    console.log('[Cliniko] POST response status:', res.status);
+    console.log('[Cliniko] POST response body:', text);
+
     if (!res.ok) {
+      console.error('[Cliniko] ❌ POST FAILED');
+      console.error('[Cliniko]   - Path:', path);
+      console.error('[Cliniko]   - Status:', res.status);
+      console.error('[Cliniko]   - Response:', text);
       throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
     }
-    return text ? JSON.parse(text) : {};
+
+    // CRITICAL: Check for validation_errors even on 200/201 success
+    const parsed = text ? JSON.parse(text) : {};
+    console.log('[Cliniko] POST parsed response ID:', parsed.id || 'N/A');
+
+    if (parsed.validation_errors) {
+      console.warn('[Cliniko] ⚠️ POST returned validation_errors:', JSON.stringify(parsed.validation_errors, null, 2));
+    }
+    if (parsed.errors) {
+      console.warn('[Cliniko] ⚠️ POST returned errors:', JSON.stringify(parsed.errors, null, 2));
+    }
+
+    return parsed;
   }, { maxRetries: 3, baseDelay: 1000 });
 }
 
@@ -708,13 +731,16 @@ export async function getOrCreatePatient({
 
   console.log('[Cliniko] No existing patient found, creating new patient:', { first_name, last_name, email, phone });
 
-  // Create payload — Cliniko requires structured fields
-  const payload: any = { first_name, last_name };
-  if (email) payload.email = email;
+  // Create patient data — Cliniko requires structured fields
+  const patientData: any = { first_name, last_name };
+  if (email) patientData.email = email;
   if (phone) {
-    // depending on your Cliniko account setup, you may use phone_numbers
-    payload.phone_numbers = [{ label: "Mobile", number: phone }];
+    // CRITICAL FIX: Use patient_phone_numbers array format for Cliniko
+    patientData.patient_phone_numbers = [{ phone_type: "Mobile", number: phone }];
   }
+
+  // CRITICAL FIX: Wrap payload in { patient: {...} } for Cliniko API
+  const payload = { patient: patientData };
 
   // If email is invalid, DO NOT send it — Cliniko returned 422 previously
   try {
@@ -726,8 +752,9 @@ export async function getOrCreatePatient({
     const msg = String(e);
     if (/email.*invalid/i.test(msg)) {
       console.warn("[Cliniko] Email invalid, retrying without email");
-      delete payload.email;
-      const created = await clinikoPost("/patients", payload);
+      delete patientData.email;
+      const retryPayload = { patient: patientData };
+      const created = await clinikoPost("/patients", retryPayload);
       console.log("[Cliniko] Created patient (no email):", created.id, first_name, last_name);
       return created;
     }
