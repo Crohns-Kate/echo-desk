@@ -324,9 +324,10 @@ async function checkAndUpdatePatient(
   patient: any,
   newFullName?: string,
   newEmail?: string | null,
-  isFormSubmission: boolean = false
+  isFormSubmission: boolean = false,
+  newPhone?: string | null
 ): Promise<boolean> {
-  const updates: { first_name?: string; last_name?: string; email?: string } = {};
+  const updates: { first_name?: string; last_name?: string; email?: string; phone_numbers?: Array<{ label: string; number: string }> } = {};
 
   // Name updates: Only allow from verified form submissions
   if (newFullName && newFullName.trim()) {
@@ -379,10 +380,31 @@ async function checkAndUpdatePatient(
     }
   }
 
+  // Phone updates: Only allow from verified form submissions
+  // CRITICAL: Cliniko requires phone_numbers array format, NOT a simple phone field
+  if (newPhone && isFormSubmission) {
+    const sanitizedPhone = sanitizePhoneE164AU(newPhone);
+    if (sanitizedPhone) {
+      // Check existing phone numbers
+      const existingPhones = patient.patient_phone_numbers || [];
+      const existingMobile = existingPhones.find((p: { phone_type: string }) => p.phone_type === 'Mobile');
+      const existingNumber = existingMobile?.number || '';
+
+      // Only update if different
+      if (sanitizedPhone !== existingNumber) {
+        console.log('[Cliniko] checkAndUpdatePatient: FORM SUBMISSION - updating phone');
+        console.log('[Cliniko]   - Existing phone:', existingNumber || '(none)');
+        console.log('[Cliniko]   - New phone:', sanitizedPhone);
+        updates.phone_numbers = [{ label: 'Mobile', number: sanitizedPhone }];
+      }
+    }
+  }
+
   // Only update if there are changes
   if (Object.keys(updates).length > 0) {
     console.log('[Cliniko] Updating patient with:', updates);
-    await updatePatient(patient.id, updates);
+    // Use updateClinikoPatient which supports all fields including phone_numbers
+    await updateClinikoPatient(patient.id, updates);
     return true;
   }
 
@@ -586,7 +608,7 @@ export async function getOrCreatePatient({
           // Form data is manually entered and authoritative - overwrite voice errors
           if (isFormSubmission) {
             console.log('[Cliniko]   → FORM SUBMISSION: Trusting form data, updating existing patient');
-            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission, phone);
             if (needsUpdate) {
               const updated = await findPatientByEmail(email);
               console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
@@ -600,7 +622,7 @@ export async function getOrCreatePatient({
         } else {
           console.log('[Cliniko] Names are similar enough - using existing patient');
           // Names match - check if we need to update
-          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission, phone);
           if (needsUpdate) {
             // Refetch the updated patient
             const updated = await findPatientByEmail(email);
@@ -642,7 +664,7 @@ export async function getOrCreatePatient({
           // Form data is manually entered and authoritative - overwrite voice errors
           if (isFormSubmission) {
             console.log('[Cliniko]   → FORM SUBMISSION: Trusting form data, updating existing patient');
-            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+            const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission, phone);
             if (needsUpdate && phone) {
               const updated = await findPatientByPhone(phone);
               console.log('[Cliniko] Refetched updated patient:', updated?.id, updated?.email);
@@ -659,7 +681,7 @@ export async function getOrCreatePatient({
           console.log('[Cliniko]   New:', fullName);
 
           // Update patient if needed (e.g., email was missing, name spelling corrected)
-          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission);
+          const needsUpdate = await checkAndUpdatePatient(p, fullName, email, isFormSubmission, phone);
           if (needsUpdate && phone) {
             // Refetch the updated patient
             const updated = await findPatientByPhone(phone);

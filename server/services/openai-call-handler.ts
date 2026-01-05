@@ -2645,6 +2645,32 @@ export async function handleOpenAIConversation(
 
       // Check if we have form-provided data - ALWAYS preserve it
       const hasFormData = context.currentState.hasRealNamesFromForm === true;
+
+      // CRITICAL FIX: Load fresh form entries from DB to get original email/phone
+      // This prevents voice transcription from overwriting form-submitted contact info
+      let dbFormEntriesForMerge: Array<{ name: string; email?: string; phone?: string; fromForm?: boolean; clinikoPatientId?: string }> = [];
+      try {
+        const call = await storage.getCallByCallSid(callSid);
+        if (call?.conversationId) {
+          const freshConversation = await storage.getConversation(call.conversationId);
+          const freshGp = (freshConversation?.context as any)?.currentState?.gp || [];
+          dbFormEntriesForMerge = freshGp.filter(
+            (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
+          );
+          console.log('[OpenAICallHandler]   📋 Loaded fresh form entries from DB:', dbFormEntriesForMerge.length);
+        }
+      } catch (dbErr) {
+        console.warn('[OpenAICallHandler] Could not load fresh form entries from DB:', dbErr);
+      }
+
+      // Build a map of DB form entries by name (lowercased) for quick lookup
+      const dbFormEntryMap = new Map<string, { email?: string; phone?: string }>();
+      for (const entry of dbFormEntriesForMerge) {
+        if (entry.name) {
+          dbFormEntryMap.set(entry.name.toLowerCase(), { email: entry.email, phone: entry.phone });
+        }
+      }
+
       const formProvidedEntries = (context.currentState.gp || []).filter(
         (p: { fromForm?: boolean; clinikoPatientId?: string }) => p.fromForm || p.clinikoPatientId
       );
@@ -2656,8 +2682,30 @@ export async function handleOpenAIConversation(
         console.log('[OpenAICallHandler]   Form entries:', formProvidedEntries.map((p: {name: string}) => p.name).join(', '));
 
         // Merge: keep form entries (excluding placeholders), add any valid AI entries that aren't duplicates
+        // CRITICAL: For each form entry, restore the original email/phone from DB
         const aiGp = finalResponse.state.gp || [];
-        const mergedGp = [...formProvidedEntries.filter((p: { name: string }) => !isPlaceholder(p.name))];
+        const mergedGp = formProvidedEntries
+          .filter((p: { name: string }) => !isPlaceholder(p.name))
+          .map((p: { name: string; email?: string; phone?: string; fromForm?: boolean; clinikoPatientId?: string }) => {
+            // Look up original form data from DB
+            const dbData = dbFormEntryMap.get(p.name.toLowerCase());
+            if (dbData) {
+              // PRIORITY: DB form email/phone > context email/phone (prevents voice overwrite)
+              const preserved = {
+                ...p,
+                email: dbData.email || p.email,
+                phone: dbData.phone || p.phone
+              };
+              if (dbData.email && dbData.email !== p.email) {
+                console.log('[OpenAICallHandler]   📋 Restored form email for', p.name, ':', dbData.email, '(was:', p.email, ')');
+              }
+              if (dbData.phone && dbData.phone !== p.phone) {
+                console.log('[OpenAICallHandler]   📋 Restored form phone for', p.name, ':', dbData.phone, '(was:', p.phone, ')');
+              }
+              return preserved;
+            }
+            return p;
+          });
 
         // Add valid AI names that aren't already in the list and aren't placeholders
         for (const aiEntry of aiGp) {
