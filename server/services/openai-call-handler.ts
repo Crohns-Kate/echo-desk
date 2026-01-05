@@ -2723,18 +2723,68 @@ export async function handleOpenAIConversation(
         finalResponse.state.hasRealNamesFromForm = true;
         console.log('[OpenAICallHandler]   Merged gp:', mergedGp.map((p: {name: string}) => p.name).join(', '));
       } else if (hasEntries(context.currentState.gp) && !contextHasOnlyPlaceholders) {
-        // No form data, but we have existing gp entries with REAL names (not just placeholders)
-        // If AI provided new names that pass validation, allow update
-        // Otherwise preserve existing gp
-        const aiGp = finalResponse.state.gp;
-        if (Array.isArray(aiGp) && aiGp.length >= 2 &&
-            aiGp.every((p: { name: string }) => isValidPersonName(p.name) && !isPlaceholder(p.name))) {
-          console.log('[OpenAICallHandler]   AI provided valid names, updating gp');
-          // Allow the update - AI extracted real names
+        // No form data flag, but we have existing gp entries with REAL names
+        // ═══════════════════════════════════════════════════════════════════
+        // GHOST PURGING: Allow AI to drop entries it realizes were mistakes
+        // BUT protect entries with fromForm or clinikoPatientId (verified data)
+        // ═══════════════════════════════════════════════════════════════════
+        const existingGp = context.currentState.gp || [];
+        const aiGp = finalResponse.state.gp || [];
+
+        // Identify PROTECTED entries (form-verified or have Cliniko ID)
+        const protectedEntries = existingGp.filter(
+          (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
+            p.fromForm === true || !!p.clinikoPatientId
+        );
+
+        // Identify UNPROTECTED entries (AI-extracted, not verified)
+        const unprotectedEntries = existingGp.filter(
+          (p: { name: string; fromForm?: boolean; clinikoPatientId?: string }) =>
+            !p.fromForm && !p.clinikoPatientId
+        );
+
+        console.log('[OpenAICallHandler]   🔒 Protected entries (form/cliniko):', protectedEntries.map((p: {name: string}) => p.name).join(', ') || 'none');
+        console.log('[OpenAICallHandler]   🔓 Unprotected entries (AI-only):', unprotectedEntries.map((p: {name: string}) => p.name).join(', ') || 'none');
+        console.log('[OpenAICallHandler]   🤖 AI returned:', aiGp.map((p: {name: string}) => p.name).join(', ') || 'empty');
+
+        // If AI returned valid names, merge with protected entries
+        // AI can DROP unprotected entries (e.g., "Roblox" hallucinations)
+        if (Array.isArray(aiGp) && aiGp.length > 0) {
+          // Start with protected entries (NEVER drop these)
+          const mergedGp = [...protectedEntries];
+
+          // Add AI entries that aren't duplicates of protected entries
+          for (const aiEntry of aiGp) {
+            if (aiEntry.name && isValidPersonName(aiEntry.name) && !isPlaceholder(aiEntry.name)) {
+              const isDuplicate = mergedGp.some(
+                (p: { name: string }) => p.name.toLowerCase() === aiEntry.name.toLowerCase()
+              );
+              if (!isDuplicate) {
+                mergedGp.push(aiEntry);
+              }
+            }
+          }
+
+          finalResponse.state.gp = mergedGp;
+          console.log('[OpenAICallHandler]   ✅ Merged (protected + AI):', mergedGp.map((p: {name: string}) => p.name).join(', '));
+
+          // Log if we dropped any hallucinations
+          const droppedNames = unprotectedEntries.filter(
+            (up: { name: string }) => !mergedGp.some((m: { name: string }) => m.name.toLowerCase() === up.name.toLowerCase())
+          );
+          if (droppedNames.length > 0) {
+            console.log('[OpenAICallHandler]   👻 GHOST PURGED - dropped hallucinations:', droppedNames.map((p: {name: string}) => p.name).join(', '));
+          }
         } else {
-          // Preserve existing gp (which has real names, not placeholders)
-          finalResponse.state.gp = context.currentState.gp;
-          console.log('[OpenAICallHandler]   Preserved existing gp:', (context.currentState.gp || []).map((p: {name: string}) => p.name).join(', '));
+          // AI returned empty/invalid - keep protected entries at minimum
+          if (protectedEntries.length > 0) {
+            finalResponse.state.gp = protectedEntries;
+            console.log('[OpenAICallHandler]   AI empty - keeping protected only:', protectedEntries.map((p: {name: string}) => p.name).join(', '));
+          } else {
+            // No protected entries and AI returned nothing valid - preserve existing
+            finalResponse.state.gp = existingGp;
+            console.log('[OpenAICallHandler]   Preserved existing gp (no protected, AI empty):', existingGp.map((p: {name: string}) => p.name).join(', '));
+          }
         }
       }
       // NOTE: If contextHasOnlyPlaceholders is true, we fall through here and let AI's gp be used
