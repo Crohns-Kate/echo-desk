@@ -246,13 +246,18 @@ async function clinikoGet(path: string, params?: Record<string, string>): Promis
 
 async function clinikoPost(path: string, payload: any): Promise<any> {
   return withRetry(async () => {
+    // CRITICAL: Log the FINAL JSON string being sent to Cliniko
+    const jsonBody = JSON.stringify(payload);
+    console.log('[Cliniko] ═══════════════════════════════════════════════');
     console.log('[Cliniko] POST request:', path);
-    console.log('[Cliniko] POST payload:', JSON.stringify(payload, null, 2));
+    console.log('[Cliniko] POST payload (pretty):', JSON.stringify(payload, null, 2));
+    console.log('[Cliniko] POST FINAL JSON STRING:', jsonBody);
+    console.log('[Cliniko] ═══════════════════════════════════════════════');
 
     const res = await fetch(CLINIKO_BASE + path, {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify(payload),
+      body: jsonBody,
     });
     const text = await res.text();
 
@@ -264,6 +269,7 @@ async function clinikoPost(path: string, payload: any): Promise<any> {
       console.error('[Cliniko]   - Path:', path);
       console.error('[Cliniko]   - Status:', res.status);
       console.error('[Cliniko]   - Response:', text);
+      console.error('[Cliniko]   - Sent JSON:', jsonBody);
       throw new Error(`Cliniko POST ${path} ${res.status}: ${text}`);
     }
 
@@ -284,13 +290,18 @@ async function clinikoPost(path: string, payload: any): Promise<any> {
 
 async function clinikoPatch(path: string, payload: any): Promise<any> {
   return withRetry(async () => {
+    // CRITICAL: Log the FINAL JSON string being sent to Cliniko
+    const jsonBody = JSON.stringify(payload);
+    console.log('[Cliniko] ═══════════════════════════════════════════════');
     console.log('[Cliniko] PATCH request:', path);
-    console.log('[Cliniko] PATCH payload:', JSON.stringify(payload, null, 2));
+    console.log('[Cliniko] PATCH payload (pretty):', JSON.stringify(payload, null, 2));
+    console.log('[Cliniko] PATCH FINAL JSON STRING:', jsonBody);
+    console.log('[Cliniko] ═══════════════════════════════════════════════');
 
     const res = await fetch(CLINIKO_BASE + path, {
       method: "PATCH",
       headers: headers(),
-      body: JSON.stringify(payload),
+      body: jsonBody,
     });
     const text = await res.text();
 
@@ -302,6 +313,7 @@ async function clinikoPatch(path: string, payload: any): Promise<any> {
       console.error('[Cliniko]   - Path:', path);
       console.error('[Cliniko]   - Status:', res.status);
       console.error('[Cliniko]   - Response:', text);
+      console.error('[Cliniko]   - Sent JSON:', jsonBody);
       console.error('[Cliniko]   - Payload was:', JSON.stringify(payload, null, 2));
       throw new Error(`Cliniko PATCH ${path} ${res.status}: ${text}`);
     }
@@ -731,16 +743,16 @@ export async function getOrCreatePatient({
 
   console.log('[Cliniko] No existing patient found, creating new patient:', { first_name, last_name, email, phone });
 
-  // Create patient data — Cliniko requires structured fields
-  const patientData: any = { first_name, last_name };
-  if (email) patientData.email = email;
+  // CRITICAL FIX: Cliniko expects FLAT structure, NOT wrapped in { patient: {...} }
+  // Structure: { first_name, last_name, patient_phone_numbers: [...] }
+  const payload: any = { first_name, last_name };
+  if (email) payload.email = email;
   if (phone) {
-    // CRITICAL FIX: Use patient_phone_numbers array format for Cliniko
-    patientData.patient_phone_numbers = [{ phone_type: "Mobile", number: phone }];
+    // CRITICAL FIX: Use patient_phone_numbers with phone_type (not label)
+    payload.patient_phone_numbers = [{ phone_type: "Mobile", number: phone }];
   }
 
-  // CRITICAL FIX: Wrap payload in { patient: {...} } for Cliniko API
-  const payload = { patient: patientData };
+  console.log('[Cliniko] Patient creation payload:', JSON.stringify(payload, null, 2));
 
   // If email is invalid, DO NOT send it — Cliniko returned 422 previously
   try {
@@ -752,9 +764,8 @@ export async function getOrCreatePatient({
     const msg = String(e);
     if (/email.*invalid/i.test(msg)) {
       console.warn("[Cliniko] Email invalid, retrying without email");
-      delete patientData.email;
-      const retryPayload = { patient: patientData };
-      const created = await clinikoPost("/patients", retryPayload);
+      delete payload.email;
+      const created = await clinikoPost("/patients", payload);
       console.log("[Cliniko] Created patient (no email):", created.id, first_name, last_name);
       return created;
     }
@@ -779,53 +790,67 @@ export async function updateClinikoPatient(patientId: string, updates: {
   date_of_birth?: string;
   phone_numbers?: Array<{ label: string; number: string }>;
 }) {
-  console.log('[Cliniko] Updating patient:', patientId, 'with:', updates);
+  console.log('[Cliniko] ═══════════════════════════════════════════════');
+  console.log('[Cliniko] UPDATE PATIENT:', patientId);
+  console.log('[Cliniko] Requested updates:', JSON.stringify(updates, null, 2));
 
-  // Sanitize inputs - build inner patient object
-  const patientData: any = {};
+  // CRITICAL: Validate patientId before making request
+  if (!patientId || patientId === 'undefined' || patientId === 'null') {
+    console.error('[Cliniko] ❌ Invalid patientId:', patientId);
+    throw new Error('Cannot update patient: invalid patientId');
+  }
 
-  if (updates.first_name) patientData.first_name = updates.first_name.trim();
-  if (updates.last_name) patientData.last_name = updates.last_name.trim();
+  // CRITICAL FIX: Cliniko expects FLAT structure, NOT wrapped in { patient: {...} }
+  // Only include fields that are actually being changed
+  const payload: any = {};
+
+  if (updates.first_name && updates.first_name.trim()) {
+    payload.first_name = updates.first_name.trim();
+  }
+  if (updates.last_name && updates.last_name.trim()) {
+    payload.last_name = updates.last_name.trim();
+  }
   if (updates.email) {
     const sanitized = sanitizeEmail(updates.email);
-    if (sanitized) patientData.email = sanitized;
+    if (sanitized) payload.email = sanitized;
   }
-  if (updates.date_of_birth) patientData.date_of_birth = updates.date_of_birth.trim();
+  if (updates.date_of_birth && updates.date_of_birth.trim()) {
+    payload.date_of_birth = updates.date_of_birth.trim();
+  }
 
-  // CRITICAL FIX: Cliniko requires patient_phone_numbers array format (not phone_numbers)
+  // CRITICAL FIX: Use patient_phone_numbers with phone_type (not label)
   if (updates.phone_numbers && updates.phone_numbers.length > 0) {
-    // Convert phone_numbers to patient_phone_numbers format
-    patientData.patient_phone_numbers = updates.phone_numbers.map(pn => ({
+    payload.patient_phone_numbers = updates.phone_numbers.map(pn => ({
       phone_type: pn.label || 'Mobile',
       number: pn.number
     }));
   }
 
   // If nothing to update, skip
-  if (Object.keys(patientData).length === 0) {
+  if (Object.keys(payload).length === 0) {
     console.log('[Cliniko] No valid updates provided, skipping');
+    console.log('[Cliniko] ═══════════════════════════════════════════════');
     return null;
   }
 
-  // CRITICAL FIX: Cliniko API requires payload wrapped in { patient: { ... } }
-  const payload = { patient: patientData };
   console.log('[Cliniko] Final PATCH payload:', JSON.stringify(payload, null, 2));
+  console.log('[Cliniko] PATCH URL: /patients/' + patientId);
+  console.log('[Cliniko] ═══════════════════════════════════════════════');
 
   try {
     const updated = await clinikoPatch(`/patients/${patientId}`, payload);
-    console.log("[Cliniko] Updated patient:", patientId);
+    console.log("[Cliniko] ✅ Updated patient:", patientId);
     return updated;
   } catch (e) {
     const msg = String(e);
     // If email fails, retry without it
-    if (/email.*invalid/i.test(msg) && patientData.email) {
+    if (/email.*invalid/i.test(msg) && payload.email) {
       console.warn("[Cliniko] Email invalid during update, retrying without email");
-      delete patientData.email;
-      if (Object.keys(patientData).length > 0) {
-        const retryPayload = { patient: patientData };
+      delete payload.email;
+      if (Object.keys(payload).length > 0) {
         try {
-          const updated = await clinikoPatch(`/patients/${patientId}`, retryPayload);
-          console.log("[Cliniko] Updated patient (no email):", patientId);
+          const updated = await clinikoPatch(`/patients/${patientId}`, payload);
+          console.log("[Cliniko] ✅ Updated patient (no email):", patientId);
           return updated;
         } catch (retryError) {
           // Log critical failure after all retries exhausted
@@ -833,7 +858,7 @@ export async function updateClinikoPatient(patientId: string, updates: {
             operation: 'updateClinikoPatient',
             patientId,
             error: String(retryError),
-            context: { updates, attemptedPayload: retryPayload }
+            context: { updates, attemptedPayload: payload }
           });
           throw retryError;
         }
