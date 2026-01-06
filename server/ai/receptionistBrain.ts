@@ -98,6 +98,24 @@ export interface CompactCallState {
   lastEmptyAt?: number;
 
   // ═══════════════════════════════════════════════
+  // Identity Verification (backend-only)
+  // ═══════════════════════════════════════════════
+
+  /**
+   * identityVerified = true when caller confirms they are the known patient matched by phone
+   * Set to false if caller says "No, I'm someone else"
+   * undefined = not yet asked/verified
+   */
+  identityVerified?: boolean;
+
+  /**
+   * verifiedClinikoPatientId = Cliniko patient ID after identity verification
+   * Only set when identityVerified = true
+   * Used to link individual bookings to existing patient records
+   */
+  verifiedClinikoPatientId?: string;
+
+  // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
 
