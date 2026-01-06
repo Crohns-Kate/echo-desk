@@ -1301,6 +1301,67 @@ export async function handleOpenAIConversation(
       context.practitionerName = practitionerName;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // IDENTITY GATE: Verify caller identity when phone number matches existing patient
+    // This must happen BEFORE any booking to ensure correct Cliniko patient is used
+    // ═══════════════════════════════════════════════════════════════════════
+    if (context.knownPatient && context.currentState.identityVerified === undefined) {
+      const utteranceLower = userUtterance.toLowerCase().trim();
+
+      // Patterns for confirming identity
+      const confirmPatterns = [
+        /^yes\b/i,
+        /^yeah\b/i,
+        /^yep\b/i,
+        /^that'?s me\b/i,
+        /^that is me\b/i,
+        /^correct\b/i,
+        /^speaking\b/i,
+        /^hi,?\s*(yes|yeah)\b/i,
+        /^yes,?\s*(that'?s me|i am|speaking)\b/i
+      ];
+
+      // Patterns for denying identity (someone else is calling)
+      const denyPatterns = [
+        /^no[,.]?\s*(i'?m|this is|it'?s|my name is)/i,
+        /^no[,.]?\s*(someone else|different person)/i,
+        /^not\s+(me|${context.knownPatient.firstName})/i,
+        /^actually[,.]?\s*(i'?m|this is|my name is)/i,
+        /^i'?m\s+not\s+${context.knownPatient.firstName}/i
+      ];
+
+      const confirmedIdentity = confirmPatterns.some(p => p.test(utteranceLower));
+      const deniedIdentity = denyPatterns.some(p => p.test(utteranceLower));
+
+      if (confirmedIdentity) {
+        // Caller confirmed they are the known patient
+        context.currentState.identityVerified = true;
+        context.currentState.verifiedClinikoPatientId = context.knownPatient.id;
+        context.currentState.nm = context.knownPatient.fullName;
+        context.currentState.np = false; // Existing patient
+        console.log('[IdentityGate] ✅ Identity CONFIRMED:', context.knownPatient.fullName);
+        console.log('[IdentityGate]   clinikoPatientId:', context.knownPatient.id);
+      } else if (deniedIdentity) {
+        // Caller denied - they are someone else
+        context.currentState.identityVerified = false;
+        context.currentState.verifiedClinikoPatientId = undefined;
+        context.currentState.np = true; // Treat as new patient
+        console.log('[IdentityGate] ❌ Identity DENIED - caller is someone else');
+        console.log('[IdentityGate]   Will treat as new patient');
+        // Clear knownPatient so we don't ask again
+        context.knownPatient = undefined;
+      } else {
+        // Ambiguous response - leave identityVerified undefined for AI to determine
+        console.log('[IdentityGate] ⚠️ Ambiguous response - deferring to AI');
+        console.log('[IdentityGate]   Utterance:', userUtterance);
+      }
+    }
+
+    // If identity was verified in a previous turn, ensure patientId is used
+    if (context.currentState.identityVerified === true && context.currentState.verifiedClinikoPatientId) {
+      console.log('[IdentityGate] 🔒 Using verified patient ID:', context.currentState.verifiedClinikoPatientId);
+    }
+
     // 2. PROACTIVE slot fetching: If we have enough info, fetch slots BEFORE calling AI
     //    This allows AI to offer real slots in the same turn
     const hasIntent = context.currentState.im === 'book';
@@ -3189,6 +3250,10 @@ export async function handleOpenAIConversation(
             console.log('[OpenAICallHandler] 🧒 Using secondary patient name:', patientName);
           }
 
+          // CRITICAL: Use verifiedClinikoPatientId if identity was confirmed
+          // This ensures we update the correct patient record instead of creating a duplicate
+          const verifiedPatientId = context.currentState.verifiedClinikoPatientId;
+
           console.log('[OpenAICallHandler] Creating appointment with:', {
             name: patientName,
             phone: callerPhone,
@@ -3198,10 +3263,12 @@ export async function handleOpenAIConversation(
             practitionerName: selectedSlot.practitionerDisplayName,
             appointmentTypeId,
             isNewPatient: isNewPatient ? '✅ NEW PATIENT' : '⏱️ EXISTING PATIENT',
-            isSecondaryBooking: isSecondaryBooking ? '🧒 SECONDARY (child/family)' : '👤 PRIMARY'
+            isSecondaryBooking: isSecondaryBooking ? '🧒 SECONDARY (child/family)' : '👤 PRIMARY',
+            verifiedClinikoPatientId: verifiedPatientId || 'none (will lookup)'
           });
 
           // Create appointment in Cliniko
+          // Pass verifiedClinikoPatientId to skip patient lookup if identity was confirmed
           const appointment = await createAppointmentForPatient(callerPhone, {
             practitionerId,
             appointmentTypeId,
@@ -3210,7 +3277,8 @@ export async function handleOpenAIConversation(
             notes: finalResponse.state.sym ? `Symptom: ${finalResponse.state.sym}` : undefined,
             tenantCtx,
             callSid,  // For traceability
-            conversationId: context.conversationId  // For traceability
+            conversationId: context.conversationId,  // For traceability
+            clinikoPatientId: verifiedPatientId  // Use verified ID if available
           });
 
           // CRITICAL: Verify appointment was actually created (has ID)
