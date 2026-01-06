@@ -166,11 +166,65 @@ interface ClinikoAppointment {
   id: string;
   starts_at: string;
   ends_at: string;
-  patient_id: string;
+  patient_id?: string;  // May not be present - extract from links
   practitioner_id: string;
   appointment_type_id: string;
   notes: string | null;
   cancelled_at: string | null;
+  // Cliniko returns IDs as links - we need to parse them
+  links?: {
+    patient?: string;  // e.g., "https://api.au1.cliniko.com/v1/patients/1856987707989829285"
+    practitioner?: string;
+    appointment_type?: string;
+  };
+  patient?: {
+    links?: {
+      self?: string;
+    };
+  };
+}
+
+/**
+ * Extract ID from a Cliniko link URL
+ * e.g., "https://api.au1.cliniko.com/v1/patients/1856987707989829285" → "1856987707989829285"
+ */
+function extractIdFromClinikoLink(link: string | undefined): string | undefined {
+  if (!link) return undefined;
+  // Match the last numeric segment in the URL
+  const match = link.match(/\/(\d+)(?:\?|$)/);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * Get patient ID from Cliniko appointment response
+ * Handles both direct patient_id field and links.patient URL
+ */
+function getPatientIdFromAppointment(appointment: ClinikoAppointment): string | undefined {
+  // Try direct patient_id first
+  if (appointment.patient_id) {
+    return appointment.patient_id;
+  }
+
+  // Try links.patient URL
+  if (appointment.links?.patient) {
+    const extracted = extractIdFromClinikoLink(appointment.links.patient);
+    if (extracted) {
+      console.log('[Cliniko] Extracted patient_id from links.patient:', extracted);
+      return extracted;
+    }
+  }
+
+  // Try patient.links.self URL
+  if (appointment.patient?.links?.self) {
+    const extracted = extractIdFromClinikoLink(appointment.patient.links.self);
+    if (extracted) {
+      console.log('[Cliniko] Extracted patient_id from patient.links.self:', extracted);
+      return extracted;
+    }
+  }
+
+  console.warn('[Cliniko] ⚠️ Could not extract patient_id from appointment response');
+  return undefined;
 }
 
 async function clinikoGet<T>(endpoint: string, base: string, headers: Record<string, string>): Promise<T> {
@@ -893,16 +947,26 @@ export async function createAppointmentForPatient(phone: string, payload: {
 
     const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', requestBody, base, headers);
 
+    // CRITICAL FIX: Extract patient_id from links if not directly available
+    const extractedPatientId = getPatientIdFromAppointment(appointment);
+
     const latency = Date.now() - startTime;
     console.log('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
     console.log('[Cliniko][BOOKING] ✅ SUCCESS - APPOINTMENT CREATED');
     console.log('[Cliniko][BOOKING] AppointmentID:', appointment.id);
-    console.log('[Cliniko][BOOKING] PatientID:', appointment.patient_id);
+    console.log('[Cliniko][BOOKING] PatientID (direct):', appointment.patient_id || 'N/A');
+    console.log('[Cliniko][BOOKING] PatientID (extracted):', extractedPatientId || 'N/A');
+    console.log('[Cliniko][BOOKING] Links:', JSON.stringify(appointment.links || {}, null, 2));
     console.log('[Cliniko][BOOKING] StartsAt:', appointment.starts_at);
     console.log('[Cliniko][BOOKING] Latency:', latency, 'ms');
     console.log('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
 
-    return appointment;
+    // Return appointment with guaranteed patient_id
+    // Use our known patientId if extraction fails (we know it from the request)
+    return {
+      ...appointment,
+      patient_id: extractedPatientId || patientId  // Fallback to request patientId
+    };
   } catch (error: any) {
     const latency = Date.now() - startTime;
     console.error('[Cliniko][BOOKING] ═══════════════════════════════════════════════');
