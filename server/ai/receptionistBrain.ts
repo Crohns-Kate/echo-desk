@@ -20,8 +20,8 @@ import type { EnrichedSlot } from '../services/cliniko';
  * Maps to full field names in backend
  */
 export interface CompactCallState {
-  /** im = intent_main: "book" | "change" | "cancel" | "faq" | "other" */
-  im: "book" | "change" | "cancel" | "faq" | "other";
+  /** im = intent_main: "book" | "reschedule" | "change" | "cancel" | "faq" | "other" */
+  im: "book" | "reschedule" | "change" | "cancel" | "faq" | "other";
 
   /** np = is_new_patient: true/false/null */
   np: boolean | null;
@@ -284,7 +284,7 @@ export interface ReceptionistResponse {
  * Legacy interface for backward compatibility - maps abbreviated to full names
  */
 export interface ParsedCallState {
-  intent_main: "book_appointment" | "change_appointment" | "cancel_appointment" | "faq" | "other";
+  intent_main: "book_appointment" | "reschedule_appointment" | "change_appointment" | "cancel_appointment" | "faq" | "other";
   is_new_patient: boolean | null;
   name: string | null;
   time_preference_raw: string | null;
@@ -299,6 +299,7 @@ export interface ParsedCallState {
 export function expandCompactState(compact: CompactCallState): ParsedCallState {
   return {
     intent_main: compact.im === "book" ? "book_appointment" :
+                 compact.im === "reschedule" ? "reschedule_appointment" :
                  compact.im === "change" ? "change_appointment" :
                  compact.im === "cancel" ? "cancel_appointment" :
                  compact.im === "faq" ? "faq" : "other",
@@ -693,19 +694,24 @@ The ONLY time you can close the call is when:
 2. The caller explicitly says they don't want to book anymore, OR
 3. The caller asks an FAQ and says goodbye
 
-=== RESCHEDULE FLOW (im = "change") ===
+=== RESCHEDULE FLOW (im = "reschedule") ===
 
 When caller wants to reschedule/change their appointment:
 
-1. Set im = "change"
-2. The backend will automatically look up their upcoming appointment using their phone number
+1. Set im = "reschedule" (NOT "change" - that is deprecated)
+2. The backend will verify their identity using phone number and look up their upcoming appointment
 3. If found, context will show: "upcoming_appointment: [date/time]"
-4. Ask when they'd like to reschedule to: "When would you like to change it to?"
+4. SAY EXACTLY: "I found your appointment for [Time]. What would you like to change it to?"
+   - NEVER ask "Are you a new patient?" when someone wants to reschedule
+   - They are EXISTING patients with an existing appointment
 5. Once they give a new time preference (tp), set rs = true
 6. Backend will fetch new available slots
-7. When you see slots in context, offer them
+7. When you see slots in context, offer them the options
 8. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
 9. Set rc = true (reschedule confirmed)
+
+CRITICAL: The backend will ATOMICALLY cancel the old appointment and create the new one.
+You do NOT need to handle cancellation - just confirm the new time.
 
 If no upcoming appointment found:
 "I couldn't find an upcoming appointment for this number. Would you like to book a new appointment instead?"
