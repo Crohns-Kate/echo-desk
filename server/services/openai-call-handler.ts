@@ -2248,7 +2248,7 @@ export async function handleOpenAIConversation(
         // User has confirmed (groupBookingProposed=true and we got here) - proceed with booking
         {
           // Execute group booking
-          const groupBookingResults: Array<{ name: string; patientId: string; appointmentId: string; time: string }> = [];
+          const groupBookingResults: Array<{ name: string; patientId?: string; appointmentId: string; time: string }> = [];
 
           // Set booking lock
           context.currentState.bookingLockUntil = Date.now() + 20_000;
