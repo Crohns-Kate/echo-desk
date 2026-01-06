@@ -875,9 +875,9 @@ export async function createAppointmentForPatient(phone: string, payload: {
     console.log('[Cliniko][BOOKING]   - Formatted starts_at:', startsAtFormatted);
     console.log('[Cliniko][BOOKING]   - Formatted ends_at:', endsAtFormatted);
 
-    // CRITICAL FIX: Wrap payload in { individual_appointment: {...} }
-    // Cliniko API requires this root wrapper for POST requests
-    const appointmentData = {
+    // CRITICAL FIX: Cliniko expects FLAT structure, NOT wrapped in { individual_appointment: {...} }
+    // Send the appointment fields directly
+    const requestBody = {
       business_id: businessId,
       patient_id: patientId,
       practitioner_id: payload.practitionerId,
@@ -887,12 +887,9 @@ export async function createAppointmentForPatient(phone: string, payload: {
       notes: payload.notes || null
     };
 
-    const requestBody = {
-      individual_appointment: appointmentData
-    };
-
     console.log('[Cliniko][BOOKING] Step 5: Creating appointment...');
     console.log('[Cliniko][BOOKING] Request payload:', JSON.stringify(requestBody, null, 2));
+    console.log('[Cliniko][BOOKING] FINAL JSON STRING:', JSON.stringify(requestBody));
 
     const appointment = await clinikoPost<ClinikoAppointment>('/individual_appointments', requestBody, base, headers);
 
