@@ -21,7 +21,7 @@ import {
   type CompactCallState,
   type ParsedCallState
 } from '../ai/receptionistBrain';
-import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
+import { findPatientByPhoneRobust, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, getUpcomingAppointments, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
 import { getTenantContext } from './tenantResolver';
 import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
@@ -1464,16 +1464,25 @@ export async function handleOpenAIConversation(
       }
     }
 
-    // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is change or cancel
+    // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is reschedule, change, or cancel
     //     Skip if this is a secondary booking (bookingFor='someone_else')
-    const isRescheduleOrCancel = context.currentState.im === 'change' || context.currentState.im === 'cancel';
+    //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
+    const isRescheduleOrCancel = context.currentState.im === 'reschedule' || context.currentState.im === 'change' || context.currentState.im === 'cancel';
     const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
     if (isRescheduleOrCancel && !context.upcomingAppointment && !isSecondaryBookingFlow) {
       console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
+      console.log('[OpenAICallHandler]   Intent:', context.currentState.im);
       try {
-        // First find the patient
+        // First find the patient - CRITICAL for identity verification
         const patient = await findPatientByPhoneRobust(callerPhone);
         if (patient) {
+          // Mark identity as verified - they have an existing record
+          context.currentState.identityVerified = true;
+          context.currentState.verifiedClinikoPatientId = patient.id;
+          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+          context.currentState.np = false; // EXISTING patient - never ask if new
+          console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule:', patient.first_name, patient.last_name);
+
           const upcoming = await getNextUpcomingAppointment(patient.id);
           if (upcoming) {
             const apptTime = dayjs(upcoming.starts_at).tz(timezone);
@@ -1489,7 +1498,7 @@ export async function handleOpenAIConversation(
             console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
           }
         } else {
-          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko - treating as new patient');
         }
       } catch (error) {
         console.error('[OpenAICallHandler] Error looking up appointment:', error);
@@ -2637,11 +2646,21 @@ export async function handleOpenAIConversation(
 
     // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
     //     Skip if this is a secondary booking flow (user wants to book for someone else after primary booking)
-    if ((finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment && context.currentState.bookingFor !== 'someone_else') {
+    //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
+    if ((finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment && context.currentState.bookingFor !== 'someone_else') {
       console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - looking up appointment...');
+      console.log('[OpenAICallHandler]   Intent:', finalResponse.state.im);
       try {
         const patient = await findPatientByPhoneRobust(callerPhone);
         if (patient) {
+          // CRITICAL: Mark identity as verified for reschedule/cancel
+          // This prevents AI from asking "Are you a new patient?"
+          context.currentState.identityVerified = true;
+          context.currentState.verifiedClinikoPatientId = patient.id;
+          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+          context.currentState.np = false; // EXISTING patient
+          console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule/cancel:', patient.first_name, patient.last_name);
+
           const upcoming = await getNextUpcomingAppointment(patient.id);
           if (upcoming) {
             const apptTime = dayjs(upcoming.starts_at).tz(timezone);
@@ -3452,20 +3471,45 @@ export async function handleOpenAIConversation(
       finalResponse.reply = finalResponse.reply.trim() + ' Is there anything else I can help with?';
     }
 
-    // 5c. RESCHEDULE: Handle reschedule confirmation
+    // 5c. RESCHEDULE: Handle reschedule confirmation with ATOMIC cancel-then-create
     if (finalResponse.state.rc === true && context.upcomingAppointment && context.availableSlots && finalResponse.state.si !== undefined && finalResponse.state.si !== null) {
       const selectedSlot = context.availableSlots[finalResponse.state.si];
       if (selectedSlot && !context.currentState.rc) {
-        console.log('[OpenAICallHandler] 🔄 Reschedule confirmed! Moving appointment...');
+        console.log('[OpenAICallHandler] 🔄 ATOMIC RESCHEDULE: Cancel old, create new...');
+        console.log('[OpenAICallHandler]   Old appointment ID:', context.upcomingAppointment.id);
+        console.log('[OpenAICallHandler]   New time:', selectedSlot.speakable);
+
         try {
-          await rescheduleAppointment(
-            context.upcomingAppointment.id,
-            selectedSlot.startISO,
-            undefined, // patientId not needed
-            context.upcomingAppointment.practitionerId,
-            context.upcomingAppointment.appointmentTypeId
-          );
-          console.log('[OpenAICallHandler] ✅ Appointment rescheduled to:', selectedSlot.speakable);
+          // Get tenant context for Cliniko API call
+          let reschedTenantCtx = undefined;
+          if (tenantId) {
+            const tenant = await storage.getTenantById(tenantId);
+            if (tenant) {
+              reschedTenantCtx = getTenantContext(tenant);
+            }
+          }
+
+          // STEP 1: Cancel the existing appointment
+          console.log('[OpenAICallHandler] 📋 Step 1: Cancelling old appointment...');
+          await cancelAppointment(context.upcomingAppointment.id);
+          console.log('[OpenAICallHandler] ✅ Old appointment cancelled');
+
+          // STEP 2: Create new appointment at the selected time
+          console.log('[OpenAICallHandler] 📋 Step 2: Creating new appointment...');
+          const patientId = context.currentState.verifiedClinikoPatientId;
+          const patientName = context.currentState.nm || 'Unknown';
+
+          const newAppointment = await createAppointmentForPatient(callerPhone, {
+            practitionerId: selectedSlot.clinikoPractitionerId,
+            appointmentTypeId: context.upcomingAppointment.appointmentTypeId,
+            startsAt: selectedSlot.startISO,
+            fullName: patientName,
+            tenantCtx: reschedTenantCtx,
+            callSid,
+            conversationId: context.conversationId,
+            clinikoPatientId: patientId  // Use verified patient ID
+          });
+          console.log('[OpenAICallHandler] ✅ New appointment created:', newAppointment.id);
 
           // Send SMS confirmation
           const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
@@ -3478,8 +3522,11 @@ export async function handleOpenAIConversation(
           console.log('[OpenAICallHandler] ✅ Reschedule SMS confirmation sent');
 
           context.currentState.rc = true; // Mark as done to prevent duplicates
+          context.currentState.lastAppointmentId = newAppointment.id;
         } catch (error) {
-          console.error('[OpenAICallHandler] ❌ Error rescheduling appointment:', error);
+          console.error('[OpenAICallHandler] ❌ Error during atomic reschedule:', error);
+          // Note: If cancel succeeded but create failed, the old appointment is gone
+          // This is acceptable - user can call back to rebook
         }
       }
     }

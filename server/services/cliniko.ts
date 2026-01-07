@@ -1050,6 +1050,54 @@ export async function getNextUpcomingAppointment(patientId: string, tenantCtx?: 
   }
 }
 
+/**
+ * Get ALL upcoming appointments for a patient (not just the first one)
+ * Returns appointments sorted by start time (earliest first)
+ */
+export async function getUpcomingAppointments(patientId: string, tenantCtx?: TenantContext): Promise<Array<{
+  id: string;
+  practitioner_id: string;
+  appointment_type_id: string;
+  starts_at: string;
+  ends_at: string;
+  notes: string | null;
+}>> {
+  try {
+    const { base, headers } = getClinikoConfig(tenantCtx);
+    const BUSINESS_TZ = tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+    const fromLocal = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
+
+    console.log(`[Cliniko] getUpcomingAppointments: Fetching ALL upcoming appointments for patient ${patientId} from ${fromLocal}`);
+
+    const data = await clinikoGet<{ individual_appointments: ClinikoAppointment[] }>(
+      `/individual_appointments?patient_id=${patientId}&from=${fromLocal}&per_page=100`,
+      base, headers
+    );
+
+    const appointments = data.individual_appointments || [];
+    const now = dayjs().tz(BUSINESS_TZ);
+
+    // Filter to future, non-cancelled appointments and sort by start time
+    const upcomingAppts = appointments
+      .filter(appt => !appt.cancelled_at && dayjs(appt.starts_at).isAfter(now))
+      .sort((a, b) => dayjs(a.starts_at).valueOf() - dayjs(b.starts_at).valueOf())
+      .map(appt => ({
+        id: appt.id,
+        practitioner_id: appt.practitioner_id,
+        appointment_type_id: appt.appointment_type_id,
+        starts_at: appt.starts_at,
+        ends_at: appt.ends_at,
+        notes: appt.notes
+      }));
+
+    console.log(`[Cliniko] getUpcomingAppointments: Found ${upcomingAppts.length} upcoming appointments`);
+    return upcomingAppts;
+  } catch (e) {
+    console.error('[Cliniko] getUpcomingAppointments error', e);
+    return [];
+  }
+}
+
 export async function getPatientAppointments(phone: string): Promise<ClinikoAppointment[]> {
   try {
     const patient = await findPatientByPhone(phone);
