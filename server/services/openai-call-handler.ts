@@ -35,6 +35,71 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 // ═══════════════════════════════════════════════
+// Timeout Configuration (prevent Twilio 502 errors)
+// ═══════════════════════════════════════════════
+
+/** Max time for Cliniko lookups before triggering heartbeat */
+const CLINIKO_LOOKUP_TIMEOUT_MS = 8000;
+
+/** Max time for combined operations before early return */
+const TOTAL_OPERATION_TIMEOUT_MS = 12000;
+
+/**
+ * Wrap a promise with a timeout - returns result or throws on timeout
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operationName: string
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId!);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId!);
+    throw error;
+  }
+}
+
+/**
+ * Wrap a promise with timeout - returns result or null on timeout (no throw)
+ */
+async function withTimeoutSafe<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operationName: string
+): Promise<{ result: T; timedOut: false } | { result: null; timedOut: true }> {
+  let timeoutId: NodeJS.Timeout;
+
+  const timeoutPromise = new Promise<{ result: null; timedOut: true }>((resolve) => {
+    timeoutId = setTimeout(() => {
+      console.warn(`[Timeout] ${operationName} timed out after ${timeoutMs}ms`);
+      resolve({ result: null, timedOut: true });
+    }, timeoutMs);
+  });
+
+  const resultPromise = promise.then(result => {
+    clearTimeout(timeoutId!);
+    return { result, timedOut: false as const };
+  }).catch(error => {
+    clearTimeout(timeoutId!);
+    console.error(`[Timeout] ${operationName} failed:`, error);
+    return { result: null, timedOut: true as const };
+  });
+
+  return Promise.race([resultPromise, timeoutPromise]);
+}
+
+// ═══════════════════════════════════════════════
 // Name Sanitization (remove speech artifacts)
 // ═══════════════════════════════════════════════
 
@@ -1031,20 +1096,46 @@ function parseTimePreference(
 
     console.log('[parseTimePreference] Specific time range:', start.format('HH:mm'), 'to', end.format('HH:mm'));
   }
-  // Otherwise use time-of-day ranges
+  // OPTIMIZATION: Use narrower 4-hour windows to speed up Cliniko API response
+  // This prevents Twilio 502 timeouts caused by querying too many slots
   else if (lower.includes('morning')) {
+    // Early morning: 8am-12pm (4 hours)
     start = baseDay.hour(8).minute(0);
     end = baseDay.hour(12).minute(0);
-  } else if (lower.includes('afternoon')) {
+  } else if (lower.includes('afternoon') || lower.includes('arvo')) {
+    // Afternoon: 12pm-4pm (4 hours) - narrowed from 5pm to reduce query time
     start = baseDay.hour(12).minute(0);
-    end = baseDay.hour(17).minute(0);
+    end = baseDay.hour(16).minute(0);
+  } else if (lower.includes('late afternoon')) {
+    // Late afternoon: 2pm-6pm (4 hours)
+    start = baseDay.hour(14).minute(0);
+    end = baseDay.hour(18).minute(0);
   } else if (lower.includes('evening')) {
+    // Evening: 5pm-8pm (3 hours)
     start = baseDay.hour(17).minute(0);
     end = baseDay.hour(20).minute(0);
   } else {
-    // Default: business hours
-    start = baseDay.hour(8).minute(0);
-    end = baseDay.hour(18).minute(0);
+    // Default: Use intelligent 4-hour window based on current time
+    // This prevents wide 8am-6pm queries that cause timeouts
+    const currentHour = now.hour();
+    if (currentHour < 10) {
+      // Morning person - start from 8am
+      start = baseDay.hour(8).minute(0);
+      end = baseDay.hour(12).minute(0);
+    } else if (currentHour < 14) {
+      // Midday - search afternoon
+      start = baseDay.hour(12).minute(0);
+      end = baseDay.hour(16).minute(0);
+    } else if (currentHour < 17) {
+      // Late afternoon - search late afternoon/early evening
+      start = baseDay.hour(14).minute(0);
+      end = baseDay.hour(18).minute(0);
+    } else {
+      // Evening or scheduling for next day - use morning slot
+      start = baseDay.add(1, 'day').hour(8).minute(0);
+      end = baseDay.add(1, 'day').hour(12).minute(0);
+    }
+    console.log('[parseTimePreference] Default 4-hour window based on current time:', start.format('HH:mm'), 'to', end.format('HH:mm'));
   }
 
   // If the ENTIRE range is in the past (end time has passed), shift to tomorrow
@@ -1467,41 +1558,95 @@ export async function handleOpenAIConversation(
     // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is reschedule, change, or cancel
     //     Skip if this is a secondary booking (bookingFor='someone_else')
     //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
+    //     OPTIMIZATION: Uses timeout wrapper to prevent Twilio 502 errors
     const isRescheduleOrCancel = context.currentState.im === 'reschedule' || context.currentState.im === 'change' || context.currentState.im === 'cancel';
     const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
     if (isRescheduleOrCancel && !context.upcomingAppointment && !isSecondaryBookingFlow) {
       console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
       console.log('[OpenAICallHandler]   Intent:', context.currentState.im);
-      try {
-        // First find the patient - CRITICAL for identity verification
-        const patient = await findPatientByPhoneRobust(callerPhone);
-        if (patient) {
-          // Mark identity as verified - they have an existing record
-          context.currentState.identityVerified = true;
-          context.currentState.verifiedClinikoPatientId = patient.id;
-          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
-          context.currentState.np = false; // EXISTING patient - never ask if new
-          console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule:', patient.first_name, patient.last_name);
 
-          const upcoming = await getNextUpcomingAppointment(patient.id);
-          if (upcoming) {
-            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
-            context.upcomingAppointment = {
-              id: upcoming.id,
-              practitionerId: upcoming.practitioner_id,
-              appointmentTypeId: upcoming.appointment_type_id,
-              startsAt: upcoming.starts_at,
-              speakable: apptTime.format('dddd [at] h:mm A') // e.g., "Thursday at 2:30 PM"
-            };
-            console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
-          } else {
-            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
-          }
-        } else {
-          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko - treating as new patient');
+      const lookupStartTime = Date.now();
+
+      // OPTIMIZATION: Use timeout-wrapped lookup to prevent Twilio 502 timeout
+      const patientLookup = withTimeoutSafe(
+        findPatientByPhoneRobust(callerPhone),
+        CLINIKO_LOOKUP_TIMEOUT_MS,
+        'Patient lookup'
+      );
+
+      const { result: patient, timedOut: patientTimedOut } = await patientLookup;
+
+      if (patientTimedOut) {
+        // Timeout occurred - return early with heartbeat message
+        console.warn('[OpenAICallHandler] ⏰ Patient lookup timed out - returning heartbeat');
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 10,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call'
+        });
+        saySafe(gather, "One moment while I check the calendar.");
+        vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+        return vr;
+      }
+
+      if (patient) {
+        // Mark identity as verified - they have an existing record
+        context.currentState.identityVerified = true;
+        context.currentState.verifiedClinikoPatientId = patient.id;
+        context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+        context.currentState.np = false; // EXISTING patient - never ask if new
+        console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule:', patient.first_name, patient.last_name);
+
+        // OPTIMIZATION: Fetch appointment with remaining time budget
+        const remainingTime = CLINIKO_LOOKUP_TIMEOUT_MS - (Date.now() - lookupStartTime);
+        const appointmentLookup = withTimeoutSafe(
+          getNextUpcomingAppointment(patient.id),
+          Math.max(remainingTime, 3000), // At least 3 seconds
+          'Appointment lookup'
+        );
+
+        const { result: upcoming, timedOut: apptTimedOut } = await appointmentLookup;
+
+        if (apptTimedOut) {
+          console.warn('[OpenAICallHandler] ⏰ Appointment lookup timed out - returning heartbeat');
+          // Save context before returning
+          await saveConversationContext(callSid, context);
+
+          const gather = vr.gather({
+            input: ['speech'],
+            timeout: 10,
+            speechTimeout: 'auto',
+            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+            method: 'POST',
+            enhanced: true,
+            speechModel: 'phone_call'
+          });
+          saySafe(gather, "One moment while I check the calendar.");
+          vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+          return vr;
         }
-      } catch (error) {
-        console.error('[OpenAICallHandler] Error looking up appointment:', error);
+
+        if (upcoming) {
+          const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+          context.upcomingAppointment = {
+            id: upcoming.id,
+            practitionerId: upcoming.practitioner_id,
+            appointmentTypeId: upcoming.appointment_type_id,
+            startsAt: upcoming.starts_at,
+            speakable: apptTime.format('dddd [at] h:mm A') // e.g., "Thursday at 2:30 PM"
+          };
+          console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
+        }
+
+        console.log(`[OpenAICallHandler] ⏱️ Reschedule lookup completed in ${Date.now() - lookupStartTime}ms`);
+      } else {
+        console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko - treating as new patient');
       }
     }
 
@@ -2647,45 +2792,65 @@ export async function handleOpenAIConversation(
     // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
     //     Skip if this is a secondary booking flow (user wants to book for someone else after primary booking)
     //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
+    //     OPTIMIZATION: Uses timeout wrapper to prevent Twilio 502 errors
     if ((finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment && context.currentState.bookingFor !== 'someone_else') {
       console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - looking up appointment...');
       console.log('[OpenAICallHandler]   Intent:', finalResponse.state.im);
-      try {
-        const patient = await findPatientByPhoneRobust(callerPhone);
-        if (patient) {
-          // CRITICAL: Mark identity as verified for reschedule/cancel
-          // This prevents AI from asking "Are you a new patient?"
-          context.currentState.identityVerified = true;
-          context.currentState.verifiedClinikoPatientId = patient.id;
-          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
-          context.currentState.np = false; // EXISTING patient
-          console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule/cancel:', patient.first_name, patient.last_name);
 
-          const upcoming = await getNextUpcomingAppointment(patient.id);
-          if (upcoming) {
-            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
-            context.upcomingAppointment = {
-              id: upcoming.id,
-              practitionerId: upcoming.practitioner_id,
-              appointmentTypeId: upcoming.appointment_type_id,
-              startsAt: upcoming.starts_at,
-              speakable: apptTime.format('dddd [at] h:mm A')
-            };
-            console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
+      const postAiLookupStart = Date.now();
 
-            // Call AI again with the appointment info so it can tell the user
-            const responseWithAppt = await callReceptionistBrain(context, userUtterance);
-            console.log('[OpenAICallHandler] Reply with appointment:', responseWithAppt.reply);
-            finalResponse = responseWithAppt;
-          } else {
-            console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found');
-            // Let AI handle this - it should offer to book instead
-          }
+      // OPTIMIZATION: Use timeout-wrapped lookup
+      const { result: patient, timedOut: patientTimedOut } = await withTimeoutSafe(
+        findPatientByPhoneRobust(callerPhone),
+        CLINIKO_LOOKUP_TIMEOUT_MS,
+        'Post-AI patient lookup'
+      );
+
+      if (patientTimedOut) {
+        console.warn('[OpenAICallHandler] ⏰ Post-AI patient lookup timed out - using current response');
+        // Don't block - just use the current AI response and let the next turn handle it
+      } else if (patient) {
+        // CRITICAL: Mark identity as verified for reschedule/cancel
+        // This prevents AI from asking "Are you a new patient?"
+        context.currentState.identityVerified = true;
+        context.currentState.verifiedClinikoPatientId = patient.id;
+        context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+        context.currentState.np = false; // EXISTING patient
+        console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule/cancel:', patient.first_name, patient.last_name);
+
+        // Fetch appointment with remaining time budget
+        const remainingTime = CLINIKO_LOOKUP_TIMEOUT_MS - (Date.now() - postAiLookupStart);
+        const { result: upcoming, timedOut: apptTimedOut } = await withTimeoutSafe(
+          getNextUpcomingAppointment(patient.id),
+          Math.max(remainingTime, 3000),
+          'Post-AI appointment lookup'
+        );
+
+        if (apptTimedOut) {
+          console.warn('[OpenAICallHandler] ⏰ Post-AI appointment lookup timed out - using current response');
+        } else if (upcoming) {
+          const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+          context.upcomingAppointment = {
+            id: upcoming.id,
+            practitionerId: upcoming.practitioner_id,
+            appointmentTypeId: upcoming.appointment_type_id,
+            startsAt: upcoming.starts_at,
+            speakable: apptTime.format('dddd [at] h:mm A')
+          };
+          console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
+
+          // Call AI again with the appointment info so it can tell the user
+          const responseWithAppt = await callReceptionistBrain(context, userUtterance);
+          console.log('[OpenAICallHandler] Reply with appointment:', responseWithAppt.reply);
+          finalResponse = responseWithAppt;
         } else {
-          console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+          console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found');
+          // Let AI handle this - it should offer to book instead
         }
-      } catch (error) {
-        console.error('[OpenAICallHandler] Error looking up appointment:', error);
+
+        console.log(`[OpenAICallHandler] ⏱️ Post-AI reschedule lookup completed in ${Date.now() - postAiLookupStart}ms`);
+      } else {
+        console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
       }
     }
 
