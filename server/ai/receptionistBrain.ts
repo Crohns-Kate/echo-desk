@@ -115,6 +115,30 @@ export interface CompactCallState {
    */
   verifiedClinikoPatientId?: string;
 
+  /**
+   * pendingIdentityCheck = true when we're waiting for caller to confirm their identity
+   * Used in reschedule flow to ensure identity is verified before showing appointment
+   */
+  pendingIdentityCheck?: boolean;
+
+  /**
+   * matchedPatientName = name of patient matched by phone lookup (for identity question)
+   * Set when phone matches existing Cliniko patient, before identity is confirmed
+   */
+  matchedPatientName?: string;
+
+  /**
+   * upcomingAppointmentId = Cliniko appointment ID for reschedule/cancel
+   * Only set AFTER identity is verified and appointment lookup succeeds
+   */
+  upcomingAppointmentId?: string;
+
+  /**
+   * upcomingAppointmentTime = speakable time of the upcoming appointment
+   * e.g., "Thursday at 2:30 PM"
+   */
+  upcomingAppointmentTime?: string;
+
   // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
@@ -699,19 +723,31 @@ The ONLY time you can close the call is when:
 When caller wants to reschedule/change their appointment:
 
 1. Set im = "reschedule" (NOT "change" - that is deprecated)
-2. The backend will verify their identity using phone number and look up their upcoming appointment
-3. If found, context will show: "upcoming_appointment: [date/time]"
-4. SAY EXACTLY: "I found your appointment for [Time]. What would you like to change it to?"
-   - NEVER ask "Are you a new patient?" when someone wants to reschedule
-   - They are EXISTING patients with an existing appointment
-5. Once they give a new time preference (tp), set rs = true
-6. Backend will fetch new available slots
-7. When you see slots in context, offer them the options
-8. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
-9. Set rc = true (reschedule confirmed)
+
+2. IDENTITY VERIFICATION FIRST (REQUIRED):
+   - If pendingIdentityCheck = true, context will show: "matched_patient_name: [Name]"
+   - SAY EXACTLY: "I can help with that. Am I speaking with [Name]?"
+   - Wait for caller's response before proceeding
+   - NEVER say "I found your appointment" until identity is verified!
+
+3. After identity is confirmed (identityVerified = true):
+   - Context will show: "upcoming_appointment_id: [ID]" and "upcoming_appointment_time: [Time]"
+   - ONLY if upcomingAppointmentId exists, say: "I found your appointment for [Time]. What would you like to change it to?"
+   - If NO appointment ID exists, say: "I couldn't find an upcoming appointment. Could you give me your full name so I can search for it?"
+
+4. Once they give a new time preference (tp), set rs = true
+5. Backend will fetch new available slots
+6. When you see slots in context, offer them the options
+7. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
+8. Set rc = true (reschedule confirmed)
 
 CRITICAL: The backend will ATOMICALLY cancel the old appointment and create the new one.
 You do NOT need to handle cancellation - just confirm the new time.
+
+CRITICAL: DO NOT SAY GOODBYE during reschedule flow!
+- If im = "reschedule" and rc is not true, you MUST continue the conversation
+- Only after rc = true (reschedule confirmed) can you end the call
+- If the caller seems confused, ask: "What time would work better for you?"
 
 If no upcoming appointment found:
 "I couldn't find an upcoming appointment for this number. Would you like to book a new appointment instead?"
@@ -1034,9 +1070,22 @@ export async function callReceptionistBrain(
     contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: ${slotDescriptions.join(', ')}\n`;
   }
 
+  // Add identity verification status for reschedule flow
+  if (context.currentState?.pendingIdentityCheck === true && context.currentState?.matchedPatientName) {
+    contextInfo += `\n⚠️ IDENTITY VERIFICATION NEEDED:\npendingIdentityCheck: true\nmatched_patient_name: "${context.currentState.matchedPatientName}"\n`;
+    contextInfo += `➡️ ASK: "I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?"\n`;
+  }
+
   // Add upcoming appointment (for reschedule/cancel) - PROMINENTLY so AI sees it
-  if (context.upcomingAppointment) {
-    contextInfo += `\n⚠️ UPCOMING APPOINTMENT FOUND:\nupcoming_appointment: ${context.upcomingAppointment.speakable}\n`;
+  // ONLY show if we have a valid appointment ID (identity must be verified first)
+  if (context.upcomingAppointment && context.currentState?.upcomingAppointmentId) {
+    contextInfo += `\n⚠️ UPCOMING APPOINTMENT FOUND:\nupcoming_appointment_id: ${context.currentState.upcomingAppointmentId}\n`;
+    contextInfo += `upcoming_appointment_time: ${context.upcomingAppointment.speakable}\n`;
+    contextInfo += `➡️ SAY: "I found your appointment for ${context.upcomingAppointment.speakable}. What would you like to change it to?"\n`;
+  } else if (context.currentState?.identityVerified === true && !context.currentState?.upcomingAppointmentId &&
+             (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
+    contextInfo += `\n⚠️ NO APPOINTMENT FOUND:\nidentityVerified: true\nupcomingAppointmentId: null\n`;
+    contextInfo += `➡️ SAY: "I couldn't find an upcoming appointment. Would you like to book a new one instead?"\n`;
   }
 
   // Add practitioner name for "who will I see" question

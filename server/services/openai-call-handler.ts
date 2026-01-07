@@ -1555,30 +1555,86 @@ export async function handleOpenAIConversation(
       }
     }
 
-    // 2b. RESCHEDULE/CANCEL: Look up upcoming appointment if intent is reschedule, change, or cancel
-    //     Skip if this is a secondary booking (bookingFor='someone_else')
-    //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
-    //     OPTIMIZATION: Uses timeout wrapper to prevent Twilio 502 errors
+    // 2b. RESCHEDULE/CANCEL: Two-phase identity verification and appointment lookup
+    //     PHASE 1: If no identity check pending, look up patient by phone and ask for confirmation
+    //     PHASE 2: After identity confirmed, look up their appointment
+    //     This prevents Sarah from saying "I found your appointment" before knowing who the caller is
     const isRescheduleOrCancel = context.currentState.im === 'reschedule' || context.currentState.im === 'change' || context.currentState.im === 'cancel';
     const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
-    if (isRescheduleOrCancel && !context.upcomingAppointment && !isSecondaryBookingFlow) {
-      console.log('[OpenAICallHandler] 🔍 Looking up upcoming appointment for reschedule/cancel...');
-      console.log('[OpenAICallHandler]   Intent:', context.currentState.im);
 
+    // PHASE 1: First time detecting reschedule intent - look up patient and ASK for identity confirmation
+    if (isRescheduleOrCancel && !isSecondaryBookingFlow &&
+        context.currentState.identityVerified === undefined &&
+        context.currentState.pendingIdentityCheck !== true) {
+
+      console.log('[OpenAICallHandler] 🔍 RESCHEDULE PHASE 1: Looking up patient for identity verification...');
       const lookupStartTime = Date.now();
 
-      // OPTIMIZATION: Use timeout-wrapped lookup to prevent Twilio 502 timeout
       const patientLookup = withTimeoutSafe(
         findPatientByPhoneRobust(callerPhone),
         CLINIKO_LOOKUP_TIMEOUT_MS,
-        'Patient lookup'
+        'Patient lookup for identity'
       );
 
       const { result: patient, timedOut: patientTimedOut } = await patientLookup;
 
       if (patientTimedOut) {
-        // Timeout occurred - return early with heartbeat message
         console.warn('[OpenAICallHandler] ⏰ Patient lookup timed out - returning heartbeat');
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 10,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call'
+        });
+        saySafe(gather, "One moment while I check our records.");
+        vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+        return vr;
+      }
+
+      if (patient) {
+        // Found a patient - set pending identity check so AI asks for confirmation
+        const patientName = `${patient.first_name} ${patient.last_name}`;
+        context.currentState.pendingIdentityCheck = true;
+        context.currentState.matchedPatientName = patientName;
+        context.currentState.verifiedClinikoPatientId = patient.id; // Store for later
+        context.currentState.np = false; // Existing patient
+        console.log('[OpenAICallHandler] 📋 PHASE 1 COMPLETE: Found patient, asking for identity confirmation');
+        console.log('[OpenAICallHandler]   matchedPatientName:', patientName);
+        console.log('[OpenAICallHandler]   AI should ask: "Am I speaking with ' + patientName + '?"');
+      } else {
+        // No patient found - set identityVerified to false so AI asks for name
+        context.currentState.identityVerified = false;
+        context.currentState.pendingIdentityCheck = false;
+        console.log('[OpenAICallHandler] ⚠️ No patient found for phone - AI should ask for name');
+      }
+
+      console.log(`[OpenAICallHandler] ⏱️ Phase 1 completed in ${Date.now() - lookupStartTime}ms`);
+    }
+
+    // PHASE 2: Identity has been confirmed - NOW look up the appointment
+    if (isRescheduleOrCancel && !isSecondaryBookingFlow &&
+        context.currentState.identityVerified === true &&
+        context.currentState.verifiedClinikoPatientId &&
+        !context.upcomingAppointment &&
+        !context.currentState.upcomingAppointmentId) {
+
+      console.log('[OpenAICallHandler] 🔍 RESCHEDULE PHASE 2: Identity verified, looking up appointment...');
+      const lookupStartTime = Date.now();
+
+      const appointmentLookup = withTimeoutSafe(
+        getNextUpcomingAppointment(context.currentState.verifiedClinikoPatientId),
+        CLINIKO_LOOKUP_TIMEOUT_MS,
+        'Appointment lookup'
+      );
+
+      const { result: upcoming, timedOut: apptTimedOut } = await appointmentLookup;
+
+      if (apptTimedOut) {
+        console.warn('[OpenAICallHandler] ⏰ Appointment lookup timed out - returning heartbeat');
+        await saveConversationContext(callSid, context);
         const gather = vr.gather({
           input: ['speech'],
           timeout: 10,
@@ -1593,61 +1649,71 @@ export async function handleOpenAIConversation(
         return vr;
       }
 
-      if (patient) {
-        // Mark identity as verified - they have an existing record
-        context.currentState.identityVerified = true;
-        context.currentState.verifiedClinikoPatientId = patient.id;
-        context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
-        context.currentState.np = false; // EXISTING patient - never ask if new
-        console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule:', patient.first_name, patient.last_name);
-
-        // OPTIMIZATION: Fetch appointment with remaining time budget
-        const remainingTime = CLINIKO_LOOKUP_TIMEOUT_MS - (Date.now() - lookupStartTime);
-        const appointmentLookup = withTimeoutSafe(
-          getNextUpcomingAppointment(patient.id),
-          Math.max(remainingTime, 3000), // At least 3 seconds
-          'Appointment lookup'
-        );
-
-        const { result: upcoming, timedOut: apptTimedOut } = await appointmentLookup;
-
-        if (apptTimedOut) {
-          console.warn('[OpenAICallHandler] ⏰ Appointment lookup timed out - returning heartbeat');
-          // Save context before returning
-          await saveConversationContext(callSid, context);
-
-          const gather = vr.gather({
-            input: ['speech'],
-            timeout: 10,
-            speechTimeout: 'auto',
-            action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-            method: 'POST',
-            enhanced: true,
-            speechModel: 'phone_call'
-          });
-          saySafe(gather, "One moment while I check the calendar.");
-          vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
-          return vr;
-        }
-
-        if (upcoming) {
-          const apptTime = dayjs(upcoming.starts_at).tz(timezone);
-          context.upcomingAppointment = {
-            id: upcoming.id,
-            practitionerId: upcoming.practitioner_id,
-            appointmentTypeId: upcoming.appointment_type_id,
-            startsAt: upcoming.starts_at,
-            speakable: apptTime.format('dddd [at] h:mm A') // e.g., "Thursday at 2:30 PM"
-          };
-          console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
-        } else {
-          console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
-        }
-
-        console.log(`[OpenAICallHandler] ⏱️ Reschedule lookup completed in ${Date.now() - lookupStartTime}ms`);
+      if (upcoming) {
+        const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+        // Save to context.upcomingAppointment for executor
+        context.upcomingAppointment = {
+          id: upcoming.id,
+          practitionerId: upcoming.practitioner_id,
+          appointmentTypeId: upcoming.appointment_type_id,
+          startsAt: upcoming.starts_at,
+          speakable: apptTime.format('dddd [at] h:mm A')
+        };
+        // ALSO save to state so AI can see it in context
+        context.currentState.upcomingAppointmentId = upcoming.id;
+        context.currentState.upcomingAppointmentTime = apptTime.format('dddd [at] h:mm A');
+        console.log('[OpenAICallHandler] ✅ PHASE 2 COMPLETE: Found appointment');
+        console.log('[OpenAICallHandler]   upcomingAppointmentId:', upcoming.id);
+        console.log('[OpenAICallHandler]   upcomingAppointmentTime:', context.currentState.upcomingAppointmentTime);
+        console.log('[OpenAICallHandler]   NOW Sarah can say: "I found your appointment for ' + context.currentState.upcomingAppointmentTime + '"');
       } else {
-        console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko - treating as new patient');
+        console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found for patient');
+        // Clear the appointment fields to signal AI that no appointment exists
+        context.currentState.upcomingAppointmentId = undefined;
+        context.currentState.upcomingAppointmentTime = undefined;
       }
+
+      console.log(`[OpenAICallHandler] ⏱️ Phase 2 completed in ${Date.now() - lookupStartTime}ms`);
+    }
+
+    // Handle identity confirmation from user utterance
+    // This runs on subsequent turns when pendingIdentityCheck is true
+    if (context.currentState.pendingIdentityCheck === true && context.currentState.matchedPatientName) {
+      const utteranceLower = userUtterance.toLowerCase().trim();
+
+      // Patterns for confirming identity
+      const confirmPatterns = [
+        /^yes\b/i, /^yeah\b/i, /^yep\b/i, /^yup\b/i,
+        /^that'?s me\b/i, /^that is me\b/i,
+        /^correct\b/i, /^speaking\b/i, /^this is\b/i,
+        /^hi,?\s*(yes|yeah)\b/i, /^uh huh\b/i, /^mm hmm\b/i
+      ];
+
+      // Patterns for denying identity
+      const denyPatterns = [
+        /^no[,.]?\s/i, /^nope\b/i, /^not me\b/i,
+        /^i'?m not\b/i, /^that'?s not me\b/i,
+        /^wrong person\b/i, /^someone else\b/i
+      ];
+
+      const confirmedIdentity = confirmPatterns.some(p => p.test(utteranceLower));
+      const deniedIdentity = denyPatterns.some(p => p.test(utteranceLower));
+
+      if (confirmedIdentity) {
+        console.log('[OpenAICallHandler] ✅ Identity CONFIRMED by caller');
+        context.currentState.identityVerified = true;
+        context.currentState.pendingIdentityCheck = false;
+        context.currentState.nm = context.currentState.matchedPatientName;
+      } else if (deniedIdentity) {
+        console.log('[OpenAICallHandler] ❌ Identity DENIED by caller - treating as different person');
+        context.currentState.identityVerified = false;
+        context.currentState.pendingIdentityCheck = false;
+        context.currentState.verifiedClinikoPatientId = undefined;
+        context.currentState.matchedPatientName = undefined;
+        context.currentState.np = true; // Treat as new patient
+      }
+      // If neither confirmed nor denied, keep pendingIdentityCheck true
+      // AI will continue to wait for a clear answer
     }
 
     // ═══════════════════════════════════════════════
@@ -2789,69 +2855,68 @@ export async function handleOpenAIConversation(
       }
     }
 
-    // 3c. RESCHEDULE/CANCEL: Look up appointment after AI detects intent
-    //     Skip if this is a secondary booking flow (user wants to book for someone else after primary booking)
-    //     NOTE: "reschedule" is the new intent, "change" is deprecated but still supported
-    //     OPTIMIZATION: Uses timeout wrapper to prevent Twilio 502 errors
-    if ((finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel') && !context.upcomingAppointment && context.currentState.bookingFor !== 'someone_else') {
-      console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - looking up appointment...');
+    // 3c. RESCHEDULE/CANCEL: If AI just detected reschedule intent, trigger Phase 1 (identity check)
+    //     This handles the case where AI set im=reschedule in the response
+    //     We need to set up the identity verification for the next turn
+    const aiJustSetReschedule = (finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change' || finalResponse.state.im === 'cancel');
+    const identityNotYetChecked = context.currentState.identityVerified === undefined && context.currentState.pendingIdentityCheck !== true;
+    const notSecondaryBooking = context.currentState.bookingFor !== 'someone_else';
+
+    if (aiJustSetReschedule && identityNotYetChecked && notSecondaryBooking) {
+      console.log('[OpenAICallHandler] 🔍 AI detected reschedule/cancel intent - triggering identity check...');
       console.log('[OpenAICallHandler]   Intent:', finalResponse.state.im);
 
       const postAiLookupStart = Date.now();
 
-      // OPTIMIZATION: Use timeout-wrapped lookup
+      // Look up patient for identity verification (don't auto-verify, just set up the check)
       const { result: patient, timedOut: patientTimedOut } = await withTimeoutSafe(
         findPatientByPhoneRobust(callerPhone),
         CLINIKO_LOOKUP_TIMEOUT_MS,
-        'Post-AI patient lookup'
+        'Post-AI patient lookup for identity'
       );
 
-      if (patientTimedOut) {
-        console.warn('[OpenAICallHandler] ⏰ Post-AI patient lookup timed out - using current response');
-        // Don't block - just use the current AI response and let the next turn handle it
-      } else if (patient) {
-        // CRITICAL: Mark identity as verified for reschedule/cancel
-        // This prevents AI from asking "Are you a new patient?"
-        context.currentState.identityVerified = true;
+      if (!patientTimedOut && patient) {
+        // Set pending identity check so AI asks for confirmation on next turn
+        const patientName = `${patient.first_name} ${patient.last_name}`;
+        context.currentState.pendingIdentityCheck = true;
+        context.currentState.matchedPatientName = patientName;
         context.currentState.verifiedClinikoPatientId = patient.id;
-        context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
-        context.currentState.np = false; // EXISTING patient
-        console.log('[OpenAICallHandler] ✅ Identity VERIFIED for reschedule/cancel:', patient.first_name, patient.last_name);
+        context.currentState.np = false;
+        console.log('[OpenAICallHandler] 📋 Set up identity verification for:', patientName);
 
-        // Fetch appointment with remaining time budget
-        const remainingTime = CLINIKO_LOOKUP_TIMEOUT_MS - (Date.now() - postAiLookupStart);
-        const { result: upcoming, timedOut: apptTimedOut } = await withTimeoutSafe(
-          getNextUpcomingAppointment(patient.id),
-          Math.max(remainingTime, 3000),
-          'Post-AI appointment lookup'
-        );
-
-        if (apptTimedOut) {
-          console.warn('[OpenAICallHandler] ⏰ Post-AI appointment lookup timed out - using current response');
-        } else if (upcoming) {
-          const apptTime = dayjs(upcoming.starts_at).tz(timezone);
-          context.upcomingAppointment = {
-            id: upcoming.id,
-            practitionerId: upcoming.practitioner_id,
-            appointmentTypeId: upcoming.appointment_type_id,
-            startsAt: upcoming.starts_at,
-            speakable: apptTime.format('dddd [at] h:mm A')
-          };
-          console.log('[OpenAICallHandler] ✅ Found upcoming appointment:', context.upcomingAppointment.speakable);
-
-          // Call AI again with the appointment info so it can tell the user
-          const responseWithAppt = await callReceptionistBrain(context, userUtterance);
-          console.log('[OpenAICallHandler] Reply with appointment:', responseWithAppt.reply);
-          finalResponse = responseWithAppt;
-        } else {
-          console.log('[OpenAICallHandler] ⚠️ No upcoming appointment found');
-          // Let AI handle this - it should offer to book instead
-        }
-
-        console.log(`[OpenAICallHandler] ⏱️ Post-AI reschedule lookup completed in ${Date.now() - postAiLookupStart}ms`);
-      } else {
-        console.log('[OpenAICallHandler] ⚠️ Patient not found in Cliniko');
+        // Call AI again so it can ask the identity question
+        const responseWithIdentityCheck = await callReceptionistBrain(context, userUtterance);
+        console.log('[OpenAICallHandler] Reply with identity check:', responseWithIdentityCheck.reply);
+        finalResponse = responseWithIdentityCheck;
+      } else if (!patientTimedOut) {
+        // No patient found - mark as such so AI asks for name
+        context.currentState.identityVerified = false;
+        context.currentState.pendingIdentityCheck = false;
+        console.log('[OpenAICallHandler] ⚠️ No patient found - AI should ask for name');
       }
+
+      console.log(`[OpenAICallHandler] ⏱️ Post-AI identity setup completed in ${Date.now() - postAiLookupStart}ms`);
+    }
+
+    // 3c-bis. RESCHEDULE HANGUP PREVENTION: If in reschedule flow and not completed, prevent goodbye
+    const inRescheduleFlow = (context.currentState.im === 'reschedule' || context.currentState.im === 'change' ||
+                              finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change');
+    const rescheduleNotCompleted = context.currentState.rc !== true && finalResponse.state.rc !== true;
+    const responseContainsGoodbye = /\b(goodbye|bye|take care|have a (good|great|nice) day)\b/i.test(finalResponse.reply);
+
+    if (inRescheduleFlow && rescheduleNotCompleted && responseContainsGoodbye) {
+      console.warn('[OpenAICallHandler] ⚠️ HANGUP PREVENTION: AI tried to say goodbye during incomplete reschedule');
+      console.log('[OpenAICallHandler]   Original reply:', finalResponse.reply);
+
+      // Override the response to keep the conversation going
+      if (context.currentState.pendingIdentityCheck) {
+        finalResponse.reply = `I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?`;
+      } else if (!context.currentState.upcomingAppointmentId) {
+        finalResponse.reply = "What time would work better for you?";
+      } else {
+        finalResponse.reply = `I found your appointment for ${context.currentState.upcomingAppointmentTime || 'your scheduled time'}. What time would you like to change it to?`;
+      }
+      console.log('[OpenAICallHandler]   Corrected reply:', finalResponse.reply);
     }
 
     // ═══════════════════════════════════════════════
