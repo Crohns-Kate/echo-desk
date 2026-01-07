@@ -1015,6 +1015,113 @@ export async function findPatientByPhoneRobust(e164Phone: string, tenantCtx?: Te
   }
 }
 
+/**
+ * Search for a patient by name using Cliniko's q= search parameter
+ * Returns the best match based on name similarity
+ *
+ * @param fullName - Patient's full name (e.g., "Michael Bishop")
+ * @param tenantCtx - Optional tenant context for multi-tenant support
+ * @returns Patient info if found, null otherwise
+ */
+export async function findPatientByName(fullName: string, tenantCtx?: TenantContext): Promise<{ id: string; first_name: string; last_name: string } | null> {
+  try {
+    if (!fullName || fullName.trim().length < 2) {
+      console.log('[Cliniko] findPatientByName: Name too short to search');
+      return null;
+    }
+
+    const { base, headers } = getClinikoConfig(tenantCtx);
+
+    // Clean up the name for search
+    const cleanName = fullName.trim().toLowerCase();
+    const nameParts = cleanName.split(/\s+/);
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    console.log(`[Cliniko] findPatientByName: Searching for "${fullName}"`);
+    console.log(`[Cliniko]   Parsed: firstName="${firstName}", lastName="${lastName}"`);
+
+    // Use Cliniko's q= parameter to search by name
+    const searchQuery = encodeURIComponent(fullName.trim());
+    const data = await clinikoGet<{ patients: ClinikoPatient[] }>(
+      `/patients?q=${searchQuery}&per_page=50`,
+      base, headers
+    );
+
+    const patients = data.patients || [];
+    console.log(`[Cliniko] findPatientByName: Found ${patients.length} potential matches`);
+
+    if (patients.length === 0) {
+      // Try searching with just the last name if full name search fails
+      if (lastName) {
+        console.log(`[Cliniko] findPatientByName: Trying last name only search: "${lastName}"`);
+        const lastNameData = await clinikoGet<{ patients: ClinikoPatient[] }>(
+          `/patients?q=${encodeURIComponent(lastName)}&per_page=50`,
+          base, headers
+        );
+        const lastNamePatients = lastNameData.patients || [];
+        console.log(`[Cliniko] findPatientByName: Last name search found ${lastNamePatients.length} matches`);
+
+        // Find best match by checking first name too
+        for (const p of lastNamePatients) {
+          const pFirstLower = p.first_name?.toLowerCase() || '';
+          const pLastLower = p.last_name?.toLowerCase() || '';
+          if (pFirstLower.includes(firstName) || firstName.includes(pFirstLower)) {
+            if (pLastLower.includes(lastName) || lastName.includes(pLastLower)) {
+              console.log(`[Cliniko] findPatientByName: ✅ Found match via last name search: ${p.first_name} ${p.last_name} (ID: ${p.id})`);
+              return { id: p.id, first_name: p.first_name, last_name: p.last_name };
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    // Score each patient by how well their name matches
+    const scoredPatients = patients.map(p => {
+      const pFirstLower = p.first_name?.toLowerCase() || '';
+      const pLastLower = p.last_name?.toLowerCase() || '';
+      let score = 0;
+
+      // Exact first name match
+      if (pFirstLower === firstName) score += 10;
+      // First name contains or is contained
+      else if (pFirstLower.includes(firstName) || firstName.includes(pFirstLower)) score += 5;
+
+      // Exact last name match
+      if (pLastLower === lastName) score += 10;
+      // Last name contains or is contained
+      else if (lastName && (pLastLower.includes(lastName) || lastName.includes(pLastLower))) score += 5;
+
+      // Full name exact match
+      const pFullName = `${pFirstLower} ${pLastLower}`;
+      if (pFullName === cleanName) score += 20;
+
+      return { patient: p, score };
+    });
+
+    // Sort by score descending
+    scoredPatients.sort((a, b) => b.score - a.score);
+
+    // Return best match if score is reasonable
+    const bestMatch = scoredPatients[0];
+    if (bestMatch && bestMatch.score >= 5) {
+      console.log(`[Cliniko] findPatientByName: ✅ Best match: ${bestMatch.patient.first_name} ${bestMatch.patient.last_name} (ID: ${bestMatch.patient.id}, score: ${bestMatch.score})`);
+      return {
+        id: bestMatch.patient.id,
+        first_name: bestMatch.patient.first_name,
+        last_name: bestMatch.patient.last_name
+      };
+    }
+
+    console.log(`[Cliniko] findPatientByName: No good match found (best score: ${bestMatch?.score || 0})`);
+    return null;
+  } catch (e) {
+    console.error('[Cliniko] findPatientByName error:', e);
+    return null;
+  }
+}
+
 export async function getNextUpcomingAppointment(patientId: string, tenantCtx?: TenantContext): Promise<{ id: string; practitioner_id: string; appointment_type_id: string; starts_at: string } | null> {
   try {
     const { base, headers } = getClinikoConfig(tenantCtx);

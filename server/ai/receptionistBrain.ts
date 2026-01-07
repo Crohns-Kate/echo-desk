@@ -139,6 +139,18 @@ export interface CompactCallState {
    */
   upcomingAppointmentTime?: string;
 
+  /**
+   * nameSearchRequested = true when user provided a name for manual search
+   * Used when phone lookup fails and user insists appointment exists under a different name
+   */
+  nameSearchRequested?: boolean;
+
+  /**
+   * providedSearchName = the name user provided for manual search
+   * e.g., "Michael Bishop"
+   */
+  providedSearchName?: string;
+
   // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
@@ -733,13 +745,20 @@ When caller wants to reschedule/change their appointment:
 3. After identity is confirmed (identityVerified = true):
    - Context will show: "upcoming_appointment_id: [ID]" and "upcoming_appointment_time: [Time]"
    - ONLY if upcomingAppointmentId exists, say: "I found your appointment for [Time]. What would you like to change it to?"
-   - If NO appointment ID exists, say: "I couldn't find an upcoming appointment. Could you give me your full name so I can search for it?"
+   - If NO appointment ID exists, ask for their name: "I couldn't find an appointment under this phone number. What name would it be under?"
 
-4. Once they give a new time preference (tp), set rs = true
-5. Backend will fetch new available slots
-6. When you see slots in context, offer them the options
-7. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
-8. Set rc = true (reschedule confirmed)
+4. NAME-BASED SEARCH (when user provides a name):
+   - If user says their name (e.g., "Michael Bishop", "under my name", "check under [name]"):
+     - Set nm = "[their name]" in state
+     - Backend will automatically search by name
+   - If found, context will show the appointment details
+   - If still not found, say: "I'm sorry, I still couldn't find an appointment under [name]. Would you like to book a new one?"
+
+5. Once they give a new time preference (tp), set rs = true
+6. Backend will fetch new available slots
+7. When you see slots in context, offer them the options
+8. When they pick a slot, confirm: "I've moved your appointment to [new time]. Is there anything else?"
+9. Set rc = true (reschedule confirmed)
 
 CRITICAL: The backend will ATOMICALLY cancel the old appointment and create the new one.
 You do NOT need to handle cancellation - just confirm the new time.
@@ -748,9 +767,12 @@ CRITICAL: DO NOT SAY GOODBYE during reschedule flow!
 - If im = "reschedule" and rc is not true, you MUST continue the conversation
 - Only after rc = true (reschedule confirmed) can you end the call
 - If the caller seems confused, ask: "What time would work better for you?"
+- If caller insists appointment exists, say: "Let me try searching by your name. What name would the appointment be under?"
 
-If no upcoming appointment found:
-"I couldn't find an upcoming appointment for this number. Would you like to book a new appointment instead?"
+If phone lookup failed but user provides name:
+- Backend will search by name using findPatientByName
+- If found, immediately look up their appointments
+- SAY: "Let me search under that name..." then report results
 
 === CANCEL FLOW (im = "cancel") ===
 
