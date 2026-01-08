@@ -369,3 +369,89 @@ Caller speaks freely.
 Echo Desk routes intelligently.
 
 This is the final and authoritative blueprint for how Echo Desk must operate.
+
+-------------------------------------------------------------------------------
+# 13. CORE PATIENT WORKFLOWS
+-------------------------------------------------------------------------------
+
+### New Patient Workflow (Discovery)
+
+**Trigger:** No phone match found in Cliniko OR user verbally confirms they are new.
+
+**Action:** Sarah must collect the Full Name (First and Last).
+
+**System Logic:** Use `getOrCreatePatient`.
+
+**Safety:** Ignore single-word names or fillers (e.g., "Actually," "You know").
+
+**Completion:** Send SMS with a tokenized intake link (`clinikoPatientId` included).
+
+---
+
+### Regular Patient Workflow (Verification)
+
+**Trigger:** Incoming phone number matches an existing Cliniko record.
+
+**Action:** Sarah must verify identity before proceeding.
+
+**Script:** "Hi, I see this number is linked to [Name]. Is that who I'm speaking with?"
+
+**The Pivot:** If the caller says "No, I'm [Someone Else]," immediately drop context for the matched record and switch to the New Patient Workflow.
+
+---
+
+### Reschedule Workflow (Atomic Move)
+
+**Trigger:** User asks to "change," "move," or "reschedule."
+
+**Lookup:**
+1. Check phone for existing appointments.
+2. If not found, Sarah must ask for the name and perform a `findPatientByName` search.
+
+**Atomic Action:** Once a new time is confirmed, the system must Cancel the old `appointment_id` AND Create the new one. Do not leave both on the calendar.
+
+---
+
+### Cancellation Workflow (Clean Exit)
+
+**Trigger:** User wants to "cancel" or "not come in."
+
+**Action:** Verify identity and locate the specific upcoming appointment ID.
+
+**Logic:** Update Cliniko appointment status to `cancelled`.
+
+**Safety:** Confirm the cancellation clearly and ask if they want to rebook. If not, end the call politely.
+
+---
+
+### Human Handoff (The Safety Valve)
+
+**Trigger:** Sentiment detection of frustration OR keywords like "Human," "Real person," "Operator."
+
+**Action:** Sarah acknowledges the request: "I understand. Let me get a member of our team to help you."
+
+**Logic:** Trigger a Twilio `<Dial>` to the clinic's front desk or a priority callback notification.
+
+-------------------------------------------------------------------------------
+# 14. TECHNICAL MANDATES
+-------------------------------------------------------------------------------
+
+### Cliniko Wrapping
+
+All API requests must be nested in a root object:
+```json
+{ "patient": { ... } }
+{ "appointment": { ... } }
+```
+
+### Form-First Priority
+
+Web form data (Email, Name, Phone) always overrides voice transcriptions. If a form is submitted for a session, lock those fields.
+
+### Phone Formatting
+
+Use the `patient_phone_numbers` array format for Cliniko updates. Use `phone_type: "Mobile"`.
+
+### 15-Second Rule
+
+Optimize all Cliniko lookups with `Promise.all()` to prevent Twilio 502 timeouts.
