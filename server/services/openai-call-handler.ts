@@ -1689,15 +1689,35 @@ export async function handleOpenAIConversation(
         /^hi,?\s*(yes|yeah)\b/i, /^uh huh\b/i, /^mm hmm\b/i
       ];
 
-      // Patterns for denying identity
-      const denyPatterns = [
-        /^no[,.]?\s/i, /^nope\b/i, /^not me\b/i,
+      // Patterns for denying identity - also extract name if provided
+      const denyWithNamePatterns = [
+        /^no[,.]?\s*(?:i'?m|my name is|this is|it'?s)\s+(.+)/i,
+        /^(?:no[,.]?\s*)?(?:i'?m|my name is|this is)\s+(.+)/i,
+        /^(?:actually|sorry)[,.]?\s*(?:i'?m|my name is|this is|it'?s)\s+(.+)/i,
+      ];
+
+      const denyOnlyPatterns = [
+        /^no[,.]?\s*$/i, /^nope\b/i, /^not me\b/i,
         /^i'?m not\b/i, /^that'?s not me\b/i,
         /^wrong person\b/i, /^someone else\b/i
       ];
 
       const confirmedIdentity = confirmPatterns.some(p => p.test(utteranceLower));
-      const deniedIdentity = denyPatterns.some(p => p.test(utteranceLower));
+
+      // Check if denying with a name provided
+      let extractedNameFromDenial: string | null = null;
+      for (const pattern of denyWithNamePatterns) {
+        const match = userUtterance.match(pattern);
+        if (match && match[1]) {
+          extractedNameFromDenial = match[1].trim()
+            .replace(/[.,!?]+$/, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          break;
+        }
+      }
+
+      const deniedIdentity = denyOnlyPatterns.some(p => p.test(utteranceLower)) || extractedNameFromDenial;
 
       if (confirmedIdentity) {
         console.log('[OpenAICallHandler] ✅ Identity CONFIRMED by caller');
@@ -1710,18 +1730,76 @@ export async function handleOpenAIConversation(
         context.currentState.pendingIdentityCheck = false;
         context.currentState.verifiedClinikoPatientId = undefined;
         context.currentState.matchedPatientName = undefined;
-        context.currentState.np = true; // Treat as new patient
+        context.currentState.np = true;
+
+        // If they provided a name in the denial, immediately search for it
+        if (extractedNameFromDenial && extractedNameFromDenial.length >= 3) {
+          console.log('[OpenAICallHandler] 🔍 User provided name while denying identity:', extractedNameFromDenial);
+          context.currentState.providedSearchName = extractedNameFromDenial;
+
+          const nameSearchResult = await withTimeoutSafe(
+            findPatientByName(extractedNameFromDenial),
+            CLINIKO_LOOKUP_TIMEOUT_MS,
+            'Name search from denial'
+          );
+
+          if (!nameSearchResult.timedOut && nameSearchResult.result) {
+            const patient = nameSearchResult.result;
+            console.log(`[OpenAICallHandler] ✅ Found patient by name: ${patient.first_name} ${patient.last_name}`);
+            context.currentState.identityVerified = true;
+            context.currentState.verifiedClinikoPatientId = patient.id;
+            context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+            context.currentState.np = false;
+            context.currentState.nameSearchCompleted = true;
+
+            // Immediately look up their appointments
+            const apptResult = await withTimeoutSafe(
+              getNextUpcomingAppointment(patient.id),
+              CLINIKO_LOOKUP_TIMEOUT_MS,
+              'Appointment lookup after name search'
+            );
+
+            if (!apptResult.timedOut && apptResult.result) {
+              const upcoming = apptResult.result;
+              const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+              context.upcomingAppointment = {
+                id: upcoming.id,
+                practitionerId: upcoming.practitioner_id,
+                appointmentTypeId: upcoming.appointment_type_id,
+                startsAt: upcoming.starts_at,
+                speakable: apptTime.format('dddd [at] h:mm A')
+              };
+              context.currentState.upcomingAppointmentId = upcoming.id;
+              context.currentState.upcomingAppointmentTime = apptTime.format('dddd [at] h:mm A');
+              console.log(`[OpenAICallHandler] ✅ Found appointment: ${context.currentState.upcomingAppointmentTime}`);
+            } else {
+              console.log('[OpenAICallHandler] ⚠️ Patient found but no upcoming appointment');
+              context.currentState.nameSearchCompleted = true;
+            }
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ No patient found with that name');
+            context.currentState.nameSearchCompleted = true;
+          }
+        } else {
+          // Denied but didn't provide name - mark that we need to ask for name
+          context.currentState.needsNameForSearch = true;
+        }
       }
       // If neither confirmed nor denied, keep pendingIdentityCheck true
-      // AI will continue to wait for a clear answer
     }
 
-    // 2b-bis. NAME-BASED SEARCH: When phone lookup failed but user provides a name
-    // Detect patterns like "check under Michael Bishop", "my name is...", "under [Name]"
-    if (isRescheduleOrCancel && !isSecondaryBookingFlow &&
-        context.currentState.identityVerified === false &&
-        !context.currentState.upcomingAppointmentId) {
+    // 2b-bis. NAME-BASED SEARCH: When phone lookup failed/no appointment, and user provides a name
+    // Also triggers when identity was denied and user provides a name later
+    const needsNameSearch = isRescheduleOrCancel && !isSecondaryBookingFlow && (
+      // Case 1: Identity was denied (phone matched wrong person)
+      (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted) ||
+      // Case 2: Identity verified but no appointment found
+      (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) ||
+      // Case 3: Explicitly need name for search
+      context.currentState.needsNameForSearch === true
+    );
 
+    if (needsNameSearch && !context.currentState.upcomingAppointmentId) {
       const utteranceLower = userUtterance.toLowerCase().trim();
 
       // Patterns that indicate user is providing a name for search
@@ -2986,22 +3064,40 @@ export async function handleOpenAIConversation(
     }
 
     // 3c-bis. RESCHEDULE HANGUP PREVENTION: If in reschedule flow and not completed, prevent goodbye
+    // Must try BOTH phone AND name search before giving up
     const inRescheduleFlow = (context.currentState.im === 'reschedule' || context.currentState.im === 'change' ||
                               finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change');
     const rescheduleNotCompleted = context.currentState.rc !== true && finalResponse.state.rc !== true;
-    const responseContainsGoodbye = /\b(goodbye|bye|take care|have a (good|great|nice) day)\b/i.test(finalResponse.reply);
+    const responseContainsGoodbye = /\b(goodbye|bye|take care|have a (good|great|nice) day|feel free to call)\b/i.test(finalResponse.reply);
 
-    if (inRescheduleFlow && rescheduleNotCompleted && responseContainsGoodbye) {
+    // Only allow goodbye if:
+    // 1. Reschedule is completed (rc === true), OR
+    // 2. We've searched by BOTH phone AND name and still found nothing
+    const bothSearchesCompleted = context.currentState.nameSearchCompleted === true;
+    const hasAppointment = !!context.currentState.upcomingAppointmentId;
+    const allowGoodbye = !inRescheduleFlow || !rescheduleNotCompleted || (bothSearchesCompleted && !hasAppointment);
+
+    if (inRescheduleFlow && rescheduleNotCompleted && responseContainsGoodbye && !allowGoodbye) {
       console.warn('[OpenAICallHandler] ⚠️ HANGUP PREVENTION: AI tried to say goodbye during incomplete reschedule');
       console.log('[OpenAICallHandler]   Original reply:', finalResponse.reply);
+      console.log('[OpenAICallHandler]   nameSearchCompleted:', context.currentState.nameSearchCompleted);
+      console.log('[OpenAICallHandler]   upcomingAppointmentId:', context.currentState.upcomingAppointmentId);
 
       // Override the response to keep the conversation going
-      if (context.currentState.pendingIdentityCheck) {
+      if (context.currentState.pendingIdentityCheck && context.currentState.matchedPatientName) {
         finalResponse.reply = `I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?`;
-      } else if (!context.currentState.upcomingAppointmentId) {
-        finalResponse.reply = "What time would work better for you?";
+      } else if (context.currentState.needsNameForSearch || (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted)) {
+        // Need to ask for name
+        finalResponse.reply = "I couldn't find a visit under this phone number. What name should I search for?";
+      } else if (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) {
+        // Verified identity but no appointment - ask for another name
+        finalResponse.reply = "I couldn't find an upcoming visit under that name. Is there another name it might be under?";
+      } else if (context.currentState.upcomingAppointmentId) {
+        // We have an appointment - ask for new time
+        finalResponse.reply = `I found your visit for ${context.currentState.upcomingAppointmentTime || 'your scheduled time'}. What time would you like to move it to?`;
       } else {
-        finalResponse.reply = `I found your appointment for ${context.currentState.upcomingAppointmentTime || 'your scheduled time'}. What time would you like to change it to?`;
+        // Default - ask for time preference
+        finalResponse.reply = "What time would work better for you?";
       }
       console.log('[OpenAICallHandler]   Corrected reply:', finalResponse.reply);
     }

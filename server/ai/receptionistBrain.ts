@@ -151,6 +151,18 @@ export interface CompactCallState {
    */
   providedSearchName?: string;
 
+  /**
+   * nameSearchCompleted = true after we've tried searching by name
+   * Prevents duplicate searches and helps track if we should give up
+   */
+  nameSearchCompleted?: boolean;
+
+  /**
+   * needsNameForSearch = true when we need user to provide a name for search
+   * Set when phone lookup fails or identity is denied without a name
+   */
+  needsNameForSearch?: boolean;
+
   // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
@@ -1101,13 +1113,27 @@ export async function callReceptionistBrain(
   // Add upcoming appointment (for reschedule/cancel) - PROMINENTLY so AI sees it
   // ONLY show if we have a valid appointment ID (identity must be verified first)
   if (context.upcomingAppointment && context.currentState?.upcomingAppointmentId) {
-    contextInfo += `\n⚠️ UPCOMING APPOINTMENT FOUND:\nupcoming_appointment_id: ${context.currentState.upcomingAppointmentId}\n`;
+    contextInfo += `\n⚠️ APPOINTMENT FOUND - CONFIRM IT:\nupcoming_appointment_id: ${context.currentState.upcomingAppointmentId}\n`;
     contextInfo += `upcoming_appointment_time: ${context.upcomingAppointment.speakable}\n`;
-    contextInfo += `➡️ SAY: "I found your appointment for ${context.upcomingAppointment.speakable}. What would you like to change it to?"\n`;
-  } else if (context.currentState?.identityVerified === true && !context.currentState?.upcomingAppointmentId &&
+    contextInfo += `➡️ SAY: "I found your visit for ${context.upcomingAppointment.speakable}. What would you like to move it to?"\n`;
+  } else if (context.currentState?.needsNameForSearch === true &&
              (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
-    contextInfo += `\n⚠️ NO APPOINTMENT FOUND:\nidentityVerified: true\nupcomingAppointmentId: null\n`;
-    contextInfo += `➡️ SAY: "I couldn't find an upcoming appointment. Would you like to book a new one instead?"\n`;
+    // Identity denied or wrong person - need to ask for name
+    contextInfo += `\n⚠️ NEED NAME FOR SEARCH:\nneedsNameForSearch: true\nnameSearchCompleted: ${context.currentState?.nameSearchCompleted || false}\n`;
+    contextInfo += `➡️ ASK: "I couldn't find a visit under this number. What name should I search for?"\n`;
+    contextInfo += `DO NOT say goodbye. Wait for them to provide a name.\n`;
+  } else if (context.currentState?.identityVerified === true && !context.currentState?.upcomingAppointmentId &&
+             !context.currentState?.nameSearchCompleted &&
+             (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
+    // Identity verified but no appointment - ask for name to search differently
+    contextInfo += `\n⚠️ NO APPOINTMENT UNDER VERIFIED IDENTITY:\nidentityVerified: true\nupcomingAppointmentId: null\nnameSearchCompleted: false\n`;
+    contextInfo += `➡️ ASK: "I couldn't find an upcoming visit under that name. Is there another name it might be under?"\n`;
+    contextInfo += `DO NOT say goodbye. Let them try another name.\n`;
+  } else if (context.currentState?.nameSearchCompleted === true && !context.currentState?.upcomingAppointmentId &&
+             (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
+    // Already searched by name and still nothing found - NOW offer to book
+    contextInfo += `\n⚠️ NO APPOINTMENT FOUND (searched by phone AND name):\nnameSearchCompleted: true\nupcomingAppointmentId: null\n`;
+    contextInfo += `➡️ SAY: "I'm sorry, I couldn't find an upcoming appointment. Would you like to book a new one instead?"\n`;
   }
 
   // Add practitioner name for "who will I see" question
