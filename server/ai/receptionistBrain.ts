@@ -169,6 +169,28 @@ export interface CompactCallState {
    */
   awaitingManualName?: boolean;
 
+  /**
+   * rescheduleTimeFirst = true when using the "Time-First" workflow
+   * Skips identity verification, offers slots first, verifies via SMS after
+   */
+  rescheduleTimeFirst?: boolean;
+
+  /**
+   * pendingRescheduleSlot = the slot user selected, held pending SMS verification
+   * Contains: { slotIndex, slotTime, practitionerName }
+   */
+  pendingRescheduleSlot?: {
+    slotIndex: number;
+    slotTime: string;
+    practitionerName?: string;
+  };
+
+  /**
+   * smsSentForReschedule = true after we've sent the SMS confirmation link
+   * Signals that the call can end gracefully
+   */
+  smsSentForReschedule?: boolean;
+
   // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
@@ -1123,8 +1145,36 @@ export async function callReceptionistBrain(
     contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: ${slotDescriptions.join(', ')}\n`;
   }
 
-  // Add identity verification status for reschedule flow
-  if (context.currentState?.pendingIdentityCheck === true && context.currentState?.matchedPatientName) {
+  // TIME-FIRST RESCHEDULE: Skip identity, ask for preferred time
+  if (context.currentState?.rescheduleTimeFirst === true &&
+      (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
+
+    if (context.currentState?.smsSentForReschedule === true) {
+      // SMS already sent - end call gracefully
+      contextInfo += `\n✅ SMS SENT FOR RESCHEDULE:\nsmsSentForReschedule: true\n`;
+      contextInfo += `➡️ SAY: "Perfect! I've sent you a link to confirm the change. Just tap it and you're all set. Have a great day!"\n`;
+      contextInfo += `END THE CALL - do not ask more questions.\n`;
+    } else if (context.currentState?.pendingRescheduleSlot) {
+      // User picked a slot - confirm and send SMS
+      const slot = context.currentState.pendingRescheduleSlot;
+      contextInfo += `\n⚠️ SLOT SELECTED - SENDING SMS:\npendingRescheduleSlot: ${slot.slotTime}\n`;
+      contextInfo += `➡️ SAY: "Great, I have ${slot.slotTime} available${slot.practitionerName ? ` with ${slot.practitionerName}` : ''}. I'll put a hold on that for you now. I've just sent a secure link to your phone - just tap it to confirm and we're all done!"\n`;
+    } else if (!context.currentState?.tp) {
+      // Need time preference
+      contextInfo += `\n🚀 TIME-FIRST RESCHEDULE MODE:\nrescheduleTimeFirst: true\n`;
+      contextInfo += `DO NOT ask for name or verify identity.\n`;
+      contextInfo += `➡️ ASK: "Sure, I can help you find a better time. What day or time were you looking for?"\n`;
+    } else if (context.currentState?.tp && !context.currentState?.rs) {
+      // Have time preference, set ready for slots
+      contextInfo += `\n🚀 TIME-FIRST: Ready to show slots\ntp: ${context.currentState.tp}\n`;
+      contextInfo += `Set rs=true so backend fetches available times.\n`;
+    }
+  }
+
+  // Add identity verification status for reschedule flow (ONLY if not in Time-First mode)
+  if (context.currentState?.pendingIdentityCheck === true &&
+      context.currentState?.matchedPatientName &&
+      context.currentState?.rescheduleTimeFirst !== true) {
     contextInfo += `\n⚠️ IDENTITY VERIFICATION NEEDED:\npendingIdentityCheck: true\nmatched_patient_name: "${context.currentState.matchedPatientName}"\n`;
     contextInfo += `➡️ ASK: "I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?"\n`;
   }
