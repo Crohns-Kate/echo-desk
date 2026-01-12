@@ -343,6 +343,40 @@ export interface CompactCallState {
    * Prevents repeating this question multiple times in terminal state
    */
   askedAnythingElse?: boolean;
+
+  // ═══════════════════════════════════════════════
+  // Resilient State Machine (RSM) Fields
+  // ═══════════════════════════════════════════════
+
+  /**
+   * rsmState = Current state in the resilient state machine
+   * INITIAL → VERIFYING → MANUAL_SEARCH → SOFT_BOOKING → COMPLETED
+   */
+  rsmState?: 'INITIAL' | 'VERIFYING' | 'MANUAL_SEARCH' | 'SEARCHING' | 'OFFERING_SLOTS' | 'SLOT_SELECTED' | 'SOFT_BOOKING' | 'SENDING_SMS' | 'COMPLETED' | 'SAFETY_VALVE' | 'GOODBYE';
+
+  /**
+   * rsmTurnsInState = Number of turns spent in current RSM state
+   * Used for Safety Valve detection (stuck for 2+ turns)
+   */
+  rsmTurnsInState?: number;
+
+  /**
+   * rsmLockedIntent = Intent that MUST be completed before goodbye is allowed
+   * Once set, the AI cannot say goodbye until objective is achieved
+   */
+  rsmLockedIntent?: 'book' | 'reschedule' | 'cancel' | null;
+
+  /**
+   * rsmRecoveryLevel = Current recovery level (1-4)
+   * 1: Direct Match, 2: Identity Pivot, 3: Soft-Booking, 4: Safety Valve
+   */
+  rsmRecoveryLevel?: 1 | 2 | 3 | 4;
+
+  /**
+   * rsmIdentityScrubbed = true after atomic identity scrub was performed
+   * Prevents "Joe Turner" data from leaking into "Roger Moore" booking
+   */
+  rsmIdentityScrubbed?: boolean;
 }
 
 /**

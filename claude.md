@@ -577,3 +577,129 @@ The SMS Bridge is the authoritative final step of every successful call:
 - Patient can complete at their pace
 
 **Critical Rule:** The voice call's job is to find availability and create excitement. The SMS form's job is to verify and finalize. NEVER try to collect detailed patient data over voice when SMS can do it better.
+
+-------------------------------------------------------------------------------
+# 15. ARCHITECTURAL GUARDRAILS — THE GENIUS CONSTRAINTS
+-------------------------------------------------------------------------------
+
+**⚠️ MANDATORY: These constraints prevent the AI from reverting to broken patterns.**
+
+These rules are INVIOLABLE. The system MUST follow these patterns.
+
+### 1. Atomic Identity Scrubbing
+
+When a caller says "No" to a name match (e.g., "No, I'm not Joe Turner"):
+
+**HARD RESET** the following fields immediately:
+- `matchedPatientName` → null
+- `verifiedClinikoPatientId` → null
+- `nm` (name) → null
+- `upcomingAppointmentId` → null
+- `upcomingAppointmentTime` → null
+- `identityVerified` → false
+- `pendingIdentityCheck` → false
+
+**Set these flags:**
+- `awaitingManualName` → true
+- `needsNameForSearch` → true
+- `nameSearchCompleted` → false
+- `rsmIdentityScrubbed` → true
+
+**Why:** This prevents "Joe Turner" data from leaking into a "Roger Moore" booking. The old patient context is TOXIC after denial.
+
+### 2. Intent Locking (Sticky State Machine)
+
+Once a `reschedule` or `book` intent is identified:
+
+**The AI's primary goal becomes: Cliniko Slot Reservation**
+
+The AI is NOT ALLOWED to:
+- Say goodbye
+- End the call
+- Change the topic
+- Ask unrelated questions
+
+UNTIL one of these conditions is met:
+- A slot is reserved in Cliniko (`appointmentCreated=true` or `rc=true`)
+- SMS confirmation link is sent (`smsSentForReschedule=true`)
+- Safety Valve is triggered (2 turns stuck)
+
+**Why:** Any other path is a failure. The caller called to accomplish something.
+
+### 3. No Redundant Questioning
+
+**If the AI asks for a name and gets one, it MUST search.**
+
+Rules:
+- After receiving a name → immediately call `findPatientByName()`
+- If search fails → change tactics to SOFT_BOOKING (don't repeat the question)
+- If search succeeds but no appointment → offer to book new (don't ask for another name)
+
+**Why:** Repeating "What name is the appointment under?" when the caller just gave a name is infuriating.
+
+### 4. Universal Recovery Hierarchy
+
+When the conversation is stuck, follow this recovery order:
+
+**Level 1: Direct Match**
+Phone matches record → Verify identity → Proceed to slots
+
+**Level 2: Identity Pivot**
+Caller says "No" → Atomic scrub → Ask for name → MANUAL_SEARCH mode
+
+**Level 3: Search Fallback**
+Name search fails → Move to SOFT_BOOKING → Offer slots immediately
+
+**Level 4: Safety Valve**
+Stuck in same state for 2+ turns → Force SMS Handoff:
+"I'm having a bit of trouble with my system, so I've just sent a direct booking link to your phone to save you time."
+
+**Why:** The system must NEVER say goodbye when stuck. There's always a recovery path.
+
+### 5. RSM State Machine States
+
+The Resilient State Machine (RSM) uses these states:
+
+| State | Description | Allowed Transitions |
+|-------|-------------|---------------------|
+| INITIAL | Call just started | → VERIFYING, SOFT_BOOKING |
+| VERIFYING | Asking "Am I speaking with X?" | → MANUAL_SEARCH (denial), OFFERING_SLOTS (confirm) |
+| MANUAL_SEARCH | Collecting name after denial | → SEARCHING, SOFT_BOOKING, SAFETY_VALVE |
+| SEARCHING | Looking up patient by name | → OFFERING_SLOTS, SOFT_BOOKING |
+| OFFERING_SLOTS | Presenting available times | → SLOT_SELECTED, COMPLETED |
+| SLOT_SELECTED | User picked a slot | → SENDING_SMS, COMPLETED |
+| SOFT_BOOKING | Skip identity, offer slots | → SLOT_SELECTED, SENDING_SMS |
+| SENDING_SMS | Sending confirmation link | → COMPLETED |
+| SAFETY_VALVE | Forced SMS handoff | → COMPLETED |
+| COMPLETED | Objective achieved | → GOODBYE |
+
+**Why:** Clear state definitions prevent ambiguous behavior.
+
+### 6. The "Joe Turner" Loop Prevention
+
+The classic failure pattern:
+
+```
+System: "Am I speaking with Joe Turner?"
+Caller: "No, I'm Roger Moore"
+System: "I couldn't find an appointment. Goodbye!" ❌ WRONG
+```
+
+The correct pattern:
+
+```
+System: "Am I speaking with Joe Turner?"
+Caller: "No, I'm Roger Moore"
+System: [ATOMIC SCRUB Joe Turner data]
+System: "No worries! What name is the appointment under?"
+Caller: "Roger Moore"
+System: [Search for Roger Moore]
+System: "I found you, Roger! I see you're scheduled for Thursday at 2pm..."
+```
+
+**If Roger Moore search fails:**
+```
+System: "I couldn't find Roger Moore in our system. Let's find you a time that works. What day were you looking for?"
+```
+
+**Why:** The conversation NEVER ends in frustration. There's always a next step.
