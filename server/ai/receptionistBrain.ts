@@ -163,6 +163,12 @@ export interface CompactCallState {
    */
   needsNameForSearch?: boolean;
 
+  /**
+   * awaitingManualName = true when we're waiting for user to provide a name
+   * Set immediately after identity denial - the NEXT utterance will be treated as a name
+   */
+  awaitingManualName?: boolean;
+
   // ═══════════════════════════════════════════════
   // Slot Confirmation Guard (backend-only)
   // ═══════════════════════════════════════════════
