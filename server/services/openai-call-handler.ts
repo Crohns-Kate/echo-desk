@@ -1796,87 +1796,118 @@ export async function handleOpenAIConversation(
       // Case 2: Identity verified but no appointment found
       (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) ||
       // Case 3: Explicitly need name for search
-      context.currentState.needsNameForSearch === true
+      (context.currentState.needsNameForSearch === true && !context.currentState.nameSearchCompleted)
     );
 
     if (needsNameSearch && !context.currentState.upcomingAppointmentId) {
       const utteranceLower = userUtterance.toLowerCase().trim();
 
-      // Patterns that indicate user is providing a name for search
-      const nameProvisionPatterns = [
-        /(?:check|look|search|find|try)\s+(?:under|for|with)\s+(.+)/i,
-        /(?:my name is|i'm|i am|it's under|under)\s+(.+)/i,
-        /(?:the name is|name's|appointment (?:is )?(?:under|for))\s+(.+)/i,
-        /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,  // Just a name like "Michael Bishop"
-      ];
+      // Skip if utterance is too short or just filler words
+      const fillerWords = ['yes', 'no', 'yeah', 'yep', 'nope', 'ok', 'okay', 'um', 'uh', 'hmm', 'well', 'actually'];
+      const isFillerOnly = fillerWords.includes(utteranceLower) || utteranceLower.length < 3;
 
-      let extractedName: string | null = null;
+      if (!isFillerOnly) {
+        // Patterns that indicate user is providing a name for search
+        const nameProvisionPatterns = [
+          /(?:check|look|search|find|try)\s+(?:under|for|with)\s+(.+)/i,
+          /(?:my name is|i'm|i am|it's under|under)\s+(.+)/i,
+          /(?:the name is|name's|appointment (?:is )?(?:under|for))\s+(.+)/i,
+          /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,  // "Michael Bishop"
+          /^([A-Z]\.?\s*[A-Z][a-z]+)$/i,     // "J. Kilo" or "J Kilo"
+          /^([A-Z][a-z]+\s+[A-Z]\.?)$/i,     // "Jane K." or "Jane K"
+        ];
 
-      for (const pattern of nameProvisionPatterns) {
-        const match = userUtterance.match(pattern);
-        if (match && match[1]) {
-          extractedName = match[1].trim();
-          // Clean up common artifacts
-          extractedName = extractedName
-            .replace(/[.,!?]+$/, '')
-            .replace(/please$/i, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          break;
+        let extractedName: string | null = null;
+
+        for (const pattern of nameProvisionPatterns) {
+          const match = userUtterance.match(pattern);
+          if (match && match[1]) {
+            extractedName = match[1].trim();
+            // Clean up common artifacts
+            extractedName = extractedName
+              .replace(/[.,!?]+$/, '')
+              .replace(/please$/i, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+            break;
+          }
         }
-      }
 
-      // Also check if AI set nm (name) in response to user's utterance
-      // This handles cases where AI extracts the name from conversation
+        // FALLBACK: If no pattern matched but we're expecting a name, use the whole utterance
+        // This handles cases like "J. Kilo" or any name format we didn't anticipate
+        if (!extractedName && userUtterance.length >= 3 && userUtterance.length <= 50) {
+          // Check if it looks like a name (contains letters, possibly spaces/periods)
+          const looksLikeName = /^[A-Za-z][A-Za-z.\s'-]+[A-Za-z]?\.?$/.test(userUtterance.trim());
+          if (looksLikeName) {
+            extractedName = userUtterance.trim()
+              .replace(/[.,!?]+$/, '')
+              .replace(/please$/i, '')
+              .trim();
+            console.log('[OpenAICallHandler] 📝 Using full utterance as name (fallback):', extractedName);
+          }
+        }
 
-      if (extractedName && extractedName.length >= 3) {
-        console.log('[OpenAICallHandler] 🔍 NAME-BASED SEARCH: User provided name:', extractedName);
-
-        const nameSearchResult = await withTimeoutSafe(
-          findPatientByName(extractedName),
-          CLINIKO_LOOKUP_TIMEOUT_MS,
-          'Name-based patient search'
-        );
-
-        if (!nameSearchResult.timedOut && nameSearchResult.result) {
-          const patient = nameSearchResult.result;
-          console.log(`[OpenAICallHandler] ✅ Found patient by name: ${patient.first_name} ${patient.last_name} (ID: ${patient.id})`);
-
-          // Update state with found patient
-          context.currentState.identityVerified = true;
-          context.currentState.verifiedClinikoPatientId = patient.id;
-          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
-          context.currentState.np = false;
+        if (extractedName && extractedName.length >= 2) {
+          console.log('[OpenAICallHandler] 🔍 NAME-BASED SEARCH: Searching for:', extractedName);
           context.currentState.providedSearchName = extractedName;
 
-          // Now look up their appointments
-          const apptResult = await withTimeoutSafe(
-            getNextUpcomingAppointment(patient.id),
+          const nameSearchResult = await withTimeoutSafe(
+            findPatientByName(extractedName),
             CLINIKO_LOOKUP_TIMEOUT_MS,
-            'Appointment lookup after name search'
+            'Name-based patient search'
           );
 
-          if (!apptResult.timedOut && apptResult.result) {
-            const upcoming = apptResult.result;
-            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
-            context.upcomingAppointment = {
-              id: upcoming.id,
-              practitionerId: upcoming.practitioner_id,
-              appointmentTypeId: upcoming.appointment_type_id,
-              startsAt: upcoming.starts_at,
-              speakable: apptTime.format('dddd [at] h:mm A')
-            };
-            context.currentState.upcomingAppointmentId = upcoming.id;
-            context.currentState.upcomingAppointmentTime = apptTime.format('dddd [at] h:mm A');
-            console.log(`[OpenAICallHandler] ✅ Found appointment via name search: ${context.currentState.upcomingAppointmentTime}`);
-          } else {
-            console.log('[OpenAICallHandler] ⚠️ Patient found by name but no upcoming appointment');
-            context.currentState.nameSearchRequested = true;
+          if (!nameSearchResult.timedOut && nameSearchResult.result) {
+            const patient = nameSearchResult.result;
+            console.log(`[OpenAICallHandler] ✅ Found patient by name: ${patient.first_name} ${patient.last_name} (ID: ${patient.id})`);
+
+            // Update state with found patient
+            context.currentState.identityVerified = true;
+            context.currentState.verifiedClinikoPatientId = patient.id;
+            context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+            context.currentState.np = false;
+            context.currentState.needsNameForSearch = false; // BREAK THE LOOP
+            context.currentState.nameSearchCompleted = true;
+
+            // Now look up their appointments
+            const apptResult = await withTimeoutSafe(
+              getNextUpcomingAppointment(patient.id),
+              CLINIKO_LOOKUP_TIMEOUT_MS,
+              'Appointment lookup after name search'
+            );
+
+            if (!apptResult.timedOut && apptResult.result) {
+              const upcoming = apptResult.result;
+              const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+              context.upcomingAppointment = {
+                id: upcoming.id,
+                practitionerId: upcoming.practitioner_id,
+                appointmentTypeId: upcoming.appointment_type_id,
+                startsAt: upcoming.starts_at,
+                speakable: apptTime.format('dddd [at] h:mm A')
+              };
+              context.currentState.upcomingAppointmentId = upcoming.id;
+              context.currentState.upcomingAppointmentTime = apptTime.format('dddd [at] h:mm A');
+              console.log(`[OpenAICallHandler] ✅ Found appointment via name search: ${context.currentState.upcomingAppointmentTime}`);
+            } else {
+              console.log('[OpenAICallHandler] ⚠️ Patient found by name but no upcoming appointment');
+              // Patient found but no appointment - mark search as done
+              context.currentState.nameSearchCompleted = true;
+            }
+          } else if (!nameSearchResult.timedOut) {
+            console.log(`[OpenAICallHandler] ⚠️ No patient found with name: ${extractedName}`);
+            // Mark that we've tried searching - but allow ONE more attempt with clarification
+            // Only mark as completed if we've already tried once before
+            if (context.currentState.providedSearchName &&
+                context.currentState.nameSearchRequested === true) {
+              // Second attempt failed - mark as completed to break loop
+              context.currentState.nameSearchCompleted = true;
+              console.log('[OpenAICallHandler] ⚠️ Second search attempt failed - marking nameSearchCompleted=true');
+            } else {
+              // First attempt - allow retry with better name
+              context.currentState.nameSearchRequested = true;
+            }
           }
-        } else if (!nameSearchResult.timedOut) {
-          console.log(`[OpenAICallHandler] ⚠️ No patient found with name: ${extractedName}`);
-          context.currentState.nameSearchRequested = true;
-          context.currentState.providedSearchName = extractedName;
         }
       }
     }
@@ -3117,6 +3148,61 @@ export async function handleOpenAIConversation(
         console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
         finalResponse.reply = correctMessage;
         console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+      }
+    }
+
+    // 3c-quater. NAME SEARCH RESULT RESPONSE: Override response based on search outcome
+    // This ensures the user gets the right message after we search by name
+    if (inRescheduleFlow && rescheduleNotCompleted) {
+      // Case 1: Patient found WITH appointment - confirm it
+      if (context.currentState.identityVerified === true &&
+          context.currentState.upcomingAppointmentId &&
+          context.currentState.nm) {
+        const firstName = context.currentState.nm.split(' ')[0];
+        const correctMessage = `I found you, ${firstName}! I see you're scheduled for ${context.currentState.upcomingAppointmentTime || 'your upcoming visit'}. What time would you like to move it to?`;
+        if (!finalResponse.reply.includes('found') && !finalResponse.reply.includes('scheduled')) {
+          console.log('[OpenAICallHandler] 📝 PATIENT FOUND: Updating response with appointment info');
+          console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
+          finalResponse.reply = correctMessage;
+          console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+        }
+      }
+      // Case 2: Patient found but NO appointment
+      else if (context.currentState.identityVerified === true &&
+               context.currentState.nameSearchCompleted &&
+               !context.currentState.upcomingAppointmentId &&
+               context.currentState.nm) {
+        const firstName = context.currentState.nm.split(' ')[0];
+        const correctMessage = `I found your record, ${firstName}, but I don't see an upcoming appointment to reschedule. Would you like to book a new one instead?`;
+        if (!finalResponse.reply.includes('found your record') && !finalResponse.reply.includes("don't see an upcoming")) {
+          console.log('[OpenAICallHandler] 📝 PATIENT FOUND NO APPT: Updating response');
+          console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
+          finalResponse.reply = correctMessage;
+          console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+        }
+      }
+      // Case 3: First search failed - ask for clarification (different from original question!)
+      else if (context.currentState.nameSearchRequested === true &&
+               !context.currentState.nameSearchCompleted &&
+               context.currentState.providedSearchName) {
+        const correctMessage = `I'm having a little trouble finding "${context.currentState.providedSearchName}". Could you please give me the full first and last name as it appears on the booking?`;
+        if (!finalResponse.reply.includes('trouble finding') && !finalResponse.reply.includes('full first and last')) {
+          console.log('[OpenAICallHandler] 📝 SEARCH FAILED: Asking for clarification');
+          console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
+          finalResponse.reply = correctMessage;
+          console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+        }
+      }
+      // Case 4: Both searches failed - offer to book new
+      else if (context.currentState.nameSearchCompleted === true &&
+               !context.currentState.upcomingAppointmentId) {
+        const correctMessage = "I'm sorry, I couldn't find an upcoming appointment under that name. Would you like to book a new one instead?";
+        if (!finalResponse.reply.includes("couldn't find") && !finalResponse.reply.includes('book a new')) {
+          console.log('[OpenAICallHandler] 📝 ALL SEARCHES FAILED: Offering to book new');
+          console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
+          finalResponse.reply = correctMessage;
+          console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+        }
       }
     }
 
