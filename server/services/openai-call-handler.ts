@@ -4241,15 +4241,45 @@ export async function handleOpenAIConversation(
 
     // 6b. Check if caller wants to end the call (goodbye detection)
     // CRITICAL: Do NOT allow goodbye if group booking is in progress
+    // CRITICAL: Do NOT treat "no" as goodbye when asking about new/existing patient!
     const userUtteranceLower = (userUtterance || '').toLowerCase().trim();
+
+    // Check if we're in booking flow asking about new/existing patient
+    // "No" in this context means "No, I haven't been here before" (new patient)
+    const isBookingFlow = context.currentState.im === 'book' || finalResponse.state.im === 'book';
+    const askingAboutNewPatient = isBookingFlow && context.currentState.np === null;
+    const isSimpleNo = userUtteranceLower === 'no' || userUtteranceLower === 'nope' || userUtteranceLower === 'nah' ||
+                       userUtteranceLower === 'no.' || userUtteranceLower === 'nope.' || userUtteranceLower === 'nah.';
+
+    // If user says "no" when we're asking about new patient, they're saying they're NEW - not goodbye!
+    if (isSimpleNo && askingAboutNewPatient) {
+      console.log('[OpenAICallHandler] 🆕 NEW PATIENT DETECTED: "No" means "I haven\'t been here before"');
+      console.log('[OpenAICallHandler]   Setting np=true (new patient)');
+      context.currentState.np = true;
+      finalResponse.state.np = true;
+      // Override response with soft-booking welcome
+      finalResponse.reply = "Welcome! I'd love to help you join the clinic. Let's find a time that works for you first. What day were you thinking?";
+      // Continue to gather - don't hang up!
+    }
+
     // CRITICAL: Include variations without apostrophe (Twilio transcription varies)
-    const goodbyePhrases = [
+    // But EXCLUDE simple "no/nope/nah" from triggering goodbye in booking flow
+    const goodbyePhrases = isBookingFlow ? [
+      // Exclude simple 'no' in booking flow - could be answering "new patient?" question
+      "that's it", "thats it", "that's all", "thats all", "that is all", "that is it",
+      'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
+      'i\'m good', 'im good', "i'm done", 'im done', "that's everything", "thats everything", 'nothing else',
+      'all set', 'all done', 'we\'re done', 'were done', 'we are done', 'all good', 'no thanks',
+      'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'im finished', 'done',
+      "ok that's it", "ok thats it", "okay that's it", "okay thats it",
+      "that's it for now", "thats it for now", "ok that's it for now", "ok thats it for now"
+    ] : [
+      // Full list including 'no' for non-booking contexts
       'no', 'nope', 'nah', "that's it", "thats it", "that's all", "thats all", "that is all", "that is it",
       'goodbye', 'bye', 'good bye', 'see ya', 'see you', 'thanks bye', 'thank you bye',
       'i\'m good', 'im good', "i'm done", 'im done', "that's everything", "thats everything", 'nothing else',
       'all set', 'all done', 'we\'re done', 'were done', 'we are done', 'all good', 'no thanks',
       'no thank you', 'no more', 'nothing more', 'finished', 'i\'m finished', 'im finished', 'done',
-      // "OK that's it" variations
       "ok that's it", "ok thats it", "okay that's it", "okay thats it",
       "that's it for now", "thats it for now", "ok that's it for now", "ok thats it for now"
     ];
