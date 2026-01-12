@@ -22,6 +22,20 @@ import {
   type ParsedCallState
 } from '../ai/receptionistBrain';
 import { findPatientByPhoneRobust, findPatientByName, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, getUpcomingAppointments, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
+import {
+  type StateMachineContext,
+  initStateMachine,
+  initForIntent,
+  routeState,
+  isDenial,
+  isConfirmation,
+  scrubIdentity,
+  isGoodbyeAllowed,
+  shouldUseStateMachine,
+  transitionTo,
+  incrementTurn,
+  lockIntent
+} from './state-machine';
 import { getTenantContext } from './tenantResolver';
 import { sendAppointmentConfirmation, sendNewPatientForm, sendMapLink } from './sms';
 import { saySafe } from '../utils/voice-constants';
@@ -1561,6 +1575,125 @@ export async function handleOpenAIConversation(
     //     This prevents Sarah from saying "I found your appointment" before knowing who the caller is
     const isRescheduleOrCancel = context.currentState.im === 'reschedule' || context.currentState.im === 'change' || context.currentState.im === 'cancel';
     const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
+
+    // ═══════════════════════════════════════════════
+    // RESILIENT STATE MACHINE (RSM) - Universal Recovery Pattern
+    // Implements 4-level recovery hierarchy to prevent conversation dead-ends
+    // ═══════════════════════════════════════════════
+    if (isRescheduleOrCancel && !isSecondaryBookingFlow) {
+      // Initialize RSM state if not present
+      if (!context.currentState.rsmState) {
+        console.log('[RSM] 🚀 Initializing Resilient State Machine for reschedule/cancel');
+        context.currentState.rsmState = 'INITIAL';
+        context.currentState.rsmTurnsInState = 0;
+        context.currentState.rsmLockedIntent = context.currentState.im === 'cancel' ? 'cancel' : 'reschedule';
+        context.currentState.rsmRecoveryLevel = 1;
+        context.currentState.rsmIdentityScrubbed = false;
+        console.log(`[RSM]   Locked intent: ${context.currentState.rsmLockedIntent}`);
+      }
+
+      // Build state machine context from call state
+      const sm: StateMachineContext = {
+        currentState: context.currentState.rsmState || 'INITIAL',
+        previousState: null,
+        turnsInCurrentState: context.currentState.rsmTurnsInState || 0,
+        lockedIntent: context.currentState.rsmLockedIntent || null,
+        identityScrubbed: context.currentState.rsmIdentityScrubbed || false,
+        recoveryLevel: context.currentState.rsmRecoveryLevel || 1,
+        lastUtterance: userUtterance,
+        lastStateChangeAt: Date.now()
+      };
+
+      // SAFETY VALVE CHECK: Stuck in same state for 2+ turns
+      if (sm.turnsInCurrentState >= 2 &&
+          sm.currentState !== 'COMPLETED' &&
+          sm.currentState !== 'GOODBYE' &&
+          sm.currentState !== 'SAFETY_VALVE' &&
+          !context.currentState.smsSentForReschedule) {
+        console.log('[RSM] ⚠️ SAFETY VALVE TRIGGERED: Stuck for', sm.turnsInCurrentState, 'turns in', sm.currentState);
+
+        // Force SMS handoff
+        context.currentState.rsmState = 'SAFETY_VALVE';
+        context.currentState.rsmRecoveryLevel = 4;
+        context.currentState.rescheduleTimeFirst = true;
+        context.currentState.smsSentForReschedule = true;
+
+        // Generate immediate response and end
+        const safetyResponse = "I'm having a bit of trouble with my system, so I've just sent a direct booking link to your phone to save you time. Just tap the link and you're all set! Have a great day!";
+        saySafe(vr, safetyResponse);
+        vr.hangup();
+
+        await saveConversationContext(callSid, context);
+        return vr;
+      }
+
+      // IDENTITY DENIAL DETECTION with ATOMIC SCRUBBING
+      if (context.currentState.pendingIdentityCheck === true &&
+          context.currentState.matchedPatientName &&
+          isDenial(userUtterance)) {
+
+        console.log('[RSM] ❌ IDENTITY DENIAL detected - performing ATOMIC SCRUB');
+        console.log('[RSM]   Matched name being scrubbed:', context.currentState.matchedPatientName);
+
+        // ATOMIC IDENTITY SCRUB - clear ALL pre-loaded patient data
+        const { callState: scrubbedState, sm: updatedSm } = scrubIdentity(context.currentState, sm);
+
+        // Update context with scrubbed state
+        context.currentState = {
+          ...context.currentState,
+          ...scrubbedState,
+          rsmState: 'MANUAL_SEARCH',
+          rsmTurnsInState: 0,
+          rsmRecoveryLevel: 2,
+          rsmIdentityScrubbed: true
+        };
+
+        // Provide immediate recovery response (Level 2: Identity Pivot)
+        const recoveryMessage = "No worries! What name is the appointment under so I can find it for you?";
+        console.log('[RSM] 📝 Recovery response (Level 2):', recoveryMessage);
+
+        // Update conversation history
+        context = addTurnToHistory(context, 'user', userUtterance);
+        context = addTurnToHistory(context, 'assistant', recoveryMessage);
+
+        await saveConversationContext(callSid, context);
+
+        // Return TwiML with recovery response
+        const gather = vr.gather({
+          input: ['speech'],
+          timeout: 8,
+          speechTimeout: 'auto',
+          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+          method: 'POST',
+          enhanced: true,
+          speechModel: 'phone_call',
+          bargeIn: true,
+          profanityFilter: false,
+          actionOnEmptyResult: true
+        });
+        saySafe(gather, recoveryMessage);
+        vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+
+        return vr;
+      }
+
+      // CONFIRMATION DETECTION
+      if (context.currentState.pendingIdentityCheck === true &&
+          context.currentState.matchedPatientName &&
+          isConfirmation(userUtterance)) {
+
+        console.log('[RSM] ✅ IDENTITY CONFIRMED');
+        context.currentState.identityVerified = true;
+        context.currentState.pendingIdentityCheck = false;
+        context.currentState.nm = context.currentState.matchedPatientName;
+        context.currentState.np = false;
+        context.currentState.rsmState = 'OFFERING_SLOTS';
+        context.currentState.rsmTurnsInState = 0;
+      }
+
+      // Update turn counter for current state
+      context.currentState.rsmTurnsInState = (context.currentState.rsmTurnsInState || 0) + 1;
+    }
 
     // ═══════════════════════════════════════════════
     // TIME-FIRST RESCHEDULE WORKFLOW
@@ -3156,46 +3289,75 @@ export async function handleOpenAIConversation(
       console.log(`[OpenAICallHandler] ⏱️ Post-AI identity setup completed in ${Date.now() - postAiLookupStart}ms`);
     }
 
-    // 3c-bis. RESCHEDULE HANGUP PREVENTION: If in reschedule flow and not completed, prevent goodbye
-    // Must try BOTH phone AND name search before giving up
+    // 3c-bis. RESCHEDULE HANGUP PREVENTION with RSM INTEGRATION
+    // Uses Resilient State Machine to determine if goodbye is allowed
+    // Implements Level 3 recovery (Soft-Booking) when name search fails
     const inRescheduleFlow = (context.currentState.im === 'reschedule' || context.currentState.im === 'change' ||
                               finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change');
     const rescheduleNotCompleted = context.currentState.rc !== true && finalResponse.state.rc !== true;
     const responseContainsGoodbye = /\b(goodbye|bye|take care|have a (good|great|nice) day|feel free to call)\b/i.test(finalResponse.reply);
 
-    // Only allow goodbye if:
-    // 1. Reschedule is completed (rc === true), OR
-    // 2. We've searched by BOTH phone AND name and still found nothing
+    // RSM INTEGRATION: Check if goodbye is allowed based on locked intent
+    const rsmLockedIntent = context.currentState.rsmLockedIntent;
+    const rsmGoodbyeAllowed = !rsmLockedIntent ||
+                              context.currentState.rsmState === 'COMPLETED' ||
+                              context.currentState.rsmState === 'SAFETY_VALVE' ||
+                              context.currentState.rc === true ||
+                              context.currentState.smsSentForReschedule === true;
+
+    // Legacy check (for backward compatibility)
     const bothSearchesCompleted = context.currentState.nameSearchCompleted === true;
     const hasAppointment = !!context.currentState.upcomingAppointmentId;
-    const allowGoodbye = !inRescheduleFlow || !rescheduleNotCompleted || (bothSearchesCompleted && !hasAppointment);
+    const legacyAllowGoodbye = !inRescheduleFlow || !rescheduleNotCompleted || (bothSearchesCompleted && !hasAppointment);
+
+    // Combined check: RSM takes precedence, fall back to legacy
+    const allowGoodbye = rsmLockedIntent ? rsmGoodbyeAllowed : legacyAllowGoodbye;
 
     if (inRescheduleFlow && rescheduleNotCompleted && responseContainsGoodbye && !allowGoodbye) {
-      console.warn('[OpenAICallHandler] ⚠️ HANGUP PREVENTION: AI tried to say goodbye during incomplete reschedule');
-      console.log('[OpenAICallHandler]   Original reply:', finalResponse.reply);
-      console.log('[OpenAICallHandler]   nameSearchCompleted:', context.currentState.nameSearchCompleted);
-      console.log('[OpenAICallHandler]   upcomingAppointmentId:', context.currentState.upcomingAppointmentId);
+      console.warn('[RSM] ⚠️ HANGUP PREVENTION: AI tried to say goodbye during incomplete reschedule');
+      console.log('[RSM]   rsmLockedIntent:', rsmLockedIntent);
+      console.log('[RSM]   rsmState:', context.currentState.rsmState);
+      console.log('[RSM]   rsmRecoveryLevel:', context.currentState.rsmRecoveryLevel);
+      console.log('[RSM]   Original reply:', finalResponse.reply);
 
-      // Override the response to keep the conversation going
-      if (context.currentState.pendingIdentityCheck && context.currentState.matchedPatientName) {
-        finalResponse.reply = `I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?`;
-      } else if (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted) {
-        // Identity was DENIED - ask for the name the appointment is under
-        finalResponse.reply = "No worries! What name is the appointment under so I can find it for you?";
-      } else if (context.currentState.needsNameForSearch && !context.currentState.nameSearchCompleted) {
-        // Need to ask for name (phone lookup failed)
-        finalResponse.reply = "I couldn't find a visit under this phone number. What name should I search for?";
-      } else if (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) {
-        // Verified identity but no appointment - ask for another name
-        finalResponse.reply = "I couldn't find an upcoming visit under that name. Is there another name it might be under?";
-      } else if (context.currentState.upcomingAppointmentId) {
-        // We have an appointment - ask for new time
-        finalResponse.reply = `I found your visit for ${context.currentState.upcomingAppointmentTime || 'your scheduled time'}. What time would you like to move it to?`;
-      } else {
-        // Default - ask for time preference
-        finalResponse.reply = "What time would work better for you?";
+      // LEVEL 3 RECOVERY: If name search failed, switch to SOFT_BOOKING
+      if (context.currentState.nameSearchCompleted === true && !context.currentState.upcomingAppointmentId) {
+        console.log('[RSM] 📝 Level 3 Recovery: Name search failed - switching to SOFT_BOOKING');
+        context.currentState.rsmState = 'SOFT_BOOKING';
+        context.currentState.rsmRecoveryLevel = 3;
+        context.currentState.rescheduleTimeFirst = true;
+
+        // Recovery message: Offer slots instead of giving up
+        finalResponse.reply = "No worries! Let's find you a time that works. What day or time were you looking for?";
+        console.log('[RSM]   Recovery response (Level 3):', finalResponse.reply);
       }
-      console.log('[OpenAICallHandler]   Corrected reply:', finalResponse.reply);
+      // Standard recovery based on state
+      else if (context.currentState.pendingIdentityCheck && context.currentState.matchedPatientName) {
+        finalResponse.reply = `I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?`;
+        context.currentState.rsmState = 'VERIFYING';
+      } else if (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted) {
+        // Level 2: Identity Pivot - ask for name
+        finalResponse.reply = "No worries! What name is the appointment under so I can find it for you?";
+        context.currentState.rsmState = 'MANUAL_SEARCH';
+        context.currentState.rsmRecoveryLevel = 2;
+      } else if (context.currentState.needsNameForSearch && !context.currentState.nameSearchCompleted) {
+        finalResponse.reply = "I couldn't find a visit under this phone number. What name should I search for?";
+        context.currentState.rsmState = 'MANUAL_SEARCH';
+      } else if (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) {
+        finalResponse.reply = "I couldn't find an upcoming visit under that name. Is there another name it might be under?";
+        context.currentState.rsmState = 'MANUAL_SEARCH';
+      } else if (context.currentState.upcomingAppointmentId) {
+        finalResponse.reply = `I found your visit for ${context.currentState.upcomingAppointmentTime || 'your scheduled time'}. What time would you like to move it to?`;
+        context.currentState.rsmState = 'OFFERING_SLOTS';
+      } else {
+        finalResponse.reply = "What time would work better for you?";
+        context.currentState.rsmState = 'SOFT_BOOKING';
+        context.currentState.rsmRecoveryLevel = 3;
+      }
+
+      // Reset turn counter when we change state
+      context.currentState.rsmTurnsInState = 0;
+      console.log('[RSM]   Corrected reply:', finalResponse.reply);
     }
 
     // 3c-ter. IDENTITY DENIAL RESPONSE CORRECTION: Always use correct message when identity was denied
