@@ -1173,9 +1173,20 @@ function parseTimePreference(
   };
 }
 
+// ═══════════════════════════════════════════════
+// PERFORMANCE CONSTANTS
+// ═══════════════════════════════════════════════
+const SLOT_FETCH_TIMEOUT_MS = 8000;  // 8 second timeout for slot fetching
+const CACHE_TTL_MS = 60000;          // 1 minute cache TTL for practitioners
+
 /**
  * Fetch available appointment slots from Cliniko
  * Uses compact state format (tp = time_preference, np = is_new_patient)
+ *
+ * OPTIMIZATIONS:
+ * 1. Uses cached practitioner/tenant data when available
+ * 2. Runs DB lookups in parallel with Promise.all()
+ * 3. 8-second timeout with heartbeat fallback
  *
  * MULTI-PRACTITIONER: Queries DB for active practitioners and fetches
  * availability across all of them, returning enriched slots with practitioner info.
@@ -1186,6 +1197,8 @@ async function fetchAvailableSlots(
   timezone: string = 'Australia/Brisbane',
   maxSlots: number = 3  // Default 3 slots, more for group bookings
 ): Promise<EnrichedSlot[]> {
+  const fetchStartTime = Date.now();
+
   if (!state.tp) {  // tp = time preference
     console.log('[OpenAICallHandler] No time preference, cannot fetch slots');
     return [];
@@ -1197,7 +1210,7 @@ async function fetchAvailableSlots(
     return [];
   }
 
-  console.log('[OpenAICallHandler] Fetching slots from', timeRange.start, 'to', timeRange.end);
+  console.log('[OpenAICallHandler] 🚀 FAST FETCH: Fetching slots from', timeRange.start, 'to', timeRange.end);
 
   try {
     const isNewPatient = state.np === true;  // np = is_new_patient
@@ -1207,17 +1220,48 @@ async function fetchAvailableSlots(
     let practitioners: Array<{ name: string; clinikoPractitionerId: string | null }> = [];
 
     if (tenantId) {
-      // Fetch active practitioners from DB
-      const dbPractitioners = await storage.getActivePractitioners(tenantId);
-      practitioners = dbPractitioners.map(p => ({
-        name: p.name,
-        clinikoPractitionerId: p.clinikoPractitionerId
-      }));
+      // ═══════════════════════════════════════════════
+      // OPTIMIZATION 1: Use cached data if available
+      // ═══════════════════════════════════════════════
+      const cacheValid = state.cachedPractitioners &&
+                         state.lastSlotFetchTime &&
+                         (Date.now() - state.lastSlotFetchTime) < CACHE_TTL_MS;
 
-      // Get full tenant for Cliniko context
-      const tenant = await storage.getTenantById(tenantId);
-      if (tenant) {
-        tenantCtx = getTenantContext(tenant);
+      if (cacheValid && state.cachedPractitioners) {
+        console.log('[OpenAICallHandler] ⚡ CACHE HIT: Using cached practitioners');
+        practitioners = state.cachedPractitioners;
+
+        // Still need tenant context - but it's fast
+        const tenant = await storage.getTenantById(tenantId);
+        if (tenant) {
+          tenantCtx = getTenantContext(tenant);
+        }
+      } else {
+        // ═══════════════════════════════════════════════
+        // OPTIMIZATION 2: Parallel DB lookups with Promise.all()
+        // ═══════════════════════════════════════════════
+        console.log('[OpenAICallHandler] ⚡ PARALLEL FETCH: Loading practitioners + tenant in parallel');
+        const parallelStartTime = Date.now();
+
+        const [dbPractitioners, tenant] = await Promise.all([
+          storage.getActivePractitioners(tenantId),
+          storage.getTenantById(tenantId)
+        ]);
+
+        console.log(`[OpenAICallHandler] ⚡ PARALLEL FETCH completed in ${Date.now() - parallelStartTime}ms`);
+
+        practitioners = dbPractitioners.map(p => ({
+          name: p.name,
+          clinikoPractitionerId: p.clinikoPractitionerId
+        }));
+
+        if (tenant) {
+          tenantCtx = getTenantContext(tenant);
+        }
+
+        // Update cache for next call
+        state.cachedPractitioners = practitioners;
+        state.lastSlotFetchTime = Date.now();
       }
 
       console.log(`[OpenAICallHandler] Found ${practitioners.length} active practitioners for tenant ${tenantId}`);
@@ -2485,6 +2529,12 @@ export async function handleOpenAIConversation(
                             !context.currentState.im ||  // Default intent is booking
                             context.currentState.bookingFor === 'someone_else';
 
+    // ═══════════════════════════════════════════════
+    // FAST-TRACK SLOT FETCH: Start Cliniko lookup BEFORE AI call
+    // This allows slot fetching and AI thinking to happen in parallel
+    // ═══════════════════════════════════════════════
+    let fastTrackSlotPromise: Promise<EnrichedSlot[]> | null = null;
+
     if (isBookingIntent && !context.currentState.tp) {
       const universalExtractedTp = extractTimePreferenceFromUtterance(
         userUtterance,
@@ -2496,7 +2546,37 @@ export async function handleOpenAIConversation(
         context.currentState.previousTpDay = null; // Clear after use
         context.currentState.rs = true;  // Ready to fetch slots
         console.log('[OpenAICallHandler] 🕐 UNIVERSAL TP: Set tp="%s" and rs=true', universalExtractedTp);
+
+        // ═══════════════════════════════════════════════
+        // FAST-TRACK: Start slot fetch NOW (parallel with AI)
+        // Only if we know the patient status (np)
+        // ═══════════════════════════════════════════════
+        if (context.currentState.np !== null && context.currentState.np !== undefined) {
+          console.log('[OpenAICallHandler] ⚡ FAST-TRACK: Starting slot fetch IN PARALLEL with AI call');
+          context.currentState.pendingSlotFetchStarted = true;
+
+          // Start the fetch but DON'T await it yet
+          fastTrackSlotPromise = fetchAvailableSlots(
+            context.currentState,
+            tenantId,
+            timezone
+          );
+        } else {
+          console.log('[OpenAICallHandler] ⚠️ FAST-TRACK skipped: np not yet known');
+        }
       }
+    }
+
+    // Also check if we should fast-track when np is set but tp was already set
+    if (isBookingIntent && context.currentState.tp && context.currentState.np !== null &&
+        context.currentState.np !== undefined && !context.availableSlots && !fastTrackSlotPromise) {
+      console.log('[OpenAICallHandler] ⚡ FAST-TRACK: tp+np already set, starting parallel slot fetch');
+      context.currentState.pendingSlotFetchStarted = true;
+      fastTrackSlotPromise = fetchAvailableSlots(
+        context.currentState,
+        tenantId,
+        timezone
+      );
     }
 
     // ═══════════════════════════════════════════════
@@ -3189,8 +3269,10 @@ export async function handleOpenAIConversation(
     console.log('[OpenAICallHandler] Reply:', response.reply);
     console.log('[OpenAICallHandler] Compact state:', JSON.stringify(response.state, null, 2));
 
-    // 3b. CRITICAL: If AI just set rs=true but we don't have slots yet, fetch them NOW
-    //     and call AI again so it can offer the slots in the same turn
+    // ═══════════════════════════════════════════════
+    // 3b. SLOT FETCHING with FAST-TRACK and SAFETY BUFFER
+    // Uses parallel processing and 8-second timeout
+    // ═══════════════════════════════════════════════
     let finalResponse = response;
     if (response.state.rs === true && !context.availableSlots) {
       // Merge the new state so we have tp and np for fetching
@@ -3220,8 +3302,99 @@ export async function handleOpenAIConversation(
           }
         };
       } else {
-        console.log('[OpenAICallHandler] 🔄 AI set rs=true - fetching slots now...');
-        const slots = await fetchAvailableSlots(mergedState, tenantId, timezone);
+        // ═══════════════════════════════════════════════
+        // FAST-TRACK: Use pre-started slot fetch if available
+        // ═══════════════════════════════════════════════
+        let slots: EnrichedSlot[] = [];
+        const slotFetchStart = Date.now();
+
+        if (fastTrackSlotPromise) {
+          console.log('[OpenAICallHandler] ⚡ FAST-TRACK: Using pre-started slot fetch');
+
+          // Race between fast-track promise and timeout
+          const timeoutPromise = new Promise<'timeout'>((resolve) =>
+            setTimeout(() => resolve('timeout'), SLOT_FETCH_TIMEOUT_MS)
+          );
+
+          const raceResult = await Promise.race([
+            fastTrackSlotPromise.then(s => ({ type: 'slots' as const, data: s })),
+            timeoutPromise
+          ]);
+
+          if (raceResult === 'timeout') {
+            // ═══════════════════════════════════════════════
+            // SAFETY BUFFER: 8-second timeout triggered
+            // Return heartbeat and give more time on next turn
+            // ═══════════════════════════════════════════════
+            console.log('[OpenAICallHandler] ⏰ SAFETY BUFFER: Slot fetch exceeded 8s - returning heartbeat');
+
+            // Save context so slot fetch can continue in background
+            await saveConversationContext(callSid, context);
+
+            const heartbeatVr = new twilio.twiml.VoiceResponse();
+            const heartbeatGather = heartbeatVr.gather({
+              input: ['speech'],
+              timeout: 10,
+              speechTimeout: 'auto',
+              action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+              method: 'POST',
+              enhanced: true,
+              speechModel: 'phone_call',
+              bargeIn: true,
+              profanityFilter: false,
+              actionOnEmptyResult: true
+            });
+            saySafe(heartbeatGather, "I'm just pulling up our latest availability—one moment please.");
+            heartbeatVr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+
+            return heartbeatVr;
+          } else {
+            slots = raceResult.data;
+            console.log(`[OpenAICallHandler] ⚡ FAST-TRACK completed in ${Date.now() - slotFetchStart}ms`);
+          }
+        } else {
+          // No fast-track - do regular fetch with timeout
+          console.log('[OpenAICallHandler] 🔄 AI set rs=true - fetching slots now...');
+
+          const timeoutPromise = new Promise<'timeout'>((resolve) =>
+            setTimeout(() => resolve('timeout'), SLOT_FETCH_TIMEOUT_MS)
+          );
+
+          const slotPromise = fetchAvailableSlots(mergedState, tenantId, timezone);
+
+          const raceResult = await Promise.race([
+            slotPromise.then(s => ({ type: 'slots' as const, data: s })),
+            timeoutPromise
+          ]);
+
+          if (raceResult === 'timeout') {
+            console.log('[OpenAICallHandler] ⏰ SAFETY BUFFER: Slot fetch exceeded 8s - returning heartbeat');
+
+            await saveConversationContext(callSid, context);
+
+            const heartbeatVr = new twilio.twiml.VoiceResponse();
+            const heartbeatGather = heartbeatVr.gather({
+              input: ['speech'],
+              timeout: 10,
+              speechTimeout: 'auto',
+              action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
+              method: 'POST',
+              enhanced: true,
+              speechModel: 'phone_call',
+              bargeIn: true,
+              profanityFilter: false,
+              actionOnEmptyResult: true
+            });
+            saySafe(heartbeatGather, "I'm just pulling up our latest availability—one moment please.");
+            heartbeatVr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
+
+            return heartbeatVr;
+          } else {
+            slots = raceResult.data;
+          }
+        }
+
+        console.log(`[OpenAICallHandler] 📊 Slot fetch completed in ${Date.now() - slotFetchStart}ms`);
 
         if (slots.length > 0) {
           context.availableSlots = slots;

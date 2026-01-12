@@ -377,6 +377,40 @@ export interface CompactCallState {
    * Prevents "Joe Turner" data from leaking into "Roger Moore" booking
    */
   rsmIdentityScrubbed?: boolean;
+
+  // ═══════════════════════════════════════════════
+  // Performance Caching Fields
+  // ═══════════════════════════════════════════════
+
+  /**
+   * cachedPractitioners = Array of practitioner info (cached after first lookup)
+   * Prevents redundant DB queries on every turn
+   */
+  cachedPractitioners?: Array<{
+    name: string;
+    clinikoPractitionerId: string | null;
+  }>;
+
+  /**
+   * cachedBusinessId = Cliniko business ID (cached after first lookup)
+   */
+  cachedBusinessId?: string;
+
+  /**
+   * cachedAppointmentTypeId = Default appointment type ID (cached)
+   */
+  cachedAppointmentTypeId?: string;
+
+  /**
+   * lastSlotFetchTime = Timestamp of last slot fetch (for cache invalidation)
+   */
+  lastSlotFetchTime?: number;
+
+  /**
+   * pendingSlotFetch = Promise for in-flight slot fetch (for fast-track)
+   * Allows AI processing and Cliniko lookup to run in parallel
+   */
+  pendingSlotFetchStarted?: boolean;
 }
 
 /**
