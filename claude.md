@@ -455,3 +455,34 @@ Use the `patient_phone_numbers` array format for Cliniko updates. Use `phone_typ
 ### 15-Second Rule
 
 Optimize all Cliniko lookups with `Promise.all()` to prevent Twilio 502 timeouts.
+
+### Loop Prevention
+
+Once a name is provided for search, the system must either find a patient or ask for **clarification** — it must NEVER repeat the exact same question twice in a row.
+
+**State tracking:**
+- `nameSearchRequested = true` → First search attempted
+- `nameSearchCompleted = true` → Search loop is OVER (found patient OR gave up after 2 attempts)
+- `needsNameForSearch = false` → Reset once patient is found
+
+**Response escalation:**
+1. First prompt: "What name is the appointment under?"
+2. If search fails: "I'm having trouble finding [name]. Could you give me the full first and last name as it appears on the booking?"
+3. If second search fails: "I couldn't find an appointment under that name. Would you like to book a new one?"
+
+### Identity Pivot Cleanup
+
+When identity is denied ("No, that's not me"), the system MUST:
+1. Set `verifiedClinikoPatientId = undefined`
+2. Set `matchedPatientName = undefined`
+3. Set `identityVerified = false`
+4. Set `needsNameForSearch = true`
+
+This ensures the name search is clean and doesn't inherit the wrong patient's context.
+
+### Fuzzy Name Matching
+
+The `findPatientByName` function should handle common transcription variations:
+- "J. Kilo" vs "Jay Kilo" vs "J Kilo"
+- Name abbreviations and initials
+- Use Cliniko's `q=` search parameter which does partial matching
