@@ -1781,11 +1781,83 @@ export async function handleOpenAIConversation(
             context.currentState.nameSearchCompleted = true;
           }
         } else {
-          // Denied but didn't provide name - mark that we need to ask for name
+          // Denied but didn't provide name - mark that we AWAIT the name on the NEXT turn
           context.currentState.needsNameForSearch = true;
+          context.currentState.awaitingManualName = true; // FLAG: Next utterance IS the name
+          console.log('[OpenAICallHandler] 🚩 Set awaitingManualName=true - next utterance will be treated as name');
         }
       }
       // If neither confirmed nor denied, keep pendingIdentityCheck true
+    }
+
+    // 2b-IMMEDIATE: INTERCEPT NAME when awaitingManualName is true
+    // This runs BEFORE the pattern-based search - takes the ENTIRE utterance as the name
+    if (context.currentState.awaitingManualName === true &&
+        !context.currentState.upcomingAppointmentId &&
+        userUtterance.length >= 2) {
+
+      // Skip obvious non-names
+      const skipWords = ['yes', 'no', 'yeah', 'yep', 'nope', 'ok', 'okay', 'um', 'uh', 'hmm'];
+      const isSkipWord = skipWords.includes(userUtterance.toLowerCase().trim());
+
+      if (!isSkipWord) {
+        // Take the ENTIRE utterance as the name - no pattern matching needed
+        const searchName = userUtterance.trim()
+          .replace(/[.,!?]+$/, '')
+          .replace(/please$/i, '')
+          .trim();
+
+        console.log('[OpenAICallHandler] 🔍 IMMEDIATE NAME INTERCEPT: Searching for:', searchName);
+        context.currentState.awaitingManualName = false; // Clear the flag - we're processing now
+        context.currentState.providedSearchName = searchName;
+
+        const nameSearchResult = await withTimeoutSafe(
+          findPatientByName(searchName),
+          CLINIKO_LOOKUP_TIMEOUT_MS,
+          'Immediate name search'
+        );
+
+        if (!nameSearchResult.timedOut && nameSearchResult.result) {
+          const patient = nameSearchResult.result;
+          console.log(`[OpenAICallHandler] ✅ FOUND patient: ${patient.first_name} ${patient.last_name} (ID: ${patient.id})`);
+
+          // Update state with found patient
+          context.currentState.identityVerified = true;
+          context.currentState.verifiedClinikoPatientId = patient.id;
+          context.currentState.nm = `${patient.first_name} ${patient.last_name}`;
+          context.currentState.np = false;
+          context.currentState.needsNameForSearch = false;
+          context.currentState.nameSearchCompleted = true;
+
+          // Immediately look up their appointments
+          const apptResult = await withTimeoutSafe(
+            getNextUpcomingAppointment(patient.id),
+            CLINIKO_LOOKUP_TIMEOUT_MS,
+            'Appointment lookup after immediate name search'
+          );
+
+          if (!apptResult.timedOut && apptResult.result) {
+            const upcoming = apptResult.result;
+            const apptTime = dayjs(upcoming.starts_at).tz(timezone);
+            context.upcomingAppointment = {
+              id: upcoming.id,
+              practitionerId: upcoming.practitioner_id,
+              appointmentTypeId: upcoming.appointment_type_id,
+              startsAt: upcoming.starts_at,
+              speakable: apptTime.format('dddd [at] h:mm A')
+            };
+            context.currentState.upcomingAppointmentId = upcoming.id;
+            context.currentState.upcomingAppointmentTime = apptTime.format('dddd [at] h:mm A');
+            console.log(`[OpenAICallHandler] ✅ FOUND appointment: ${context.currentState.upcomingAppointmentTime}`);
+          } else {
+            console.log('[OpenAICallHandler] ⚠️ Patient found but no upcoming appointment');
+          }
+        } else if (!nameSearchResult.timedOut) {
+          console.log(`[OpenAICallHandler] ⚠️ No patient found for: ${searchName}`);
+          // First search failed - allow retry but mark that we tried
+          context.currentState.nameSearchRequested = true;
+        }
+      }
     }
 
     // 2b-bis. NAME-BASED SEARCH: When phone lookup failed/no appointment, and user provides a name
