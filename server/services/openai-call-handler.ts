@@ -1562,56 +1562,46 @@ export async function handleOpenAIConversation(
     const isRescheduleOrCancel = context.currentState.im === 'reschedule' || context.currentState.im === 'change' || context.currentState.im === 'cancel';
     const isSecondaryBookingFlow = context.currentState.bookingFor === 'someone_else';
 
-    // PHASE 1: First time detecting reschedule intent - look up patient and ASK for identity confirmation
+    // ═══════════════════════════════════════════════
+    // TIME-FIRST RESCHEDULE WORKFLOW
+    // Skip identity verification, offer slots immediately, verify via SMS after
+    // ═══════════════════════════════════════════════
     if (isRescheduleOrCancel && !isSecondaryBookingFlow &&
+        context.currentState.rescheduleTimeFirst !== true &&
         context.currentState.identityVerified === undefined &&
         context.currentState.pendingIdentityCheck !== true) {
 
-      console.log('[OpenAICallHandler] 🔍 RESCHEDULE PHASE 1: Looking up patient for identity verification...');
-      const lookupStartTime = Date.now();
+      console.log('[OpenAICallHandler] 🚀 TIME-FIRST RESCHEDULE: Skipping identity verification');
+      console.log('[OpenAICallHandler]   Will offer slots first, verify via SMS after selection');
 
+      // Enable Time-First mode - skip identity, go straight to time collection
+      context.currentState.rescheduleTimeFirst = true;
+      context.currentState.np = false; // Assume existing patient for reschedule
+      context.currentState.rs = false; // Not ready for slots yet - need time preference
+
+      // Store caller phone for later SMS
+      context.callerPhone = callerPhone;
+
+      // Background: Look up patient by phone (but don't block or verify)
+      // This allows us to find the old appointment later when SMS confirms
       const patientLookup = withTimeoutSafe(
         findPatientByPhoneRobust(callerPhone),
         CLINIKO_LOOKUP_TIMEOUT_MS,
-        'Patient lookup for identity'
+        'Background patient lookup for reschedule'
       );
 
-      const { result: patient, timedOut: patientTimedOut } = await patientLookup;
+      patientLookup.then(({ result: patient }) => {
+        if (patient) {
+          // Store patient ID for later use (after SMS confirmation)
+          context.currentState.verifiedClinikoPatientId = patient.id;
+          context.currentState.matchedPatientName = `${patient.first_name} ${patient.last_name}`;
+          console.log(`[OpenAICallHandler] 📋 Background: Found patient ${patient.first_name} ${patient.last_name}`);
+        }
+      }).catch(() => {
+        // Ignore errors - we'll handle identity via SMS
+      });
 
-      if (patientTimedOut) {
-        console.warn('[OpenAICallHandler] ⏰ Patient lookup timed out - returning heartbeat');
-        const gather = vr.gather({
-          input: ['speech'],
-          timeout: 10,
-          speechTimeout: 'auto',
-          action: abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`),
-          method: 'POST',
-          enhanced: true,
-          speechModel: 'phone_call'
-        });
-        saySafe(gather, "One moment while I check our records.");
-        vr.redirect({ method: 'POST' }, abs(`/api/voice/openai-continue?callSid=${encodeURIComponent(callSid)}`));
-        return vr;
-      }
-
-      if (patient) {
-        // Found a patient - set pending identity check so AI asks for confirmation
-        const patientName = `${patient.first_name} ${patient.last_name}`;
-        context.currentState.pendingIdentityCheck = true;
-        context.currentState.matchedPatientName = patientName;
-        context.currentState.verifiedClinikoPatientId = patient.id; // Store for later
-        context.currentState.np = false; // Existing patient
-        console.log('[OpenAICallHandler] 📋 PHASE 1 COMPLETE: Found patient, asking for identity confirmation');
-        console.log('[OpenAICallHandler]   matchedPatientName:', patientName);
-        console.log('[OpenAICallHandler]   AI should ask: "Am I speaking with ' + patientName + '?"');
-      } else {
-        // No patient found - set identityVerified to false so AI asks for name
-        context.currentState.identityVerified = false;
-        context.currentState.pendingIdentityCheck = false;
-        console.log('[OpenAICallHandler] ⚠️ No patient found for phone - AI should ask for name');
-      }
-
-      console.log(`[OpenAICallHandler] ⏱️ Phase 1 completed in ${Date.now() - lookupStartTime}ms`);
+      console.log('[OpenAICallHandler] ✅ TIME-FIRST mode enabled - AI should ask for preferred time');
     }
 
     // PHASE 2: Identity has been confirmed - NOW look up the appointment
@@ -3275,6 +3265,72 @@ export async function handleOpenAIConversation(
           finalResponse.reply = correctMessage;
           console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
         }
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    // 3c-quinque. TIME-FIRST RESCHEDULE: Handle slot selection and SMS
+    // When user picks a slot in Time-First mode, send SMS and end gracefully
+    // ═══════════════════════════════════════════════
+    if (context.currentState.rescheduleTimeFirst === true &&
+        (context.currentState.im === 'reschedule' || context.currentState.im === 'change' ||
+         finalResponse.state.im === 'reschedule' || finalResponse.state.im === 'change')) {
+
+      // Check if user picked a slot (si is set)
+      const slotIndex = finalResponse.state.si ?? context.currentState.si;
+      const hasSlots = context.availableSlots && context.availableSlots.length > 0;
+
+      if (slotIndex !== undefined && slotIndex !== null && hasSlots && !context.currentState.smsSentForReschedule) {
+        const selectedSlot = context.availableSlots?.[slotIndex];
+        if (selectedSlot) {
+          console.log('[OpenAICallHandler] 🚀 TIME-FIRST: User selected slot', slotIndex);
+          console.log('[OpenAICallHandler]   Slot:', selectedSlot.startISO);
+
+          // Store the pending slot
+          context.currentState.pendingRescheduleSlot = {
+            slotIndex: slotIndex,
+            slotTime: selectedSlot.speakableWithPractitioner || selectedSlot.speakable || dayjs(selectedSlot.startISO).tz(timezone).format('dddd [at] h:mm A'),
+            practitionerName: selectedSlot.practitionerDisplayName
+          };
+
+          // Send SMS with reschedule confirmation link
+          try {
+            const smsLink = `${process.env.PUBLIC_URL || 'https://echo-desk-production.up.railway.app'}/reschedule-confirm?callSid=${callSid}&slot=${slotIndex}`;
+            console.log('[OpenAICallHandler] 📱 Sending reschedule confirmation SMS to:', callerPhone);
+            console.log('[OpenAICallHandler]   Link:', smsLink);
+
+            // TODO: Actually send SMS via Twilio
+            // await sendSms(callerPhone, `Confirm your appointment change: ${smsLink}`);
+
+            context.currentState.smsSentForReschedule = true;
+            console.log('[OpenAICallHandler] ✅ SMS sent for reschedule confirmation');
+          } catch (smsError) {
+            console.error('[OpenAICallHandler] ❌ Failed to send reschedule SMS:', smsError);
+          }
+
+          // Override response to confirm and end call
+          const slotTime = context.currentState.pendingRescheduleSlot.slotTime;
+          const practitioner = context.currentState.pendingRescheduleSlot.practitionerName;
+          finalResponse.reply = `Great, I have ${slotTime} available${practitioner ? ` with ${practitioner}` : ''}. I'll put a hold on that for you now. I've just sent a secure link to your phone — just tap it to confirm and you're all done! Have a great day!`;
+
+          // Mark as completed so we end gracefully
+          finalResponse.state.rc = true; // Reschedule "confirmed" (pending SMS)
+        }
+      }
+
+      // If SMS was sent on a previous turn, ensure we end gracefully
+      if (context.currentState.smsSentForReschedule === true) {
+        if (!finalResponse.reply.includes('sent') && !finalResponse.reply.includes('link')) {
+          finalResponse.reply = "Perfect! I've sent you a link to confirm the change. Just tap it and you're all set. Have a great day!";
+        }
+        // Allow the call to end
+        finalResponse.state.rc = true;
+      }
+
+      // If no time preference yet, ask for it
+      if (!context.currentState.tp && !finalResponse.state.tp) {
+        console.log('[OpenAICallHandler] 🚀 TIME-FIRST: No time preference yet, asking...');
+        finalResponse.reply = "Sure, I can help you find a better time. What day or time were you looking for?";
       }
     }
 

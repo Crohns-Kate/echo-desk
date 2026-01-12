@@ -400,15 +400,23 @@ This is the final and authoritative blueprint for how Echo Desk must operate.
 
 ---
 
-### Reschedule Workflow (Atomic Move)
+### Reschedule Workflow (Time-First)
 
 **Trigger:** User asks to "change," "move," or "reschedule."
 
-**Lookup:**
-1. Check phone for existing appointments.
-2. If not found, Sarah must ask for the name and perform a `findPatientByName` search.
+**Philosophy:** Value Before Verification. Show availability first, verify identity via SMS second.
 
-**Atomic Action:** Once a new time is confirmed, the system must Cancel the old `appointment_id` AND Create the new one. Do not leave both on the calendar.
+**Flow:**
+1. **Skip Identity Gate:** Do NOT ask for name or verify identity upfront.
+2. **Ask for Time:** "Sure, I can help you find a better time. What day or time were you looking for?"
+3. **Offer Slots:** Show available times based on preference.
+4. **Hold & SMS:** When user picks a time, say: "Great, I have Thursday at 2:00 PM available. I'll put a hold on that for you now. I've just sent a secure link to your phone — tap it to confirm and you're all done!"
+5. **End Gracefully:** The SMS link completes the identity verification and finalizes the reschedule.
+
+**State Flags:**
+- `rescheduleTimeFirst = true` → Time-First mode active
+- `pendingRescheduleSlot` → The slot user selected (held pending SMS)
+- `smsSentForReschedule = true` → SMS sent, call can end
 
 ---
 
@@ -486,3 +494,20 @@ The `findPatientByName` function should handle common transcription variations:
 - "J. Kilo" vs "Jay Kilo" vs "J Kilo"
 - Name abbreviations and initials
 - Use Cliniko's `q=` search parameter which does partial matching
+
+### Value Before Verification
+
+**Rule 1:** Always offer appointment times BEFORE demanding identity details. The user called to accomplish something — help them first, verify second.
+
+**Rule 2:** Use SMS as the primary identity verification tool. The smartphone confirms who they are better than voice questions.
+
+**Rule 3:** If the AI fails to understand a day/time preference after 2 attempts, send a "General Booking Link" via SMS and end the call gracefully to prevent frustration.
+
+### SMS Handoff
+
+When verification is needed (reschedule, cancel, profile updates):
+1. Complete the primary task (find a time, make a change)
+2. Send SMS with a tokenized link for confirmation
+3. End the call with: "I've sent you a link to confirm — just tap it and you're all set!"
+
+The web form handles identity verification, not the voice call.
