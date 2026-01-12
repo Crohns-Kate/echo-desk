@@ -3105,6 +3105,21 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler]   Corrected reply:', finalResponse.reply);
     }
 
+    // 3c-ter. IDENTITY DENIAL RESPONSE CORRECTION: Always use correct message when identity was denied
+    // This runs REGARDLESS of whether AI said goodbye - ensures consistent user experience
+    if (inRescheduleFlow && rescheduleNotCompleted &&
+        context.currentState.identityVerified === false &&
+        !context.currentState.nameSearchCompleted) {
+      // Identity was DENIED - ALWAYS correct the response to use the friendly message
+      const correctMessage = "No worries! What name is the appointment under so I can find it for you?";
+      if (finalResponse.reply !== correctMessage) {
+        console.log('[OpenAICallHandler] 📝 IDENTITY DENIAL: Correcting response message');
+        console.log('[OpenAICallHandler]   Original:', finalResponse.reply);
+        finalResponse.reply = correctMessage;
+        console.log('[OpenAICallHandler]   Corrected:', finalResponse.reply);
+      }
+    }
+
     // ═══════════════════════════════════════════════
     // 3d. PROTECT GROUP BOOKING STATE FROM AI OVERWRITE
     // Group booking state is SYSTEM-OWNED, not AI-OWNED.
