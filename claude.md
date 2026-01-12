@@ -14,6 +14,31 @@ Whenever you start a new session, ALWAYS:
 4. Do NOT resurrect legacy call flow behaviours.
 
 =====================================================================
+# 0. MASTER STANDARD: SOFT-BOOKING (TIME-FIRST) APPROACH
+=====================================================================
+
+**This is the foundational principle of Echo Desk. All workflows must follow this.**
+
+### The Three Pillars:
+
+**1. CALENDAR FIRST, IDENTITY SECOND**
+In BOTH booking AND reschedule intents, offer appointment availability BEFORE asking for names or verifying identity. The caller called to accomplish something — help them first, verify second.
+
+**2. IDENTITY PIVOT = OFFER TIMES, NOT GOODBYE**
+If a user denies an identity match ("No, that's not me"), NEVER hang up. Move directly to offering available times. Use the SMS Bridge to handle final verification.
+
+**3. SMS BRIDGE IS THE SOURCE OF TRUTH**
+The final step of every successful call MUST be an SMS containing a form link. This link is the authoritative source for all patient data — it confirms identity, captures details, and finalizes bookings.
+
+### Why This Matters:
+- Reduces caller friction and frustration
+- Smartphone verification is more reliable than voice questions
+- Callers get value immediately (available times)
+- Clinic gets verified data through secure forms
+
+**Every workflow section below must honor these three pillars.**
+
+=====================================================================
 # 1. CORE CONVERSATION MODEL – "HOW CAN I HELP YOU?" IS THE HUB
 =====================================================================
 
@@ -139,38 +164,50 @@ Output ONLY valid JSON.
 Echo Desk routes behaviour entirely based on this classification.
 
 -------------------------------------------------------------------------------
-# 5. BOOKING MODE – THE CORRECT FLOW
+# 5. BOOKING MODE – THE CORRECT FLOW (TIME-FIRST)
 -------------------------------------------------------------------------------
+
+**⚠️ MASTER STANDARD APPLIES: Calendar First, Identity Second**
 
 When intent=book OR caller expresses booking intent:
 
-1. SAY:
-   "Great, I can help with that. Are you booking a **new patient visit**, or a **follow-up**?"
+### Step 1: Determine New vs Follow-up
+SAY: "Great, I can help with that. Are you booking a **new patient visit**, or a **follow-up**?"
 
-2. Then:
-   "Do you have a particular day or time in mind?"
+### Step 2: TIME-FIRST — Offer Availability Immediately
+SAY: "Do you have a particular day or time in mind?"
 
-3. Parse natural language, including:
-   "today at 4pm", "tomorrow morning", "any time Friday", "next Tuesday after lunch".
+Parse natural language, including:
+"today at 4pm", "tomorrow morning", "any time Friday", "next Tuesday after lunch".
 
-4. Appointment search behaviour:
-   - Check the EXACT requested time first (±60 minutes)
-   - Then find the closest matches
-   - Only then suggest an alternative day if required
+### Step 3: Search and Present Options
+Appointment search behaviour:
+- Check the EXACT requested time first (±60 minutes)
+- Then find the closest matches
+- Only then suggest an alternative day if required
 
-5. Present up to 3 options clearly:
-   - Accept: "option 1", "the second one", "number 3", "1", "two", "press 3", etc.
+Present up to 3 options clearly:
+- Accept: "option 1", "the second one", "number 3", "1", "two", "press 3", etc.
 
-6. Confirmation:
-   "Just to confirm, I'm booking you for **[time] on [day]**. Is that right?"
+### Step 4: Soft-Book and SMS Bridge
+Once caller selects a time:
+1. Place a HOLD on the slot (soft-booking)
+2. Send SMS with tokenized confirmation link
+3. SAY: "Perfect, I've got that time held for you. I've just sent a link to your phone — tap it to confirm your details and you're all done!"
 
-7. After confirmation:
-   - Create booking in Cliniko
-   - Send SMS confirmation
-   - Ask: "Is there anything else I can help you with today?"
+**The SMS form handles:**
+- Identity verification (name, DOB, contact details)
+- New patient intake (if applicable)
+- Final booking confirmation
 
-8. If caller is unclear twice:
-   - Transfer to reception
+### Step 5: Close the Call
+SAY: "Is there anything else I can help you with today?"
+
+### Fallback
+If caller is unclear twice about time preference:
+- Send a General Booking Link via SMS
+- SAY: "No problem! I've sent you a link where you can browse all available times. Just pick what works best for you."
+- End call gracefully (do NOT transfer to reception for simple booking confusion)
 
 -------------------------------------------------------------------------------
 # 6. FAQ MODE – THE CORRECT FLOW
@@ -400,7 +437,9 @@ This is the final and authoritative blueprint for how Echo Desk must operate.
 
 ---
 
-### Reschedule Workflow (Time-First)
+### Reschedule Workflow (Time-First) — MASTER STANDARD
+
+**⚠️ This workflow is the canonical example of Soft-Booking in action.**
 
 **Trigger:** User asks to "change," "move," or "reschedule."
 
@@ -412,6 +451,13 @@ This is the final and authoritative blueprint for how Echo Desk must operate.
 3. **Offer Slots:** Show available times based on preference.
 4. **Hold & SMS:** When user picks a time, say: "Great, I have Thursday at 2:00 PM available. I'll put a hold on that for you now. I've just sent a secure link to your phone — tap it to confirm and you're all done!"
 5. **End Gracefully:** The SMS link completes the identity verification and finalizes the reschedule.
+
+**Identity Pivot (Critical):**
+If caller denies identity match ("No, that's not me"):
+- Do NOT hang up
+- Do NOT ask "What name is the appointment under?"
+- Instead, SAY: "No worries! What day or time were you looking to reschedule to?"
+- Continue with Time-First flow — SMS will verify identity
 
 **State Flags:**
 - `rescheduleTimeFirst = true` → Time-First mode active
@@ -503,11 +549,31 @@ The `findPatientByName` function should handle common transcription variations:
 
 **Rule 3:** If the AI fails to understand a day/time preference after 2 attempts, send a "General Booking Link" via SMS and end the call gracefully to prevent frustration.
 
-### SMS Handoff
+### SMS Handoff — THE SOURCE OF TRUTH
 
-When verification is needed (reschedule, cancel, profile updates):
-1. Complete the primary task (find a time, make a change)
-2. Send SMS with a tokenized link for confirmation
+**⚠️ This is the third pillar of the Master Standard.**
+
+The SMS Bridge is the authoritative final step of every successful call:
+
+**When to send SMS:**
+- After ANY slot selection (booking or reschedule)
+- When caller selects a time preference
+- When identity verification is needed
+- When intake form is required (new patients)
+
+**What the SMS contains:**
+- Tokenized confirmation link (includes `clinikoPatientId` or session token)
+- Form that captures/verifies: name, DOB, contact details, consent
+
+**The flow:**
+1. Complete the primary task (find a time, hold the slot)
+2. Send SMS with tokenized link immediately
 3. End the call with: "I've sent you a link to confirm — just tap it and you're all set!"
 
-The web form handles identity verification, not the voice call.
+**Why SMS is Source of Truth:**
+- Smartphone ownership confirms identity better than voice questions
+- Form data is typed, not transcribed (more accurate)
+- Creates an audit trail
+- Patient can complete at their pace
+
+**Critical Rule:** The voice call's job is to find availability and create excitement. The SMS form's job is to verify and finalize. NEVER try to collect detailed patient data over voice when SMS can do it better.
