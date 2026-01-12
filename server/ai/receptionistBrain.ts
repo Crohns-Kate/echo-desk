@@ -1129,9 +1129,17 @@ export async function callReceptionistBrain(
     contextInfo += `\n⚠️ APPOINTMENT FOUND - CONFIRM IT:\nupcoming_appointment_id: ${context.currentState.upcomingAppointmentId}\n`;
     contextInfo += `upcoming_appointment_time: ${context.upcomingAppointment.speakable}\n`;
     contextInfo += `➡️ SAY: "I found your visit for ${context.upcomingAppointment.speakable}. What would you like to move it to?"\n`;
-  } else if (context.currentState?.needsNameForSearch === true &&
+  } else if (context.currentState?.identityVerified === false &&
+             !context.currentState?.nameSearchCompleted &&
              (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
-    // Identity denied or wrong person - need to ask for name
+    // Identity was DENIED - caller is a different person, ask for their name
+    contextInfo += `\n⚠️ IDENTITY DENIED - ASK FOR NAME:\nidentityVerified: false\nnameSearchCompleted: ${context.currentState?.nameSearchCompleted || false}\n`;
+    contextInfo += `➡️ ASK: "No worries! What name is the appointment under so I can find it for you?"\n`;
+    contextInfo += `DO NOT say goodbye. Wait for them to provide a name.\n`;
+  } else if (context.currentState?.needsNameForSearch === true &&
+             !context.currentState?.nameSearchCompleted &&
+             (context.currentState?.im === 'reschedule' || context.currentState?.im === 'change')) {
+    // Phone lookup failed - need to ask for name
     contextInfo += `\n⚠️ NEED NAME FOR SEARCH:\nneedsNameForSearch: true\nnameSearchCompleted: ${context.currentState?.nameSearchCompleted || false}\n`;
     contextInfo += `➡️ ASK: "I couldn't find a visit under this number. What name should I search for?"\n`;
     contextInfo += `DO NOT say goodbye. Wait for them to provide a name.\n`;

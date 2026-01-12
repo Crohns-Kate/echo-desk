@@ -3086,8 +3086,11 @@ export async function handleOpenAIConversation(
       // Override the response to keep the conversation going
       if (context.currentState.pendingIdentityCheck && context.currentState.matchedPatientName) {
         finalResponse.reply = `I can help with that. Am I speaking with ${context.currentState.matchedPatientName}?`;
-      } else if (context.currentState.needsNameForSearch || (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted)) {
-        // Need to ask for name
+      } else if (context.currentState.identityVerified === false && !context.currentState.nameSearchCompleted) {
+        // Identity was DENIED - ask for the name the appointment is under
+        finalResponse.reply = "No worries! What name is the appointment under so I can find it for you?";
+      } else if (context.currentState.needsNameForSearch && !context.currentState.nameSearchCompleted) {
+        // Need to ask for name (phone lookup failed)
         finalResponse.reply = "I couldn't find a visit under this phone number. What name should I search for?";
       } else if (context.currentState.identityVerified === true && !context.currentState.upcomingAppointmentId && !context.currentState.nameSearchCompleted) {
         // Verified identity but no appointment - ask for another name
@@ -4060,11 +4063,28 @@ export async function handleOpenAIConversation(
       vr.hangup();
       return vr;
     } else if (wantsToEndCall && !context.currentState.gb) {
-      // Not a group booking and caller wants to leave - allow it
-      console.log('[OpenAICallHandler] Caller wants to end call - no active booking, hanging up gracefully');
-      saySafe(vr, "No worries! Feel free to call back anytime. Goodbye!");
-      vr.hangup();
-      return vr;
+      // Check if we're in reschedule/change flow and need name search first
+      const inRescheduleFlowFinal = context.currentState.im === 'reschedule' || context.currentState.im === 'change';
+      const needsNameSearchFirst = context.currentState.needsNameForSearch === true &&
+                                    context.currentState.nameSearchCompleted !== true;
+      const identityDeniedNoSearch = context.currentState.identityVerified === false &&
+                                      context.currentState.nameSearchCompleted !== true &&
+                                      inRescheduleFlowFinal;
+
+      if (inRescheduleFlowFinal && (needsNameSearchFirst || identityDeniedNoSearch)) {
+        // BLOCK goodbye - identity was denied, ask for name instead
+        console.log('[OpenAICallHandler] ⚠️ BLOCKED goodbye - identity denied, need name search first');
+        console.log('[OpenAICallHandler]   - needsNameForSearch:', context.currentState.needsNameForSearch);
+        console.log('[OpenAICallHandler]   - nameSearchCompleted:', context.currentState.nameSearchCompleted);
+        console.log('[OpenAICallHandler]   - identityVerified:', context.currentState.identityVerified);
+        // Continue - let the corrected response handle asking for name
+      } else {
+        // Not a group booking and caller wants to leave - allow it
+        console.log('[OpenAICallHandler] Caller wants to end call - no active booking, hanging up gracefully');
+        saySafe(vr, "No worries! Feel free to call back anytime. Goodbye!");
+        vr.hangup();
+        return vr;
+      }
     }
 
     // ═══════════════════════════════════════════════
