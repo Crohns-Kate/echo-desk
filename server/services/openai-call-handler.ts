@@ -3080,25 +3080,32 @@ export async function handleOpenAIConversation(
             });
           }
 
-          // Send SMS confirmation (once for the caller)
+          // ═══════════════════════════════════════════════════════════════════
+          // NON-BLOCKING SMS: Send SMS in background so Sarah can keep talking
+          // Speed is critical - don't make the voice response wait for SMS
+          // ═══════════════════════════════════════════════════════════════════
+
+          // Send SMS confirmation (once for the caller) - NON-BLOCKING
           if (groupBookingResults.length > 0) {
             const appointmentSummary = groupBookingResults.map(r => `${r.name}: ${r.time}`).join(', ');
             const firstSlot = context.availableSlots[0];
             const appointmentTime = dayjs(firstSlot.startISO).tz(timezone);
             const formattedDate = appointmentTime.format('dddd, MMMM D');
 
-            await sendAppointmentConfirmation({
+            // Fire-and-forget: don't await, let SMS send in background
+            sendAppointmentConfirmation({
               to: callerPhone,
               appointmentDate: `${formattedDate} - ${appointmentSummary}`,
               clinicName: clinicName || 'Spinalogic',
               practitionerName: firstSlot.practitionerDisplayName,
               address: clinicAddress || context.tenantInfo?.address,
               mapUrl: googleMapsUrl || undefined
-            });
-            context.currentState.smsConfirmSent = true;
-            console.log('[GroupBookingExecutor] ✅ SMS confirmation sent');
+            }).catch(err => console.error('[GroupBookingExecutor] SMS confirmation error (non-blocking):', err));
 
-            // Send intake forms for each patient with their Cliniko patient ID
+            context.currentState.smsConfirmSent = true;
+            console.log('[GroupBookingExecutor] 📱 SMS confirmation queued (non-blocking)');
+
+            // Send intake forms for each patient with their Cliniko patient ID - NON-BLOCKING
             // CRITICAL: Each patient gets a UNIQUE token to prevent form collisions
             for (let i = 0; i < groupBookingResults.length; i++) {
               const result = groupBookingResults[i];
@@ -3118,36 +3125,34 @@ export async function handleOpenAIConversation(
                 formToken = `form_${callSid}_p${i}_${result.name.replace(/\s+/g, '')}`;
                 clinikoPatientId = undefined;  // Will trigger warning in SMS function
 
-                // Create alert for manual follow-up
+                // Create alert for manual follow-up (non-blocking)
                 if (tenantId) {
-                  try {
-                    await storage.createAlert({
-                      tenantId,
-                      conversationId: context.conversationId || undefined,
-                      reason: 'group_form_missing_patient_id',
-                      payload: {
-                        callSid,
-                        patientName: result.name,
-                        appointmentId: result.appointmentId,
-                        message: 'Group booking form sent without Cliniko patientId - manual linking required'
-                      },
-                      status: 'open'
-                    });
-                  } catch (alertErr) {
-                    console.error('[GroupBookingExecutor] Failed to create alert:', alertErr);
-                  }
+                  storage.createAlert({
+                    tenantId,
+                    conversationId: context.conversationId || undefined,
+                    reason: 'group_form_missing_patient_id',
+                    payload: {
+                      callSid,
+                      patientName: result.name,
+                      appointmentId: result.appointmentId,
+                      message: 'Group booking form sent without Cliniko patientId - manual linking required'
+                    },
+                    status: 'open'
+                  }).catch(alertErr => console.error('[GroupBookingExecutor] Failed to create alert:', alertErr));
                 }
               }
 
               // ALWAYS send form - patient needs the link regardless of patientId status
-              await sendNewPatientForm({
+              // Fire-and-forget: don't await, let SMS send in background
+              sendNewPatientForm({
                 to: callerPhone,
                 token: formToken,
                 clinicName: clinicName || 'Spinalogic',
                 clinikoPatientId,  // May be undefined if patientId was missing
-                patientName: result.name  // Identify who this form is for (critical for group bookings)
-              });
-              console.log('[GroupBookingExecutor] ✅ Intake form sent for:', result.name, 'patientId:', result.patientId || 'NONE', 'token:', formToken);
+                patientName: result.name  // Identify who this form is for (Name-to-Form Payload)
+              }).catch(err => console.error('[GroupBookingExecutor] SMS form error for', result.name, '(non-blocking):', err));
+
+              console.log('[GroupBookingExecutor] 📱 Intake form queued for:', result.name, 'patientId:', result.patientId || 'NONE', 'token:', formToken);
             }
             context.currentState.smsIntakeSent = true;
           }
@@ -4295,32 +4300,39 @@ export async function handleOpenAIConversation(
           const appointmentTime = dayjs(selectedSlot.startISO).tz(timezone);
           const formattedDate = appointmentTime.format('dddd, MMMM D [at] h:mm A');
 
-          // Send SMS confirmation (only if not already sent)
-          // Include: time, practitioner name, address, and map link
+          // ═══════════════════════════════════════════════════════════════════
+          // NON-BLOCKING SMS: Send SMS in background so Sarah can keep talking
+          // Speed is critical - don't make the voice response wait for SMS
+          // ═══════════════════════════════════════════════════════════════════
+
+          // Send SMS confirmation (only if not already sent) - NON-BLOCKING
           if (!context.currentState.smsConfirmSent) {
             const includeMapUrl = googleMapsUrl || undefined;
-            await sendAppointmentConfirmation({
+            // Fire-and-forget: don't await, let SMS send in background
+            sendAppointmentConfirmation({
               to: callerPhone,
               appointmentDate: formattedDate,
               clinicName: clinicName || 'Spinalogic',
               practitionerName: selectedSlot.practitionerDisplayName || undefined,
               address: clinicAddress || context.tenantInfo?.address,
               mapUrl: includeMapUrl
-            });
+            }).catch(err => console.error('[OpenAICallHandler] SMS confirmation error (non-blocking):', err));
+
             context.currentState.smsConfirmSent = true;
             // Track if map was included in confirmation SMS
             if (includeMapUrl) {
               context.currentState.confirmSmsIncludedMap = true;
               context.currentState.smsMapSent = true; // Map already sent via confirmation
             }
-            console.log('[OpenAICallHandler] ✅ SMS confirmation sent (mapIncluded:', !!includeMapUrl, ')');
+            console.log('[OpenAICallHandler] 📱 SMS confirmation queued (non-blocking, mapIncluded:', !!includeMapUrl, ')');
           } else {
             console.log('[OpenAICallHandler] SMS confirmation already sent, skipping');
           }
 
-          // For NEW patients, send the intake form link (only if not already sent)
+          // For NEW patients, send the intake form link (only if not already sent) - NON-BLOCKING
           // Use context.currentState.np (accumulated state) since np was set early in conversation
           // CRITICAL: Include clinikoPatientId so form updates the correct patient
+          // CRITICAL: Include patientName to pre-fill the form
           if (isNewPatient && !context.currentState.smsIntakeSent) {
             // Generate form token using callSid
             const formToken = `form_${callSid}`;
@@ -4332,16 +4344,23 @@ export async function handleOpenAIConversation(
               console.error('[OpenAICallHandler]   Appointment object:', JSON.stringify(appointment, null, 2));
             }
 
-            await sendNewPatientForm({
+            // Get patient name for form pre-fill
+            const patientNameForForm = finalResponse.state.nm || context.currentState.nm || undefined;
+
+            // Fire-and-forget: don't await, let SMS send in background
+            sendNewPatientForm({
               to: callerPhone,
               token: formToken,
               clinicName: clinicName || 'Spinalogic',
-              clinikoPatientId: patientIdForForm  // Link form to correct Cliniko patient
-            });
+              clinikoPatientId: patientIdForForm,  // Link form to correct Cliniko patient
+              patientName: patientNameForForm      // Pre-fill name in form (Name-to-Form Payload)
+            }).catch(err => console.error('[OpenAICallHandler] SMS form error (non-blocking):', err));
+
             context.currentState.smsIntakeSent = true;
-            console.log('[OpenAICallHandler] ✅ New patient form SMS sent');
+            console.log('[OpenAICallHandler] 📱 New patient form SMS queued (non-blocking)');
             console.log('[OpenAICallHandler]   - Token:', formToken);
             console.log('[OpenAICallHandler]   - PatientId:', patientIdForForm || 'MISSING!');
+            console.log('[OpenAICallHandler]   - PatientName:', patientNameForForm || 'not provided');
           } else if (isNewPatient) {
             console.log('[OpenAICallHandler] Intake form SMS already sent, skipping');
           }
