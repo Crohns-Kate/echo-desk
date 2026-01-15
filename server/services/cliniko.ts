@@ -1245,7 +1245,7 @@ export async function getPastAppointments(patientId: string, tenantCtx?: TenantC
       .map(appt => ({
         id: appt.id,
         practitioner_id: appt.practitioner_id,
-        practitioner_name: appt.practitioner?.display_name,
+        practitioner_name: undefined,  // Fetched separately via practitioner_id if needed
         appointment_type_id: appt.appointment_type_id,
         starts_at: appt.starts_at,
         ends_at: appt.ends_at,
