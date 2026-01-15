@@ -1205,6 +1205,112 @@ export async function getUpcomingAppointments(patientId: string, tenantCtx?: Ten
   }
 }
 
+/**
+ * Get past appointments for a patient (appointments that have already occurred)
+ * Returns appointments sorted by start time (most recent first)
+ * Used to determine the patient's last practitioner for clinical continuity
+ */
+export async function getPastAppointments(patientId: string, tenantCtx?: TenantContext, limit: number = 10): Promise<Array<{
+  id: string;
+  practitioner_id: string;
+  practitioner_name?: string;
+  appointment_type_id: string;
+  starts_at: string;
+  ends_at: string;
+  notes: string | null;
+}>> {
+  try {
+    const { base, headers } = getClinikoConfig(tenantCtx);
+    const BUSINESS_TZ = tenantCtx?.timezone || env.TZ || 'Australia/Brisbane';
+
+    // Fetch appointments from the past year (reasonable history window)
+    const fromDate = dayjs().tz(BUSINESS_TZ).subtract(1, 'year').format('YYYY-MM-DD');
+    const toDate = dayjs().tz(BUSINESS_TZ).format('YYYY-MM-DD');
+
+    console.log(`[Cliniko] getPastAppointments: Fetching past appointments for patient ${patientId} from ${fromDate} to ${toDate}`);
+
+    const data = await clinikoGet<{ individual_appointments: ClinikoAppointment[] }>(
+      `/individual_appointments?patient_id=${patientId}&from=${fromDate}&to=${toDate}&per_page=100`,
+      base, headers
+    );
+
+    const appointments = data.individual_appointments || [];
+    const now = dayjs().tz(BUSINESS_TZ);
+
+    // Filter to past, non-cancelled appointments and sort by start time (most recent first)
+    const pastAppts = appointments
+      .filter(appt => !appt.cancelled_at && dayjs(appt.starts_at).isBefore(now))
+      .sort((a, b) => dayjs(b.starts_at).valueOf() - dayjs(a.starts_at).valueOf())
+      .slice(0, limit)
+      .map(appt => ({
+        id: appt.id,
+        practitioner_id: appt.practitioner_id,
+        practitioner_name: appt.practitioner?.display_name,
+        appointment_type_id: appt.appointment_type_id,
+        starts_at: appt.starts_at,
+        ends_at: appt.ends_at,
+        notes: appt.notes
+      }));
+
+    console.log(`[Cliniko] getPastAppointments: Found ${pastAppts.length} past appointments`);
+    return pastAppts;
+  } catch (e) {
+    console.error('[Cliniko] getPastAppointments error', e);
+    return [];
+  }
+}
+
+/**
+ * Get the patient's last practitioner (for clinical continuity)
+ * Returns the practitioner from their most recent past appointment
+ */
+export async function getPatientLastPractitioner(patientId: string, tenantCtx?: TenantContext): Promise<{
+  practitionerId: string;
+  practitionerName: string;
+  lastAppointmentDate: string;
+} | null> {
+  try {
+    const pastAppts = await getPastAppointments(patientId, tenantCtx, 1);
+
+    if (pastAppts.length === 0) {
+      console.log(`[Cliniko] getPatientLastPractitioner: No past appointments found for patient ${patientId}`);
+      return null;
+    }
+
+    const lastAppt = pastAppts[0];
+
+    // If we don't have the practitioner name, try to fetch it
+    let practitionerName = lastAppt.practitioner_name;
+    if (!practitionerName) {
+      try {
+        const { base, headers } = getClinikoConfig(tenantCtx);
+        const practitionerData = await clinikoGet<{ display_name?: string; first_name?: string; last_name?: string }>(
+          `/practitioners/${lastAppt.practitioner_id}`,
+          base, headers
+        );
+        practitionerName = practitionerData.display_name ||
+          `${practitionerData.first_name || ''} ${practitionerData.last_name || ''}`.trim() ||
+          'your previous practitioner';
+      } catch (err) {
+        console.warn(`[Cliniko] Could not fetch practitioner name for ${lastAppt.practitioner_id}:`, err);
+        practitionerName = 'your previous practitioner';
+      }
+    }
+
+    const result = {
+      practitionerId: lastAppt.practitioner_id,
+      practitionerName: practitionerName || 'your previous practitioner',
+      lastAppointmentDate: lastAppt.starts_at
+    };
+
+    console.log(`[Cliniko] getPatientLastPractitioner: Found last practitioner for patient ${patientId}:`, result.practitionerName);
+    return result;
+  } catch (e) {
+    console.error('[Cliniko] getPatientLastPractitioner error', e);
+    return null;
+  }
+}
+
 export async function getPatientAppointments(phone: string): Promise<ClinikoAppointment[]> {
   try {
     const patient = await findPatientByPhone(phone);

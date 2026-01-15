@@ -411,6 +411,59 @@ export interface CompactCallState {
    * Allows AI processing and Cliniko lookup to run in parallel
    */
   pendingSlotFetchStarted?: boolean;
+
+  // ═══════════════════════════════════════════════
+  // Clinical Assistant Fields
+  // ═══════════════════════════════════════════════
+
+  /**
+   * lastPractitioner = Patient's last practitioner for clinical continuity
+   * Fetched from past appointment history
+   */
+  lastPractitioner?: {
+    practitionerId: string;
+    practitionerName: string;
+    lastAppointmentDate?: string;
+  };
+
+  /**
+   * preferredPractitionerId = Practitioner the patient wants to see
+   * Set when patient confirms "yes" to seeing their last practitioner
+   * Or when they explicitly name a practitioner
+   */
+  preferredPractitionerId?: string;
+
+  /**
+   * askedAboutLastPractitioner = true when we've asked "Would you like to see [Name] again?"
+   * Prevents repeating the question
+   */
+  askedAboutLastPractitioner?: boolean;
+
+  /**
+   * visitType = "follow_up" | "new_issue"
+   * Determines which appointment type to use:
+   * - follow_up → Standard Consultation ID
+   * - new_issue → Initial Consultation ID
+   */
+  visitType?: 'follow_up' | 'new_issue';
+
+  /**
+   * askedAboutVisitType = true when we've asked the triage question
+   * "Is this a follow-up or a new issue?"
+   */
+  askedAboutVisitType?: boolean;
+
+  /**
+   * bookingVerified = true when user has confirmed the final booking summary
+   * "Just confirming, that's [Time] with [Practitioner]. Is that correct?"
+   */
+  bookingVerified?: boolean;
+
+  /**
+   * isTerminal = true after the final "All set" to prevent double-goodbye loop
+   * More explicit terminal state flag
+   */
+  isTerminal?: boolean;
 }
 
 /**
@@ -645,6 +698,36 @@ STEP 2: New vs existing patient (if np is null)
 - If they say "No" / "First time" / "New" → np = true (NEW patient)
 - If they say "Yes" / "Been before" / "Existing" → np = false (EXISTING patient)
 
+=== CLINICAL ASSISTANT FLOW (FOR EXISTING PATIENTS) ===
+
+⚠️ LAST PRACTITIONER SUGGESTION (if np = false AND lastPractitioner in context):
+When context shows lastPractitioner info, proactively suggest seeing them again:
+→ "Would you like to see [practitionerName] again?"
+→ If YES: Set preferredPractitionerId to the lastPractitioner.practitionerId
+→ If NO: "No problem! I'll find you the next available appointment with any of our practitioners."
+
+This provides clinical continuity - patients often prefer seeing the same practitioner.
+
+⚠️ TRIAGE QUESTION (for existing patients - if visitType is null):
+Before offering slots, ask: "Is this a follow-up to your previous visit, or is it for a new issue?"
+
+Map the response:
+- "Follow-up" / "continuing" / "same issue" / "check-up" → visitType = "follow_up"
+  → Uses Standard Consultation appointment type (shorter visit)
+- "New issue" / "different problem" / "something new" → visitType = "new_issue"
+  → Uses Initial Consultation appointment type (longer assessment)
+
+If unclear, default to "follow_up" for existing patients.
+
+Example conversation for existing patient:
+Sarah: "Have you been here before?"
+Caller: "Yes, I have"
+Sarah: "Great! I see you last saw Dr Sarah. Would you like to see her again?"
+Caller: "Yes please"
+Sarah: "Perfect! Is this a follow-up to your previous visit, or is it for a new issue?"
+Caller: "Just a follow-up"
+Sarah: "No worries. What day or time works for you?"
+
 ⚠️ SOFT-BOOKING FOR NEW PATIENTS (Value Before Verification):
 If np = true (NEW patient), use this friendlier flow:
 - Say: "Welcome! I'd love to help you join the clinic. Let's find a time that works for you first. What day were you thinking?"
@@ -785,8 +868,33 @@ When selection is ambiguous:
 
 Once slot is UNAMBIGUOUSLY identified:
 - Set si = [0, 1, or 2]
-- Set bc = true
-- Confirm booking in same response
+- Proceed to VERIFICATION LOOP (do NOT set bc=true yet!)
+
+=== VERIFICATION LOOP (Summary Before Final Booking) ===
+
+⚠️ CRITICAL: Before finalizing the booking, deliver a summary for caller confirmation.
+
+When slot is selected (si is set) BUT bc is NOT yet true:
+→ Deliver summary: "Just confirming, that's [Time] with [Practitioner]. Is that correct?"
+→ Wait for caller response
+
+If caller says YES / "correct" / "that's right" / "yep":
+→ NOW set bc = true
+→ Proceed with booking confirmation
+
+If caller says NO / "actually" / "wait" / corrects something:
+→ Ask: "No problem — what would you like to change?"
+→ Let them correct the time or practitioner
+→ Repeat verification once corrected
+
+This verification step prevents booking errors and gives caller final control.
+
+Example:
+Sarah: "I have 10:30 AM with Dr Sarah available. Would that work?"
+Caller: "Yes, that sounds good"
+Sarah: "Just confirming, that's 10:30 AM with Dr Sarah. Is that correct?"
+Caller: "Yes"
+Sarah: "You're all set for 10:30 AM with Dr Sarah! I've sent the details to your phone."
 
 === BOOKING CONFIRMATION (IMMEDIATE PROACTIVE CLOSE) ===
 
@@ -1127,6 +1235,12 @@ Do NOT use fallback for normal chiropractic FAQs like qualifications, techniques
 
 After booking is confirmed (bc=true OR appointmentCreated=true OR groupBookingComplete>0):
 
+⚠️ isTerminal FLAG:
+After the FINAL "All set" confirmation + goodbye:
+→ Set isTerminal = true in state
+→ This prevents the double-goodbye loop where Sarah keeps asking "anything else?"
+→ Once isTerminal = true, the call should end gracefully
+
 ALLOWED questions to answer:
 - Price / cost questions
 - Directions / how to get there
@@ -1142,12 +1256,22 @@ ALLOWED questions to answer:
 
 When caller says goodbye phrases ("no", "that's it", "bye", "goodbye", "finished"):
 → Respond briefly: "All set. Thanks for calling!"
+→ Set isTerminal = true
 → Do NOT continue asking questions
 → Do NOT say "Is there anything else?" after they said "no"
 
+⛔ DOUBLE-GOODBYE PREVENTION:
+If isTerminal = true in current_state:
+→ Do NOT ask any more questions
+→ If caller says anything, respond briefly and end: "Have a great day!"
+→ The call is OVER — do not re-engage
+
 Examples:
 ❌ WRONG: "All set! Is there anything else I can help with?" [after caller said "no thanks"]
-✅ RIGHT: "All set. Thanks for calling!" [then end]
+✅ RIGHT: "All set. Thanks for calling!" [then end, set isTerminal=true]
+
+❌ WRONG: [After "thanks for calling"] "Is there anything else?" [caller says "no"] "Anything else?"
+✅ RIGHT: [After "thanks for calling"] → isTerminal=true → call ends
 
 ❌ WRONG: "Would you like to book an appointment?" [after booking confirmed]
 ✅ RIGHT: Answer their question directly, no booking prompt
@@ -1285,6 +1409,36 @@ export async function callReceptionistBrain(
       `[${idx}] ${s.speakableWithPractitioner || s.speakable}`
     );
     contextInfo += `\n⚠️ SLOTS AVAILABLE - OFFER THESE NOW:\nslots: ${slotDescriptions.join(', ')}\n`;
+  }
+
+  // ═══════════════════════════════════════════════
+  // CLINICAL ASSISTANT: Context for existing patients
+  // ═══════════════════════════════════════════════
+
+  // Last practitioner suggestion (for clinical continuity)
+  if (context.currentState?.lastPractitioner && !context.currentState?.askedAboutLastPractitioner) {
+    const lastPrac = context.currentState.lastPractitioner;
+    contextInfo += `\n🏥 CLINICAL CONTINUITY:\nlastPractitioner: "${lastPrac.practitionerName}"\n`;
+    contextInfo += `➡️ ASK: "Would you like to see ${lastPrac.practitionerName} again?"\n`;
+    contextInfo += `If YES: Set preferredPractitionerId to "${lastPrac.practitionerId}"\n`;
+    contextInfo += `If NO: "No problem! I'll find you the next available appointment."\n`;
+  }
+
+  // Triage question for existing patients (follow-up vs new issue)
+  if (context.currentState?.np === false &&
+      !context.currentState?.visitType &&
+      !context.currentState?.askedAboutVisitType &&
+      context.currentState?.askedAboutLastPractitioner) {
+    contextInfo += `\n🔬 TRIAGE NEEDED:\n`;
+    contextInfo += `➡️ ASK: "Is this a follow-up to your previous visit, or is it for a new issue?"\n`;
+    contextInfo += `If follow-up: Set visitType = "follow_up"\n`;
+    contextInfo += `If new issue: Set visitType = "new_issue"\n`;
+  }
+
+  // isTerminal flag - prevent double-goodbye
+  if (context.currentState?.isTerminal === true) {
+    contextInfo += `\n⛔ CALL IS TERMINAL:\nisTerminal: true\n`;
+    contextInfo += `DO NOT ask any more questions. If caller speaks, respond briefly: "Have a great day!" and end.\n`;
   }
 
   // TIME-FIRST RESCHEDULE: Skip identity, ask for preferred time

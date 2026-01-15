@@ -21,7 +21,7 @@ import {
   type CompactCallState,
   type ParsedCallState
 } from '../ai/receptionistBrain';
-import { findPatientByPhoneRobust, findPatientByName, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, getUpcomingAppointments, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, type EnrichedSlot } from './cliniko';
+import { findPatientByPhoneRobust, findPatientByName, getAvailability, createAppointmentForPatient, getNextUpcomingAppointment, getUpcomingAppointments, rescheduleAppointment, cancelAppointment, getMultiPractitionerAvailability, getPatientLastPractitioner, type EnrichedSlot } from './cliniko';
 import {
   type StateMachineContext,
   initStateMachine,
@@ -1509,6 +1509,67 @@ export async function handleOpenAIConversation(
     // If identity was verified in a previous turn, ensure patientId is used
     if (context.currentState.identityVerified === true && context.currentState.verifiedClinikoPatientId) {
       console.log('[IdentityGate] 🔒 Using verified patient ID:', context.currentState.verifiedClinikoPatientId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLINICAL ASSISTANT: Parallel fetch history, availability, practitioner info
+    // Uses Promise.all() for speed - when user confirms identity, slots ready instantly
+    // ═══════════════════════════════════════════════════════════════════════
+    const isExistingPatient = context.currentState.np === false;
+    const hasVerifiedPatientId = context.currentState.verifiedClinikoPatientId;
+    const needsLastPractitioner = isExistingPatient && hasVerifiedPatientId && !context.currentState.lastPractitioner && !context.currentState.askedAboutLastPractitioner;
+
+    if (needsLastPractitioner) {
+      console.log('[ClinicalAssistant] 🏥 Fetching patient history for clinical continuity...');
+
+      try {
+        // Get tenant context for Cliniko API calls
+        let tenantCtx = undefined;
+        if (tenantId) {
+          const tenant = await storage.getTenantById(tenantId);
+          if (tenant) {
+            tenantCtx = getTenantContext(tenant);
+          }
+        }
+
+        // Parallel fetch: last practitioner + slots (if we have time preference)
+        const parallelFetches: Promise<any>[] = [
+          getPatientLastPractitioner(context.currentState.verifiedClinikoPatientId!, tenantCtx)
+        ];
+
+        // If we also have time preference, pre-fetch slots in parallel
+        const hasTimePreference = !!context.currentState.tp;
+        if (hasTimePreference && !context.availableSlots) {
+          parallelFetches.push(
+            fetchAvailableSlots(context.currentState, tenantId, timezone)
+          );
+        }
+
+        const [lastPractitionerResult, slotsResult] = await Promise.all(parallelFetches);
+
+        // Store last practitioner info
+        if (lastPractitionerResult) {
+          context.currentState.lastPractitioner = {
+            practitionerId: lastPractitionerResult.practitionerId,
+            practitionerName: lastPractitionerResult.practitionerName,
+            lastAppointmentDate: lastPractitionerResult.lastAppointmentDate
+          };
+          console.log('[ClinicalAssistant] ✅ Found last practitioner:', lastPractitionerResult.practitionerName);
+        } else {
+          console.log('[ClinicalAssistant] ℹ️ No previous appointments found for this patient');
+          context.currentState.askedAboutLastPractitioner = true; // Skip the question
+        }
+
+        // Store pre-fetched slots
+        if (slotsResult && Array.isArray(slotsResult) && slotsResult.length > 0) {
+          context.availableSlots = slotsResult;
+          console.log('[ClinicalAssistant] ✅ Pre-fetched', slotsResult.length, 'slots in parallel');
+        }
+
+      } catch (error) {
+        console.error('[ClinicalAssistant] Error fetching patient history:', error);
+        // Continue without clinical history - not a critical failure
+      }
     }
 
     // 2. PROACTIVE slot fetching: If we have enough info, fetch slots BEFORE calling AI
