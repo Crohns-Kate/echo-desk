@@ -4227,12 +4227,30 @@ export async function handleOpenAIConversation(
       console.log('[OpenAICallHandler] 📋 Slots just offered to user this turn - must wait for next turn confirmation');
     }
 
-    // Check if booking should proceed
-    const shouldAttemptBooking = finalResponse.state.bc &&
-                                  finalResponse.state.nm &&
+    // ═══════════════════════════════════════════════════════════════════════
+    // BOOKING TRIGGER: Use MERGED state to catch values from previous turns
+    // This ensures booking completes even if slot was selected in turn N
+    // and name was provided in turn N+1
+    // ═══════════════════════════════════════════════════════════════════════
+    const mergedBc = finalResponse.state.bc ?? context.currentState.bc;
+    const mergedNm = finalResponse.state.nm ?? context.currentState.nm;
+    const mergedSi = finalResponse.state.si ?? context.currentState.si;
+
+    // Check if booking should proceed using merged state
+    const shouldAttemptBooking = mergedBc &&
+                                  mergedNm &&
                                   context.availableSlots &&
-                                  finalResponse.state.si !== undefined &&
-                                  finalResponse.state.si !== null;
+                                  mergedSi !== undefined &&
+                                  mergedSi !== null;
+
+    // Log merged state for debugging
+    if (mergedBc || mergedNm || mergedSi !== undefined) {
+      console.log('[OpenAICallHandler] 📋 Booking state check:');
+      console.log('[OpenAICallHandler]   bc:', finalResponse.state.bc, '→ merged:', mergedBc);
+      console.log('[OpenAICallHandler]   nm:', finalResponse.state.nm, '→ merged:', mergedNm);
+      console.log('[OpenAICallHandler]   si:', finalResponse.state.si, '→ merged:', mergedSi);
+      console.log('[OpenAICallHandler]   slots:', context.availableSlots?.length || 0);
+    }
 
     // GUARD: If slots were just offered THIS turn (not previously), block booking
     // User MUST have had a turn to respond and pick a slot
@@ -4253,7 +4271,8 @@ export async function handleOpenAIConversation(
     if (shouldAttemptBooking && !bookingBlockedBySlotGuard) {
       console.log('[OpenAICallHandler] 🎯 Booking confirmed! User had opportunity to select slot.');
 
-      const selectedSlot = context.availableSlots?.[finalResponse.state.si as number];
+      // Use merged slot index for selection
+      const selectedSlot = context.availableSlots?.[mergedSi as number];
 
       // BOOKING LOCK: Prevent double-booking from race conditions / duplicate webhooks
       const now = Date.now();
@@ -4301,10 +4320,11 @@ export async function handleOpenAIConversation(
 
           // ═══════════════════════════════════════════════
           // NAME HANDLING: Sanitize and use correct name for booking
+          // Use MERGED name (might be from current or previous turn)
           // For secondary bookings, use secondaryPatientName if available
           // ═══════════════════════════════════════════════
           const isSecondaryBooking = context.currentState.bookingFor === 'someone_else';
-          let patientName: string | null = finalResponse.state.nm;
+          let patientName: string | null = mergedNm;
 
           // Sanitize the name (remove speech artifacts like "message", "text", etc.)
           patientName = sanitizePatientName(patientName) || patientName;
